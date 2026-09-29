@@ -1,0 +1,40 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "libsql"
+version = "0.1.0"
+description = "A small SQL engine over libnosql, with a zero-copy blob archive shaped for training data"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Proprietary" }
+
+[project.optional-dependencies]
+numpy = ["numpy"]
+
+[tool.scikit-build]
+cmake.version = ">=3.18"
+cmake.build-type = "Release"
+wheel.packages = ["libsql"]
+build-dir = "build/{wheel_tag}"
+# _vendor only exists after ./vendor.sh; harmless to list when absent.
+sdist.include = ["_vendor/**"]
+sdist.exclude = ["_vendor/**/tests/**", "_vendor/**/examples/**"]
+
+# Portable manylinux/macOS/Windows wheels for distribution to machines that
+# never see a compiler: run `./vendor.sh` on THIS host first (it needs the
+# sibling ../libsql, ../../libnosql checkouts, which the build container does
+# not have), then `cibuildwheel .` here. Native (no cross-arch) builds go
+# through Docker automatically for Linux: an x86_64 host builds x86_64, an
+# aarch64 host builds aarch64 -- run it on one machine of each architecture,
+# or emulate (see python/README.md).
+[tool.cibuildwheel]
+build = "cp312-*"  # override with CIBW_BUILD (e.g. "cp3{9,10,11,12,13}-*") to build other/all versions
+skip = "*-musllinux*"
+build-verbosity = 1
+test-command = "python -c \"import libsql; print(libsql.__version__)\""
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"

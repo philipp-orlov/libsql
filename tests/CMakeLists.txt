@@ -1,0 +1,10 @@
+add_library(sql_testmain STATIC test_main.cpp)
+target_link_libraries(sql_testmain PUBLIC sql)
+target_include_directories(sql_testmain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+foreach(name types ddl dml query join index group prepare blobs composite json limits locale reader soak)
+    add_executable(test_${name} test_${name}.cpp)
+    target_link_libraries(test_${name} PRIVATE sql_testmain)
+    add_test(NAME ${name} COMMAND test_${name})
+    set_tests_properties(${name} PROPERTIES TIMEOUT 300)
+endforeach()
