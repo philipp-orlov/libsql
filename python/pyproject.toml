@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "libsql"
-version = "0.1.0"
+version = "0.2.0"
 description = "A small SQL engine over libnosql, with a zero-copy blob archive shaped for training data"
 readme = "README.md"
 requires-python = ">=3.8"

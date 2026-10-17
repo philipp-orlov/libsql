@@ -29,8 +29,8 @@ TEST(reportsTheDeclaredSchema)
 {
     tst::Scratch s("ddl");
     Database db = s.open();
-    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name VARCHAR(40) NOT NULL, "
-            "score REAL DEFAULT 1.5, tag TEXT UNIQUE, at TIMESTAMP, raw BLOB)");
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+            "score REAL DEFAULT 1.5, tag TEXT UNIQUE, at DATETIME, raw BLOB) STRICT");
 
     const TableInfo info = db.table("T");  // names are case-insensitive
     CHECK_EQ(info.name, std::string("t"));
@@ -69,41 +69,40 @@ TEST(schemaSurvivesReopening)
 /// for one key at position 0 that is `01` against `01 00`, and for a rowid
 /// table `00` either way, so the old record is the new one with its version
 /// byte turned down and, for the keyed table, its last byte dropped.
-TEST(readsTableRecordsInTheOldKeyFormat)
+TEST(refusesACatalogFromAnotherFormat)
 {
     tst::Scratch s("ddl");
-    Database db = s.open();
-    db.exec("CREATE TABLE keyed (id INTEGER PRIMARY KEY, name TEXT)");
-    db.exec("CREATE TABLE plain (name TEXT)");
-    db.exec("INSERT INTO keyed VALUES (4, 'four')");
-    db.exec("INSERT INTO plain VALUES ('p')");
-
-    db.env().write([](nosql::Txn& t) {
-        nosql::Db meta = t.db(nosql::Slice("sql_catalog", 11));
-        for (const char* name : {"tkeyed", "tplain"}) {
-            const nosql::Slice key(name, 6);
+    {
+        Database db = s.open();
+        db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)");
+        // Forge a record in a format this build does not know.
+        db.env().write([](nosql::Txn& t) {
+            nosql::Db meta = t.db(nosql::Slice("sql_catalog", 11));
+            const nosql::Slice key("ot", 2);
             std::string record(meta.get(key)->view());
-            CHECK_EQ(int(record[0]), 2);
-            record[0] = 1;
-            if (name[1] == 'k') {
-                CHECK_EQ(record.substr(record.size() - 2), std::string("\x01\x00", 2));
-                record.pop_back();
-            } else {
-                CHECK_EQ(record.back(), '\0');
-            }
+            CHECK_EQ(int(record[0]), 1);
+            record[0] = 9;
             meta.put(key, nosql::Slice(record.data(), record.size()));
-        }
-    });
+        });
+    }
+    Database db = s.open();
+    CHECK_THROWS(db.exec("SELECT * FROM t"), ErrorCode::Internal);
+}
 
-    CHECK_EQ(db.table("keyed").primaryKey, std::vector<int>{0});
-    CHECK(db.table("keyed").columns[0].primaryKey);
-    CHECK(db.table("plain").primaryKey.empty());
-    CHECK_EQ(tst::only(db.exec("SELECT name FROM keyed WHERE id = 4")), std::string("four"));
-    CHECK_EQ(tst::only(db.exec("SELECT rowid FROM plain")), std::string("1"));
-    // The next write of the schema brings the record forward again.
-    db.exec("INSERT INTO keyed (name) VALUES ('five')");
-    CHECK_EQ(db.exec("INSERT INTO plain VALUES ('q')").changes(), std::uint64_t(1));
-    CHECK_EQ(tst::only(db.exec("SELECT id FROM keyed WHERE name = 'five'")), std::string("5"));
+TEST(refusesALibsql01Catalog)
+{
+    tst::Scratch s("ddl");
+    {
+        Database db = s.open();
+        db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+        // 0.1 kept one 't' record per table in the same sub-database.
+        db.env().write([](nosql::Txn& t) {
+            nosql::Db meta = t.db(nosql::Slice("sql_catalog", 11));
+            meta.put(nosql::Slice("tlegacy", 7), nosql::Slice("\x02", 1));
+        });
+    }
+    Database db = s.open();
+    CHECK_THROWS(db.exec("SELECT 1 FROM t"), ErrorCode::Internal);
 }
 
 TEST(createsAndDropsIndexes)
@@ -160,8 +159,9 @@ TEST(rejectsMalformedSchemas)
     CHECK_THROWS(db.exec("CREATE TABLE t (a INTEGER, a TEXT)"), ErrorCode::InvalidArgument);
     CHECK_THROWS(db.exec("CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT PRIMARY KEY)"),
                  ErrorCode::InvalidArgument);
-    CHECK_THROWS(db.exec("CREATE TABLE t (rowid INTEGER)"), ErrorCode::InvalidArgument);
-    CHECK_THROWS(db.exec("CREATE TABLE t (a WIDGET)"), ErrorCode::Unsupported);
+    // SQLite accepts any type name in an ordinary table, but not in a STRICT one.
+    CHECK_THROWS(db.exec("CREATE TABLE t (a WIDGET) STRICT"), ErrorCode::InvalidArgument);
+    CHECK_THROWS(db.exec("CREATE TABLE t (a INTEGER) WITHOUT ROWID"), ErrorCode::InvalidArgument);
     CHECK_THROWS(db.exec("CREATE TABLE t (a INTEGER, PRIMARY KEY (missing))"),
                  ErrorCode::NoSuchColumn);
     CHECK_THROWS(db.exec("CREATE TABLE t"), ErrorCode::SyntaxError);

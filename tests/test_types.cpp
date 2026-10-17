@@ -60,8 +60,10 @@ TEST(storesEveryTypeAndReadsItBack)
 {
     tst::Scratch s("types");
     Database db = s.open();
+    // STRICT keeps each column to its storage class; DATETIME is libsql's
+    // sixth class and only exists as such in STRICT tables (ledger C7).
     db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, r REAL, s TEXT, "
-            "d DATETIME, b BLOB)");
+            "d DATETIME, b BLOB) STRICT");
     db.exec("INSERT INTO t VALUES (1, -5, 2.5, 'hello', '2024-03-01 12:00:00', x'00ff10')");
     db.exec("INSERT INTO t VALUES (2, NULL, NULL, NULL, NULL, NULL)");
 
@@ -83,7 +85,7 @@ TEST(textIsCoercedIntoTheDeclaredType)
 {
     tst::Scratch s("types");
     Database db = s.open();
-    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, d DATETIME)");
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, d DATETIME) STRICT");
     db.exec("INSERT INTO t VALUES (1, '17', '2020-02-29 01:02:03')");
 
     Result r = db.exec("SELECT n, d FROM t");
@@ -92,7 +94,15 @@ TEST(textIsCoercedIntoTheDeclaredType)
     CHECK_EQ(r[0]["d"].type(), Type::Datetime);
     CHECK_EQ(r[0]["d"].toText(), std::string("2020-02-29 01:02:03"));
 
-    CHECK_THROWS(db.exec("INSERT INTO t VALUES (2, 'nope', NULL)"), ErrorCode::TypeMismatch);
+    // A STRICT column refuses what it cannot hold losslessly, as SQLite does.
+    CHECK_THROWS(db.exec("INSERT INTO t VALUES (2, 'nope', NULL)"), ErrorCode::ConstraintViolation);
+
+    // An ordinary table follows SQLite's flexible typing instead (ledger C7):
+    // affinity converts what it can and keeps the rest.
+    db.exec("CREATE TABLE f (n INTEGER, d DATETIME)");
+    db.exec("INSERT INTO f VALUES ('17', 'nope')");
+    r = db.exec("SELECT typeof(n), typeof(d) FROM f");
+    CHECK_EQ(tst::flatten(r), std::string("integer|text"));
 }
 
 TEST(blobsSurviveEmbeddedZeros)

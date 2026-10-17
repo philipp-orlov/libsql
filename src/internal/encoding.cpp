@@ -6,18 +6,22 @@
 #include "internal/encoding.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace sql::internal {
 
 namespace {
 
-/// Key tags, ordered to match sql::compare's ranking of the storage classes.
+/// Key tags, ordered to match the cross-class order of compareValues. One tag
+/// serves integers and reals alike, so that 1 and 1.0 encode identically, as
+/// SQLite says they are equal. A descending component is the bitwise
+/// complement of its ascending form, so its tag lies in 0xf9..0xfe.
 enum : unsigned char
 {
     kKeyNull = 0x01,
-    kKeyInteger = 0x02,
-    kKeyReal = 0x03,
+    kKeyNumber = 0x02,
     kKeyDatetime = 0x04,
     kKeyText = 0x05,
     kKeyBlob = 0x06,
@@ -30,8 +34,12 @@ enum : unsigned char
 
 void appendBigEndian(std::string& out, std::uint64_t v)
 {
-    for (int shift = 56; shift >= 0; shift -= 8)
-        out.push_back(char(std::uint8_t(v >> shift)));
+    char b[8];
+    for (int i = 7; i >= 0; --i) {
+        b[i] = char(std::uint8_t(v));
+        v >>= 8;
+    }
+    out.append(b, 8);
 }
 
 std::uint64_t readBigEndian(std::string_view& in)
@@ -50,6 +58,8 @@ constexpr std::uint64_t kSignBit = 0x8000000000000000ull;
 
 std::uint64_t sortableFromDouble(double d) noexcept
 {
+    if (d == 0.0)
+        d = 0.0;  // -0.0 and +0.0 are the same key
     std::uint64_t bits = 0;
     std::memcpy(&bits, &d, sizeof bits);
     // Negatives run backwards in IEEE-754 order, so invert them whole.
@@ -64,31 +74,90 @@ double doubleFromSortable(std::uint64_t bits) noexcept
     return d;
 }
 
+/// An integer as (d, tail): d the largest double <= i, tail = i - d, which is
+/// below 2048 because doubles near 2^63 are 2048 apart. A real is (r, 0).
+/// Comparing (d, tail) pairs orders integers and reals together exactly.
+void appendNumber(std::string& out, std::int64_t i)
+{
+    double d = double(i);
+    if (compareIntReal(i, d) < 0)
+        d = std::nextafter(d, -1e300);
+    const std::uint64_t tail = std::uint64_t(i) - std::uint64_t(std::int64_t(d));
+    out.push_back(char(kKeyNumber));
+    appendBigEndian(out, sortableFromDouble(d));
+    out.push_back(char(std::uint8_t(tail >> 8)));
+    out.push_back(char(std::uint8_t(tail)));
+}
+
+void appendNumber(std::string& out, double r)
+{
+    out.push_back(char(kKeyNumber));
+    appendBigEndian(out, sortableFromDouble(r));
+    out.push_back('\0');
+    out.push_back('\0');
+}
+
 /// 0x00 is the terminator, so a literal zero byte is escaped as 00 ff and the
 /// run ends with 00 00. Order survives because ff outranks every 00-prefixed
 /// continuation and 00 is below every ordinary byte.
 void appendBytes(std::string& out, const char* data, std::size_t size)
 {
+    std::size_t run = 0;
     for (std::size_t i = 0; i < size; ++i) {
-        out.push_back(data[i]);
-        if (data[i] == '\0')
+        if (data[i] == '\0') {
+            out.append(data + run, i + 1 - run);
             out.push_back('\xff');
+            run = i + 1;
+        }
     }
+    out.append(data + run, size - run);
     out.push_back('\0');
     out.push_back('\0');
+}
+
+void appendText(std::string& out, std::string_view s, Collation c)
+{
+    switch (c) {
+        case Collation::Binary: appendBytes(out, s.data(), s.size()); return;
+        case Collation::RTrim:
+            while (!s.empty() && s.back() == ' ')
+                s.remove_suffix(1);
+            appendBytes(out, s.data(), s.size());
+            return;
+        case Collation::NoCase: {
+            const std::size_t at = out.size();
+            appendBytes(out, s.data(), s.size());
+            for (std::size_t i = at; i < out.size(); ++i)
+                out[i] = foldAscii(out[i]);
+            return;
+        }
+    }
 }
 
 /// Unescapes a terminated run into `out`, which keeps its buffer.
+/// A run with no escaped zero (the usual case) read in place: true and
+/// `run` set, `in` advanced past the terminator.
+bool plainBytes(std::string_view& in, std::string_view& run)
+{
+    const void* z = std::memchr(in.data(), 0, in.size());
+    if (!z)
+        corrupt("unterminated key field");
+    const std::size_t i = std::size_t(static_cast<const char*>(z) - in.data());
+    if (i + 1 >= in.size())
+        corrupt("unterminated key field");
+    if (in[i + 1] != '\0')
+        return false;
+    run = in.substr(0, i);
+    in.remove_prefix(i + 2);
+    return true;
+}
+
 void readBytesInto(std::string_view& in, std::string& out)
 {
     out.clear();
-    // The common case has no escapes: find the terminator and copy once.
-    const std::size_t zero = in.find('\0');
-    if (zero == std::string_view::npos)
-        corrupt("unterminated key field");
-    if (zero + 1 < in.size() && in[zero + 1] == '\0') {
-        out.append(in.data(), zero);
-        in.remove_prefix(zero + 2);
+    std::string_view run;
+    if (plainBytes(in, run)) {
+        out.assign(run.data(), run.size());
         return;
     }
     for (std::size_t i = 0;; ++i) {
@@ -112,27 +181,17 @@ void readBytesInto(std::string_view& in, std::string& out)
     }
 }
 
-std::string readBytes(std::string_view& in)
+void skipBytes(std::string_view& in)
 {
-    std::string out;
     for (std::size_t i = 0;; ++i) {
-        if (i >= in.size())
+        const std::size_t z = in.find('\0', i);
+        if (z == std::string_view::npos || z + 1 >= in.size())
             corrupt("unterminated key field");
-        if (in[i] != '\0') {
-            out.push_back(in[i]);
-            continue;
+        if (in[z + 1] == '\0') {
+            in.remove_prefix(z + 2);
+            return;
         }
-        if (i + 1 >= in.size())
-            corrupt("unterminated key field");
-        if (in[i + 1] == '\xff') {
-            out.push_back('\0');
-            ++i;
-            continue;
-        }
-        if (in[i + 1] != '\0')
-            corrupt("bad escape in key field");
-        in.remove_prefix(i + 2);
-        return out;
+        i = z + 1;
     }
 }
 
@@ -146,38 +205,82 @@ std::int64_t unzigzag(std::uint64_t v) noexcept
     return std::int64_t(v >> 1) ^ -std::int64_t(v & 1);
 }
 
+/// Length of the encoded ascending component at the front of `in`.
+std::size_t componentLength(std::string_view in)
+{
+    if (in.empty())
+        corrupt("empty key");
+    std::string_view rest = in.substr(1);
+    switch (static_cast<unsigned char>(in[0])) {
+        case kKeyNull: return 1;
+        case kKeyNumber:
+            if (in.size() < 11)
+                corrupt("truncated number key");
+            return 11;
+        case kKeyDatetime:
+            if (in.size() < 9)
+                corrupt("truncated datetime key");
+            return 9;
+        case kKeyText:
+        case kKeyBlob: skipBytes(rest); return in.size() - rest.size();
+        default: corrupt("unknown key tag");
+    }
+}
+
+/// The same for a descending (complemented) component.
+std::size_t descComponentLength(std::string_view in)
+{
+    if (in.empty())
+        corrupt("empty key");
+    const unsigned char tag = static_cast<unsigned char>(~static_cast<unsigned char>(in[0]));
+    switch (tag) {
+        case kKeyNull: return 1;
+        case kKeyNumber: return 11;
+        case kKeyDatetime: return 9;
+        case kKeyText:
+        case kKeyBlob:
+            // Complemented terminator is ff ff; complemented escape is ff 00.
+            for (std::size_t i = 1; i + 1 < in.size(); ++i) {
+                if (static_cast<unsigned char>(in[i]) == 0xff) {
+                    if (static_cast<unsigned char>(in[i + 1]) == 0xff)
+                        return i + 2;
+                    ++i;
+                }
+            }
+            corrupt("unterminated key field");
+        default: corrupt("unknown key tag");
+    }
+}
+
 }  // namespace
 
 // ----------------------------------------------------------------- keys ---
 
-void appendKey(std::string& out, const Value& v)
+void appendKey(std::string& out, const Value& v, Collation c, bool desc)
 {
+    const std::size_t at = out.size();
     switch (v.type()) {
         case Type::Null: out.push_back(char(kKeyNull)); break;
-        case Type::Integer:
-            out.push_back(char(kKeyInteger));
-            appendBigEndian(out, std::uint64_t(v.integer()) ^ kSignBit);
-            break;
-        case Type::Real:
-            out.push_back(char(kKeyReal));
-            appendBigEndian(out, sortableFromDouble(v.real()));
-            break;
+        case Type::Integer: appendNumber(out, v.integer()); break;
+        case Type::Real: appendNumber(out, v.real()); break;
         case Type::Datetime:
             out.push_back(char(kKeyDatetime));
             appendBigEndian(out, std::uint64_t(v.datetime().usec) ^ kSignBit);
             break;
-        case Type::Text: {
+        case Type::Text:
             out.push_back(char(kKeyText));
-            const std::string& s = v.text();
-            appendBytes(out, s.data(), s.size());
+            appendText(out, v.text(), c);
             break;
-        }
         case Type::Blob: {
             out.push_back(char(kKeyBlob));
             const Blob& b = v.blob();
             appendBytes(out, reinterpret_cast<const char*>(b.data()), b.size());
             break;
         }
+    }
+    if (desc) {
+        for (std::size_t i = at; i < out.size(); ++i)
+            out[i] = char(~static_cast<unsigned char>(out[i]));
     }
 }
 
@@ -196,25 +299,14 @@ std::string encodeKey(const std::vector<Value>& values)
     return out;
 }
 
-Value decodeKey(std::string_view& in)
+void appendRowidKey(std::string& out, std::int64_t rowid)
 {
-    if (in.empty())
-        corrupt("empty key");
-    const auto tag = static_cast<unsigned char>(in[0]);
-    in.remove_prefix(1);
-    switch (tag) {
-        case kKeyNull: return Value();
-        case kKeyInteger: return Value(std::int64_t(readBigEndian(in) ^ kSignBit));
-        case kKeyReal: return Value(doubleFromSortable(readBigEndian(in)));
-        case kKeyDatetime:
-            return Value(Datetime{std::int64_t(readBigEndian(in) ^ kSignBit)});
-        case kKeyText: return Value(readBytes(in));
-        case kKeyBlob: {
-            const std::string bytes = readBytes(in);
-            return Value::blob(bytes.data(), bytes.size());
-        }
-        default: corrupt("unknown key tag");
-    }
+    appendBigEndian(out, std::uint64_t(rowid) ^ kSignBit);
+}
+
+void throwTruncatedKey()
+{
+    corrupt("truncated fixed-width key field");
 }
 
 void decodeKeyInto(std::string_view& in, Value& out)
@@ -222,21 +314,58 @@ void decodeKeyInto(std::string_view& in, Value& out)
     if (in.empty())
         corrupt("empty key");
     const auto tag = static_cast<unsigned char>(in[0]);
+    if (tag >= 0xf9) {
+        // Descending: undo the complement on a copy, then decode that.
+        const std::size_t n = descComponentLength(in);
+        thread_local std::string flipped;
+        flipped.assign(in.data(), n);
+        for (char& ch : flipped)
+            ch = char(~static_cast<unsigned char>(ch));
+        std::string_view view = flipped;
+        in.remove_prefix(n);
+        decodeKeyInto(view, out);
+        return;
+    }
     in.remove_prefix(1);
     switch (tag) {
         case kKeyNull: out.setNull(); return;
-        case kKeyInteger: out.setInteger(std::int64_t(readBigEndian(in) ^ kSignBit)); return;
-        case kKeyReal: out.setReal(doubleFromSortable(readBigEndian(in))); return;
+        case kKeyNumber: {
+            const double d = doubleFromSortable(readBigEndian(in));
+            if (in.size() < 2)
+                corrupt("truncated number key");
+            const unsigned tail = (unsigned(std::uint8_t(in[0])) << 8) | std::uint8_t(in[1]);
+            in.remove_prefix(2);
+            std::int64_t i = 0;
+            if (tail != 0)
+                out.setInteger(std::int64_t(d) + std::int64_t(tail));
+            else if (realIsExactInt(d, i))
+                out.setInteger(i);
+            else if (d == -9223372036854775808.0)
+                out.setInteger(std::numeric_limits<std::int64_t>::min());
+            else
+                out.setReal(d);
+            return;
+        }
         case kKeyDatetime:
             out.setDatetime(Datetime{std::int64_t(readBigEndian(in) ^ kSignBit)});
             return;
         case kKeyText: {
+            std::string_view run;
+            if (plainBytes(in, run)) {
+                out.setText(run);
+                return;
+            }
             thread_local std::string buffer;
             readBytesInto(in, buffer);
             out.setText(buffer);
             return;
         }
         case kKeyBlob: {
+            std::string_view run;
+            if (plainBytes(in, run)) {
+                out.setBlob(run.data(), run.size());
+                return;
+            }
             thread_local std::string buffer;
             readBytesInto(in, buffer);
             out.setBlob(buffer.data(), buffer.size());
@@ -246,10 +375,22 @@ void decodeKeyInto(std::string_view& in, Value& out)
     }
 }
 
+Value decodeKey(std::string_view& in)
+{
+    Value v;
+    decodeKeyInto(in, v);
+    return v;
+}
+
 void skipKeys(std::string_view& in, std::size_t count)
 {
-    for (std::size_t i = 0; i < count; ++i)
-        (void)decodeKey(in);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (in.empty())
+            corrupt("empty key");
+        const std::size_t n = static_cast<unsigned char>(in[0]) >= 0xf9 ? descComponentLength(in)
+                                                                          : componentLength(in);
+        in.remove_prefix(n);
+    }
 }
 
 void successorInto(std::string& out, std::string_view prefix)
@@ -417,7 +558,7 @@ void encodeRowInto(std::string& out, const Value* values, std::size_t count)
         putValue(out, values[i]);
 }
 
-void decodeRowInto(std::string_view in, Value* out, std::size_t width)
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width)
 {
     const std::uint64_t count = getVarint(in);
     if (count > in.size() + 1)
@@ -427,6 +568,66 @@ void decodeRowInto(std::string_view in, Value* out, std::size_t width)
         getValueInto(in, out[i]);
     for (std::size_t i = have; i < width; ++i)
         out[i].setNull();
+    return have;
+}
+
+namespace {
+
+void skipValue(std::string_view& in)
+{
+    if (in.empty())
+        corrupt("truncated row");
+    const auto tag = static_cast<unsigned char>(in.front());
+    in.remove_prefix(1);
+    switch (Type(tag)) {
+        case Type::Null: return;
+        case Type::Integer:
+        case Type::Datetime:
+            while (!in.empty() && (static_cast<unsigned char>(in.front()) & 0x80))
+                in.remove_prefix(1);
+            if (in.empty())
+                corrupt("truncated varint");
+            in.remove_prefix(1);
+            return;
+        case Type::Real:
+            if (in.size() < sizeof(double))
+                corrupt("truncated real");
+            in.remove_prefix(sizeof(double));
+            return;
+        case Type::Text:
+        case Type::Blob: {
+            const std::uint64_t n = getVarint(in);
+            if (n > in.size())
+                corrupt("truncated string");
+            in.remove_prefix(std::size_t(n));
+            return;
+        }
+    }
+    corrupt("unknown value tag");
+}
+
+}  // namespace
+
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, const std::uint8_t* used)
+{
+    const std::uint64_t count = getVarint(in);
+    if (count > in.size() + 1)
+        corrupt("implausible column count");
+    const std::size_t have = std::size_t(std::min<std::uint64_t>(count, width));
+    for (std::size_t i = 0; i < have; ++i) {
+        if (used[i])
+            getValueInto(in, out[i]);
+        else
+            skipValue(in);
+    }
+    for (std::size_t i = have; i < width; ++i)
+        out[i].setNull();
+    return have;
+}
+
+std::size_t rowColumnCount(std::string_view in)
+{
+    return std::size_t(getVarint(in));
 }
 
 std::vector<Value> decodeRow(std::string_view in)

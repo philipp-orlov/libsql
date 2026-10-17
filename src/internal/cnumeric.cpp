@@ -73,4 +73,24 @@ int formatShortest(char* buf, std::size_t size, double v) noexcept
     return n;
 }
 
+int formatPrecision(char* buf, std::size_t size, double v, int precision) noexcept
+{
+#ifdef _WIN32
+    return _snprintf_l(buf, size, "%.*g", cLocale(), precision, v);
+#else
+    const ScopedCLocale scope;
+    return std::snprintf(buf, size, "%.*g", precision, v);
+#endif
+}
+
+int formatDouble(char* buf, std::size_t size, const char* spec, double v) noexcept
+{
+#ifdef _WIN32
+    return _snprintf_l(buf, size, spec, cLocale(), v);
+#else
+    const ScopedCLocale scope;
+    return std::snprintf(buf, size, spec, v);
+#endif
+}
+
 }  // namespace sql::internal

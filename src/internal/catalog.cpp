@@ -1,251 +1,211 @@
 // Copyright (c) 2026 Philipp Orlov
 // SPDX-License-Identifier: Apache-2.0
 
-// Catalog persistence. Everything lives in one sub-database keyed by a one
-// byte record kind, so listing tables is a prefix scan and nothing else has to
-// know the layout. A version record changes with every DDL statement, which is
-// what lets a transaction reuse the last decoded schema after one lookup.
-
 #include "internal/catalog.hpp"
 
 #include <algorithm>
+#include <limits>
 
 #include "internal/encoding.hpp"
-#include "internal/lexer.hpp"
+#include "internal/parser.hpp"
+#include "internal/util.hpp"
 
 namespace sql::internal {
 
 namespace {
 
 constexpr const char* kMetaDb = "sql_catalog";
-constexpr char kTableRecord = 't';
-constexpr char kIndexRecord = 'i';
-constexpr char kRowidRecord = 'r';
-constexpr char kVersionRecord = 'v';
-/// Table records: version 1 carried one primary key position, version 2 a
-/// list of them. Both are still read; only version 2 is written.
-constexpr std::uint64_t kTableFormatV1 = 1;
-constexpr std::uint64_t kTableFormat = 2;
-constexpr std::uint64_t kIndexFormat = 1;
+constexpr char kObject = 'o';
+constexpr char kTrigger = 'g';
+constexpr char kSequence = 'a';
+constexpr char kPragma = 'p';
+constexpr char kVersion = 'v';
+constexpr char kNextId = 'n';
+constexpr std::uint64_t kRecordFormat = 1;
 
-std::string metaKey(char kind, std::string_view name)
+std::string objectKey(char prefix, std::string_view name)
 {
-    std::string k(1, kind);
+    std::string k(1, prefix);
     k += toLower(name);
     return k;
 }
 
-std::string encodeTable(const Table& t)
+std::string idKey(char prefix, std::uint64_t id)
 {
-    std::string out;
-    putVarint(out, kTableFormat);
-    putString(out, t.name);
-    putVarint(out, t.columns.size());
-    for (const ColumnInfo& c : t.columns) {
-        putString(out, c.name);
-        out.push_back(char(std::uint8_t(c.type)));
-        out.push_back(char(std::uint8_t((c.notNull ? 1 : 0) | (c.unique ? 2 : 0) |
-                                        (c.hasDefault ? 4 : 0))));
-        if (c.hasDefault)
-            putValue(out, c.defaultValue);
-    }
-    putVarint(out, t.primaryKey.size());
-    for (const int c : t.primaryKey)
-        putVarint(out, std::uint64_t(c));
-    return out;
+    std::string k(1, prefix);
+    putVarint(k, id);
+    return k;
 }
 
-Table decodeTable(std::string_view in)
+std::string tableDb(std::uint64_t id)
 {
-    const std::uint64_t version = getVarint(in);
-    if (version != kTableFormatV1 && version != kTableFormat)
+    return "t#" + std::to_string(id);
+}
+
+std::string indexDb(std::uint64_t id)
+{
+    return "i#" + std::to_string(id);
+}
+
+struct Record
+{
+    char kind = 0;
+    std::string name, table, sql;
+    std::uint64_t id = 0;
+};
+
+Record decodeRecord(std::string_view in)
+{
+    if (getVarint(in) != kRecordFormat)
         throw Error(ErrorCode::Internal, "catalog written by a different libsql version");
-    Table t;
-    t.name = getString(in);
-    const std::uint64_t count = getVarint(in);
-    for (std::uint64_t i = 0; i < count; ++i) {
-        ColumnInfo c;
-        c.name = getString(in);
-        if (in.size() < 2)
-            throw Error(ErrorCode::Internal, "truncated catalog record");
-        c.type = Type(static_cast<unsigned char>(in[0]));
-        const auto flags = static_cast<unsigned char>(in[1]);
-        in.remove_prefix(2);
-        c.notNull = (flags & 1) != 0;
-        c.unique = (flags & 2) != 0;
-        c.hasDefault = (flags & 4) != 0;
-        if (c.hasDefault)
-            c.defaultValue = getValue(in);
-        t.columns.push_back(std::move(c));
-    }
-    if (version == kTableFormatV1) {
-        const int single = int(getVarint(in)) - 1;
-        if (single >= 0)
-            t.primaryKey.push_back(single);
-    } else {
-        const std::uint64_t keys = getVarint(in);
-        for (std::uint64_t i = 0; i < keys; ++i)
-            t.primaryKey.push_back(int(getVarint(in)));
-    }
-    for (const int c : t.primaryKey) {
-        if (c < 0 || std::size_t(c) >= t.columns.size())
-            throw Error(ErrorCode::Internal, "catalog record names a key column out of range");
-        t.columns[std::size_t(c)].primaryKey = true;
-    }
-    return t;
-}
-
-std::string encodeIndex(const Index& ix)
-{
-    std::string out;
-    putVarint(out, kIndexFormat);
-    putString(out, ix.name);
-    putString(out, ix.table);
-    putVarint(out, ix.columns.size());
-    for (const int c : ix.columns)
-        putVarint(out, std::uint64_t(c));
-    out.push_back(ix.unique ? 1 : 0);
-    return out;
-}
-
-Index decodeIndex(std::string_view in)
-{
-    if (getVarint(in) != kIndexFormat)
-        throw Error(ErrorCode::Internal, "catalog written by a different libsql version");
-    Index ix;
-    ix.name = getString(in);
-    ix.table = getString(in);
-    const std::uint64_t count = getVarint(in);
-    for (std::uint64_t i = 0; i < count; ++i)
-        ix.columns.push_back(int(getVarint(in)));
+    Record r;
     if (in.empty())
-        throw Error(ErrorCode::Internal, "truncated catalog record");
-    ix.unique = in[0] != 0;
-    return ix;
+        throw Error(ErrorCode::Internal, "malformed catalog record");
+    r.kind = in[0];
+    in.remove_prefix(1);
+    r.name = getString(in);
+    r.table = getString(in);
+    r.id = getVarint(in);
+    r.sql = getString(in);
+    return r;
 }
 
-/// Case-insensitive ordering of table names, which is how Schema::tables is
-/// kept so lookups can bisect.
-bool lessNoCase(std::string_view a, std::string_view b) noexcept
+std::int64_t readInt(const nosql::Db& db, std::string_view key, std::int64_t fallback)
 {
-    const std::size_t n = std::min(a.size(), b.size());
-    for (std::size_t i = 0; i < n; ++i) {
-        const int x = std::tolower(static_cast<unsigned char>(a[i]));
-        const int y = std::tolower(static_cast<unsigned char>(b[i]));
-        if (x != y)
-            return x < y;
-    }
-    return a.size() < b.size();
-}
-
-/// Sorts the tables and renumbers every table and index.
-void settle(Schema& s)
-{
-    std::sort(s.tables.begin(), s.tables.end(),
-              [](const Table& a, const Table& b) { return lessNoCase(a.name, b.name); });
-    unsigned nextIndex = 0;
-    for (std::size_t i = 0; i < s.tables.size(); ++i) {
-        Table& t = s.tables[i];
-        t.settle(unsigned(i));
-        for (Index& ix : t.indexes) {
-            ix.entriesDb = "idx:" + toLower(ix.name);
-            ix.id = nextIndex++;
-        }
-    }
-    s.indexCount = nextIndex;
-}
-
-std::shared_ptr<const Schema> decodeSchema(nosql::Db& db, std::uint64_t version)
-{
-    auto s = std::make_shared<Schema>();
-    s->version = version;
-    for (auto [key, value] : db.prefix(nosql::Slice(&kTableRecord, 1))) {
-        (void)key;
-        s->tables.push_back(decodeTable(viewOf(value)));
-    }
-    for (auto [key, value] : db.prefix(nosql::Slice(&kIndexRecord, 1))) {
-        (void)key;
-        Index ix = decodeIndex(viewOf(value));
-        Table* owner = nullptr;
-        for (Table& t : s->tables) {
-            if (equalsNoCase(t.name, ix.table)) {
-                owner = &t;
-                break;
-            }
-        }
-        if (!owner)
-            throw Error(ErrorCode::Internal, "index '" + ix.name + "' has no table");
-        owner->indexes.push_back(std::move(ix));
-    }
-    settle(*s);
-    return s;
-}
-
-std::uint64_t readVersion(nosql::Db& db)
-{
-    if (const auto raw = db.get(nosql::Slice(&kVersionRecord, 1))) {
+    if (const auto raw = db.get(sliceOf(key))) {
         std::string_view in = viewOf(*raw);
-        return getVarint(in);
+        const std::uint64_t v = getVarint(in);
+        return std::int64_t((v >> 1) ^ -(v & 1));
     }
-    return 0;
+    return fallback;
+}
+
+void writeInt(const nosql::Db& db, std::string_view key, std::int64_t v)
+{
+    std::string out;
+    putVarint(out, (std::uint64_t(v) << 1) ^ std::uint64_t(v >> 63));
+    db.put(sliceOf(key), sliceOf(out));
+}
+
+Trigger buildTrigger(const Record& r)
+{
+    const StatementNode node = parseOne(r.sql);
+    const auto& s = std::get<CreateTriggerStmt>(node.body);
+    Trigger t;
+    t.name = r.name;
+    t.table = s.table;
+    t.sql = r.sql;
+    t.time = s.time;
+    t.event = s.event;
+    t.updateOf = s.updateOf;
+    t.id = r.id;
+    return t;
 }
 
 }  // namespace
 
-// ------------------------------------------------------------------ table --
-
-int Table::find(std::string_view column) const noexcept
+std::shared_ptr<const Schema> loadSchema(nosql::Txn& txn)
 {
-    for (std::size_t i = 0; i < columns.size(); ++i) {
-        if (equalsNoCase(columns[i].name, column))
-            return int(i);
-    }
-    if (hasRowid() && equalsNoCase(column, "rowid"))
-        return int(columns.size());
-    return -1;
-}
-
-void Table::settle(unsigned tableId)
-{
-    id = tableId;
-    dataDb = "tbl:" + toLower(name);
-    rowidKey = metaKey(kRowidRecord, name);
-    if (!primaryKey.empty())
-        keySlots_ = primaryKey;
-    else
-        keySlots_.assign(1, int(columns.size()));
-}
-
-// ----------------------------------------------------------------- schema --
-
-const Table* Schema::find(std::string_view name) const noexcept
-{
-    const auto it = std::lower_bound(tables.begin(), tables.end(), name,
-                                     [](const Table& t, std::string_view n) {
-                                         return lessNoCase(t.name, n);
-                                     });
-    if (it != tables.end() && equalsNoCase(it->name, name))
-        return &*it;
-    return nullptr;
-}
-
-const Index* Schema::findIndex(std::string_view name) const noexcept
-{
-    for (const Table& t : tables) {
-        for (const Index& ix : t.indexes) {
-            if (equalsNoCase(ix.name, name))
-                return &ix;
+    auto s = std::make_shared<Schema>();
+    if (!txn.hasDb(nosql::Slice(kMetaDb)))
+        return s;
+    nosql::Db db = txn.db(nosql::Slice(kMetaDb));
+    // libsql 0.1 kept 't', 'i' and 'r' records here; this format never does.
+    for (const char legacy : {'t', 'i', 'r'}) {
+        for (auto entry : db.prefix(nosql::Slice(&legacy, 1))) {
+            (void)entry;
+            throw Error(ErrorCode::Internal,
+                        "this store was written by libsql 0.1, whose catalog format is not supported");
         }
     }
-    return nullptr;
+    s->version = std::uint64_t(readInt(db, std::string_view(&kVersion, 1), 0));
+    s->userVersion = readInt(db, std::string(1, kPragma) + "user_version", 0);
+    s->applicationId = readInt(db, std::string(1, kPragma) + "application_id", 0);
+
+    std::vector<Record> tables, indexes, views;
+    for (auto [key, value] : db.prefix(nosql::Slice(&kObject, 1))) {
+        (void)key;
+        Record r = decodeRecord(viewOf(value));
+        if (r.kind == 't')
+            tables.push_back(std::move(r));
+        else if (r.kind == 'i')
+            indexes.push_back(std::move(r));
+        else
+            views.push_back(std::move(r));
+    }
+    std::vector<std::pair<std::string, StatementNode>> defs;
+    for (Record& r : tables) {
+        StatementNode node = parseOne(r.sql);
+        auto t = std::make_unique<Table>(buildTable(std::get<CreateTableStmt>(node.body), r.sql));
+        t->name = r.name;
+        t->id = r.id;
+        t->dataDb = tableDb(r.id);
+        s->tables.push_back(std::move(t));
+        defs.emplace_back(r.name, std::move(node));
+    }
+    for (Record& r : indexes) {
+        const Table* t = s->findTable(r.table);
+        if (!t)
+            throw Error(ErrorCode::Internal, "index '" + r.name + "' has no table");
+        Index ix;
+        if (r.sql.empty()) {
+            for (auto& d : defs) {
+                if (!equalsNoCase(d.first, r.table))
+                    continue;
+                for (Index& cand : implicitIndexes(*t, std::get<CreateTableStmt>(d.second.body))) {
+                    if (equalsNoCase(cand.name, r.name))
+                        ix = std::move(cand);
+                }
+            }
+            if (ix.name.empty())
+                throw Error(ErrorCode::Internal, "implicit index '" + r.name + "' not derivable");
+        } else {
+            const StatementNode node = parseOne(r.sql);
+            ix = buildIndex(std::get<CreateIndexStmt>(node.body), *t, r.sql);
+        }
+        ix.name = r.name;
+        ix.id = r.id;
+        ix.entriesDb = indexDb(r.id);
+        s->indexes.push_back(std::make_unique<Index>(std::move(ix)));
+    }
+    for (Record& r : views) {
+        auto v = std::make_unique<View>();
+        v->name = r.name;
+        v->sql = r.sql;
+        v->id = r.id;
+        s->views.push_back(std::move(v));
+    }
+    for (auto [key, value] : db.prefix(nosql::Slice(&kTrigger, 1))) {
+        (void)key;
+        s->triggers.push_back(std::make_unique<Trigger>(buildTrigger(decodeRecord(viewOf(value)))));
+    }
+    std::sort(s->triggers.begin(), s->triggers.end(),
+              [](const auto& a, const auto& b) { return a->id < b->id; });
+    std::sort(s->indexes.begin(), s->indexes.end(),
+              [](const auto& a, const auto& b) { return a->id < b->id; });
+    s->settle();
+    return s;
 }
 
-// ---------------------------------------------------------------- catalog --
-
-Catalog::Catalog(nosql::Txn& txn, SchemaCache& cache) : txn_(&txn), cache_(&cache)
+void Catalog::close()
 {
-    // The committed snapshot this transaction reads: a writer builds on the
-    // commit before the one it will become.
+    levels_.clear();
+    schema_.reset();
+    edited_.reset();
+    meta_ = Handle();
+    for (Handle& h : tableHandles_)
+        h = Handle();
+    for (Handle& h : indexHandles_)
+        h = Handle();
+    rowids_.clear();
+}
+
+void Catalog::open(nosql::Txn& txn, SchemaCache& cache)
+{
+    close();
+    cache_ = &cache;
+    ++serial_;
+    levels_.push_back(Level{&txn, nullptr, nullptr});
     const std::uint64_t snapshot = txn.isReadOnly() ? txn.id() : txn.id() - 1;
     bool seen;
     {
@@ -256,28 +216,23 @@ Catalog::Catalog(nosql::Txn& txn, SchemaCache& cache) : txn_(&txn), cache_(&cach
             return;
     }
     if (!seen) {
-        if (!txn.hasDb(kMetaDb)) {
-            // Nothing has ever been created: an empty schema, version zero.
-            if (!schema_)
+        if (!txn.hasDb(nosql::Slice(kMetaDb))) {
+            if (!schema_ || schema_->version != 0)
                 schema_ = std::make_shared<Schema>();
             return;
         }
         std::lock_guard<std::mutex> lk(cache.mtx);
         cache.catalogSeen = true;
     }
-    // One point lookup decides whether the cached snapshot is the one this
-    // transaction sees; a snapshot older than the cache decodes privately
-    // rather than replacing what newer transactions are using.
-    meta_.db = txn.db(kMetaDb);
-    meta_.open = true;
-    const std::uint64_t version = readVersion(meta_.db);
+    const std::uint64_t version =
+        std::uint64_t(readInt(meta(), std::string_view(&kVersion, 1), 0));
     if (schema_ && schema_->version == version) {
         std::lock_guard<std::mutex> lk(cache.mtx);
         if (cache.schema == schema_ && cache.validAtTxn < snapshot)
             cache.validAtTxn = snapshot;
         return;
     }
-    schema_ = decodeSchema(meta_.db, version);
+    schema_ = loadSchema(txn);
     std::lock_guard<std::mutex> lk(cache.mtx);
     if (!cache.schema || cache.schema->version < version) {
         cache.schema = schema_;
@@ -285,226 +240,397 @@ Catalog::Catalog(nosql::Txn& txn, SchemaCache& cache) : txn_(&txn), cache_(&cach
     }
 }
 
-const nosql::Db& Catalog::meta(bool create) const
+bool Catalog::readOnly() const
 {
-    if (!meta_.open) {
-        meta_.db = txn_->db(kMetaDb, create ? nosql::DbFlags::Create : nosql::DbFlags::None);
-        meta_.open = true;
+    return levels_.front().txn->isReadOnly();
+}
+
+const nosql::Db& Catalog::meta(bool create)
+{
+    if (meta_.serial != serial_) {
+        meta_.db = txn().db(nosql::Slice(kMetaDb), create ? nosql::DbFlags::Create
+                                                          : nosql::DbFlags::None);
+        meta_.serial = serial_;
+    } else if (create && !meta_.db.valid()) {
+        meta_.db = txn().db(nosql::Slice(kMetaDb), nosql::DbFlags::Create);
     }
     return meta_.db;
-}
-
-const Table& Catalog::get(std::string_view name) const
-{
-    if (const Table* t = find(name))
-        return *t;
-    throw Error(ErrorCode::NoSuchTable, "no such table: " + std::string(name));
-}
-
-std::vector<std::string> Catalog::tableNames() const
-{
-    std::vector<std::string> out;
-    out.reserve(schema_->tables.size());
-    for (const Table& t : schema_->tables)
-        out.push_back(t.name);
-    return out;
-}
-
-std::vector<const Index*> Catalog::allIndexes() const
-{
-    std::vector<const Index*> out;
-    for (const Table& t : schema_->tables) {
-        for (const Index& ix : t.indexes)
-            out.push_back(&ix);
-    }
-    return out;
 }
 
 Schema& Catalog::edit()
 {
     if (!edited_) {
-        edited_ = std::make_shared<Schema>(*schema_);
+        edited_ = schema_->clone();
         ++edited_->version;
         schema_ = edited_;
+        meta(true);
         storeVersion();
     }
+    edited_->stamp = nextSchemaStamp();
+    resetCaches();
     return *edited_;
 }
 
 void Catalog::storeVersion()
 {
-    std::string out;
-    putVarint(out, edited_->version);
-    meta(true).put(nosql::Slice(&kVersionRecord, 1), out);
+    writeInt(meta(true), std::string_view(&kVersion, 1), std::int64_t(edited_->version));
 }
 
-void Catalog::resetHandles()
+void Catalog::resetCaches()
 {
     tableHandles_.clear();
     indexHandles_.clear();
     rowids_.clear();
 }
 
-void Catalog::storeTable(const Table& table)
+std::uint64_t Catalog::newId()
 {
-    meta(true).put(metaKey(kTableRecord, table.name), encodeTable(table));
-}
-
-void Catalog::addTable(Table table)
-{
-    flush();
-    Schema& s = edit();
-    storeTable(table);
-    txn_->db("tbl:" + toLower(table.name), nosql::DbFlags::Create);
-    s.tables.push_back(std::move(table));
-    settle(s);
-    resetHandles();
-}
-
-void Catalog::dropTable(const Table& table)
-{
-    flush();
-    const std::string name = table.name;
-    std::vector<std::string> indexNames;
-    for (const Index& ix : table.indexes)
-        indexNames.push_back(ix.name);
-    Schema& s = edit();
     const nosql::Db& db = meta(true);
-    for (const std::string& ix : indexNames) {
-        db.erase(metaKey(kIndexRecord, ix));
-        txn_->dropDb("idx:" + toLower(ix));
-    }
-    db.erase(metaKey(kTableRecord, name));
-    db.erase(metaKey(kRowidRecord, name));
-    txn_->dropDb("tbl:" + toLower(name));
-    s.tables.erase(std::remove_if(s.tables.begin(), s.tables.end(),
-                                  [&](const Table& t) { return equalsNoCase(t.name, name); }),
-                   s.tables.end());
-    settle(s);
-    resetHandles();
+    const std::int64_t id = readInt(db, std::string_view(&kNextId, 1), 1);
+    writeInt(db, std::string_view(&kNextId, 1), id + 1);
+    return std::uint64_t(id);
 }
 
-void Catalog::addIndex(Index index)
+void Catalog::putObject(char prefix, std::string_view name, char kind, std::string_view table,
+                        std::uint64_t id, std::string_view sql)
 {
-    flush();
-    Schema& s = edit();
-    meta(true).put(metaKey(kIndexRecord, index.name), encodeIndex(index));
-    txn_->db("idx:" + toLower(index.name), nosql::DbFlags::Create);
-    for (Table& t : s.tables) {
-        if (equalsNoCase(t.name, index.table)) {
-            t.indexes.push_back(std::move(index));
-            break;
-        }
-    }
-    settle(s);
-    resetHandles();
+    std::string out;
+    putVarint(out, kRecordFormat);
+    out.push_back(kind);
+    putString(out, name);
+    putString(out, table);
+    putVarint(out, id);
+    putString(out, sql);
+    meta(true).put(sliceOf(objectKey(prefix, name)), sliceOf(out));
 }
 
-void Catalog::dropIndex(const Index& index)
+void Catalog::eraseObject(char prefix, std::string_view name)
 {
-    flush();
-    const std::string table = index.table, name = index.name;
+    meta(true).erase(sliceOf(objectKey(prefix, name)));
+}
+
+void Catalog::addTable(Table t)
+{
     Schema& s = edit();
-    meta(true).erase(metaKey(kIndexRecord, name));
-    txn_->dropDb("idx:" + toLower(name));
-    for (Table& t : s.tables) {
-        if (!equalsNoCase(t.name, table))
+    t.dataDb = tableDb(t.id);
+    putObject(kObject, t.name, 't', t.name, t.id, t.sql);
+    txn().db(sliceOf(t.dataDb), nosql::DbFlags::Create);
+    s.tables.push_back(std::make_unique<Table>(std::move(t)));
+    s.settle();
+}
+
+void Catalog::addIndex(Index ix)
+{
+    Schema& s = edit();
+    ix.entriesDb = indexDb(ix.id);
+    putObject(kObject, ix.name, 'i', ix.table, ix.id, ix.sql);
+    txn().db(sliceOf(ix.entriesDb), nosql::DbFlags::Create);
+    s.indexes.push_back(std::make_unique<Index>(std::move(ix)));
+    s.settle();
+}
+
+void Catalog::addView(View v)
+{
+    Schema& s = edit();
+    putObject(kObject, v.name, 'v', v.name, v.id, v.sql);
+    s.views.push_back(std::make_unique<View>(std::move(v)));
+}
+
+void Catalog::addTrigger(Trigger t)
+{
+    Schema& s = edit();
+    putObject(kTrigger, t.name, 'g', t.table, t.id, t.sql);
+    s.triggers.push_back(std::make_unique<Trigger>(std::move(t)));
+}
+
+void Catalog::dropIndex(std::string_view name)
+{
+    Schema& s = edit();
+    for (auto it = s.indexes.begin(); it != s.indexes.end(); ++it) {
+        if (!equalsNoCase((*it)->name, name))
             continue;
-        auto& list = t.indexes;
-        for (auto it = list.begin(); it != list.end(); ++it) {
-            if (equalsNoCase(it->name, name)) {
-                list.erase(it);
-                break;
-            }
-        }
+        eraseObject(kObject, (*it)->name);
+        if (txn().hasDb(sliceOf((*it)->entriesDb)))
+            txn().dropDb(sliceOf((*it)->entriesDb));
+        s.indexes.erase(it);
+        break;
     }
-    settle(s);
-    resetHandles();
+    s.settle();
 }
 
-const nosql::Db& Catalog::rows(const Table& table) const
+void Catalog::dropTable(std::string_view name)
 {
+    Schema& s = edit();
+    std::vector<std::string> doomed;
+    for (const auto& ix : s.indexes) {
+        if (equalsNoCase(ix->table, name))
+            doomed.push_back(ix->name);
+    }
+    for (const std::string& n : doomed)
+        dropIndex(n);
+    std::vector<std::string> triggers;
+    for (const auto& tr : s.triggers) {
+        if (equalsNoCase(tr->table, name))
+            triggers.push_back(tr->name);
+    }
+    for (const std::string& n : triggers)
+        dropTrigger(n);
+    for (auto it = s.tables.begin(); it != s.tables.end(); ++it) {
+        if (!equalsNoCase((*it)->name, name))
+            continue;
+        eraseObject(kObject, (*it)->name);
+        meta(true).erase(sliceOf(idKey(kSequence, (*it)->id)));
+        if (txn().hasDb(sliceOf((*it)->dataDb)))
+            txn().dropDb(sliceOf((*it)->dataDb));
+        s.tables.erase(it);
+        break;
+    }
+    s.settle();
+}
+
+void Catalog::dropView(std::string_view name)
+{
+    Schema& s = edit();
+    for (auto it = s.views.begin(); it != s.views.end(); ++it) {
+        if (equalsNoCase((*it)->name, name)) {
+            eraseObject(kObject, (*it)->name);
+            s.views.erase(it);
+            return;
+        }
+    }
+}
+
+void Catalog::dropTrigger(std::string_view name)
+{
+    Schema& s = edit();
+    for (auto it = s.triggers.begin(); it != s.triggers.end(); ++it) {
+        if (equalsNoCase((*it)->name, name)) {
+            eraseObject(kTrigger, (*it)->name);
+            s.triggers.erase(it);
+            return;
+        }
+    }
+}
+
+void Catalog::replaceTable(std::string_view oldName, Table t)
+{
+    Schema& s = edit();
+    for (auto& p : s.tables) {
+        if (!equalsNoCase(p->name, oldName))
+            continue;
+        eraseObject(kObject, oldName);
+        t.id = p->id;
+        t.dataDb = p->dataDb;
+        putObject(kObject, t.name, 't', t.name, t.id, t.sql);
+        *p = std::move(t);
+        break;
+    }
+    s.settle();
+}
+
+void Catalog::replaceIndex(std::string_view oldName, Index ix)
+{
+    Schema& s = edit();
+    for (auto& p : s.indexes) {
+        if (!equalsNoCase(p->name, oldName))
+            continue;
+        eraseObject(kObject, oldName);
+        ix.id = p->id;
+        ix.entriesDb = p->entriesDb;
+        putObject(kObject, ix.name, 'i', ix.table, ix.id, ix.sql);
+        *p = std::move(ix);
+        break;
+    }
+    s.settle();
+}
+
+void Catalog::replaceView(std::string_view oldName, View v)
+{
+    Schema& s = edit();
+    for (auto& p : s.views) {
+        if (!equalsNoCase(p->name, oldName))
+            continue;
+        eraseObject(kObject, oldName);
+        v.id = p->id;
+        putObject(kObject, v.name, 'v', v.name, v.id, v.sql);
+        *p = std::move(v);
+        break;
+    }
+}
+
+void Catalog::replaceTrigger(std::string_view oldName, Trigger t)
+{
+    Schema& s = edit();
+    for (auto& p : s.triggers) {
+        if (!equalsNoCase(p->name, oldName))
+            continue;
+        eraseObject(kTrigger, oldName);
+        t.id = p->id;
+        putObject(kTrigger, t.name, 'g', t.table, t.id, t.sql);
+        *p = std::move(t);
+        break;
+    }
+}
+
+void Catalog::setUserVersion(std::int64_t v)
+{
+    Schema& s = edit();
+    s.userVersion = v;
+    writeInt(meta(true), std::string(1, kPragma) + "user_version", v);
+}
+
+void Catalog::setApplicationId(std::int64_t v)
+{
+    Schema& s = edit();
+    s.applicationId = v;
+    writeInt(meta(true), std::string(1, kPragma) + "application_id", v);
+}
+
+const nosql::Db& Catalog::rows(const Table& t)
+{
+    if (t.position >= schema_->tables.size() || schema_->tables[t.position].get() != &t)
+        throw Error(ErrorCode::Internal, "table " + t.name + " is from a replaced schema");
     if (tableHandles_.size() < schema_->tables.size())
         tableHandles_.resize(schema_->tables.size());
-    Handle& h = tableHandles_[table.id];
-    if (!h.open) {
-        h.db = txn_->db(table.dataDb);
-        h.open = true;
+    Handle& h = tableHandles_[t.position];
+    if (h.serial != serial_) {
+        h.db = txn().db(sliceOf(t.dataDb), readOnly() ? nosql::DbFlags::None : nosql::DbFlags::Create);
+        h.serial = serial_;
     }
     return h.db;
 }
 
-const nosql::Db& Catalog::entries(const Index& index) const
+const nosql::Db& Catalog::entries(const Index& ix)
 {
-    if (indexHandles_.size() < schema_->indexCount)
-        indexHandles_.resize(schema_->indexCount);
-    Handle& h = indexHandles_[index.id];
-    if (!h.open) {
-        h.db = txn_->db(index.entriesDb);
-        h.open = true;
+    if (ix.position >= schema_->indexes.size() || schema_->indexes[ix.position].get() != &ix)
+        throw Error(ErrorCode::Internal, "index " + ix.name + " is from a replaced schema");
+    if (indexHandles_.size() < schema_->indexes.size())
+        indexHandles_.resize(schema_->indexes.size());
+    Handle& h = indexHandles_[ix.position];
+    if (h.serial != serial_) {
+        h.db = txn().db(sliceOf(ix.entriesDb),
+                        readOnly() ? nosql::DbFlags::None : nosql::DbFlags::Create);
+        h.serial = serial_;
     }
     return h.db;
 }
 
-std::int64_t Catalog::lastRowid(const Table& table)
+Catalog::RowidState& Catalog::rowidState(const Table& t)
 {
+    if (t.position >= schema_->tables.size() || schema_->tables[t.position].get() != &t)
+        throw Error(ErrorCode::Internal, "table " + t.name + " is from a replaced schema");
     if (rowids_.size() < schema_->tables.size())
         rowids_.resize(schema_->tables.size());
-    Rowid& r = rowids_[table.id];
-    if (!r.loaded) {
-        r.last = 0;
-        if (const auto raw = meta(true).get(table.rowidKey)) {
-            std::string_view in = viewOf(*raw);
-            r.last = std::int64_t(getVarint(in));
+    return rowids_[t.position];
+}
+
+std::int64_t Catalog::largestRowid(const Table& t)
+{
+    // Only for tables keyed by their rowid: the largest one is the last key.
+    RowidState& st = rowidState(t);
+    if (!st.known) {
+        st.max = 0;
+        nosql::Cursor cur = rows(t).cursor();
+        if (cur.last()) {
+            std::string_view k = viewOf(cur.key());
+            st.max = readRowidKey(k);
         }
-        r.loaded = true;
+        st.known = true;
     }
-    return r.last;
+    return st.max;
 }
 
-std::int64_t Catalog::nextRowid(const Table& table)
+std::int64_t Catalog::sequence(const Table& t)
 {
-    const std::int64_t next = lastRowid(table) + 1;
-    Rowid& r = rowids_[table.id];
-    r.last = next;
-    r.dirty = true;
-    return next;
+    RowidState& st = rowidState(t);
+    if (!st.seqLoaded) {
+        st.seq = readInt(meta(), idKey(kSequence, t.id), 0);
+        st.seqLoaded = true;
+    }
+    return st.seq;
 }
 
-void Catalog::noteRowid(const Table& table, std::int64_t used)
+void Catalog::setSequence(const Table& t, std::int64_t seq)
 {
-    if (used > 0 && used > lastRowid(table)) {
-        Rowid& r = rowids_[table.id];
-        r.last = used;
-        r.dirty = true;
+    RowidState& st = rowidState(t);
+    st.seq = seq;
+    st.seqLoaded = true;
+    st.seqDirty = true;
+}
+
+std::int64_t Catalog::nextRowid(const Table& t)
+{
+    // Rowid-keyed tables follow SQLite: one past the largest rowid in use
+    // (past the high-water mark too, under AUTOINCREMENT). A table clustered
+    // by a declared key keeps its hidden rowids in the payload, so it keeps a
+    // persisted high-water mark instead of searching for the largest.
+    std::int64_t top = t.keyedByRowid() ? largestRowid(t) : sequence(t);
+    if (t.autoincrement)
+        top = std::max(top, sequence(t));
+    if (top == std::numeric_limits<std::int64_t>::max())
+        throw Error(ErrorCode::Runtime, "database or disk is full");
+    return top < 0 ? 1 : top + 1;
+}
+
+void Catalog::noteRowid(const Table& t, std::int64_t rowid)
+{
+    if (t.keyedByRowid()) {
+        RowidState& st = rowidState(t);
+        if (st.known && rowid > st.max)
+            st.max = rowid;
     }
+    if ((t.autoincrement || t.payloadRowid()) && rowid > sequence(t))
+        setSequence(t, rowid);
+}
+
+void Catalog::rowidRemoved(const Table& t, std::int64_t rowid)
+{
+    if (!t.keyedByRowid())
+        return;
+    RowidState& st = rowidState(t);
+    if (st.known && rowid >= st.max)
+        st.known = false;
 }
 
 void Catalog::flush()
 {
     for (std::size_t i = 0; i < rowids_.size(); ++i) {
-        Rowid& r = rowids_[i];
-        if (!r.dirty)
+        RowidState& st = rowids_[i];
+        if (!st.seqDirty)
             continue;
-        std::string out;
-        putVarint(out, std::uint64_t(r.last));
-        meta(true).put(schema_->tables[i].rowidKey, out);
-        r.dirty = false;
+        writeInt(meta(true), idKey(kSequence, schema_->tables[i]->id), st.seq);
+        st.seqDirty = false;
     }
 }
 
 void Catalog::committed(std::uint64_t txnid)
 {
     std::lock_guard<std::mutex> lk(cache_->mtx);
-    cache_->catalogSeen = cache_->catalogSeen || meta_.open;
     if (edited_) {
-        if (!cache_->schema || cache_->schema->version < edited_->version) {
-            cache_->schema = edited_;
-            cache_->validAtTxn = txnid;
-        }
-        edited_.reset();
-    } else if (cache_->schema == schema_ && cache_->validAtTxn < txnid) {
+        cache_->schema = edited_;
+        cache_->catalogSeen = true;
+    }
+    if (cache_->schema == schema_)
         cache_->validAtTxn = txnid;
+}
+
+void Catalog::pushLevel(nosql::Txn& child)
+{
+    levels_.push_back(Level{&child, schema_, edited_});
+    ++serial_;
+}
+
+void Catalog::popLevel(bool committedChild)
+{
+    const Level top = levels_.back();
+    levels_.pop_back();
+    ++serial_;
+    if (!committedChild) {
+        if (schema_ != top.schema) {
+            schema_ = top.schema;
+            edited_ = top.edited;
+        }
+        resetCaches();
     }
 }
 

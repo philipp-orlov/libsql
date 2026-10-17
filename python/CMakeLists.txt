@@ -28,6 +28,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(SQL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(SQL_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
     set(SQL_BUILD_PYTHON OFF CACHE BOOL "" FORCE)  # this file *is* the python part
+    set(NOSQL_WITH_BLOB ON CACHE BOOL "" FORCE)    # the binding exposes BlobStorage
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/_vendor/libsql/CMakeLists.txt)
         add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/_vendor/libsql ${CMAKE_BINARY_DIR}/libsql)
     else()

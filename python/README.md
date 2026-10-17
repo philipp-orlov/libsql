@@ -116,15 +116,19 @@ matching the target's Python version and architecture.
 opens a store; it is a context manager, and `close()` releases the file once
 nothing built on it (statements, transactions, blob storages) is left.
 
+The engine speaks SQLite's SQL (see the [libsql README](../README.md)).
 `db.exec(sql, params=None)` runs every `;`-separated statement in one
-transaction and returns a `Result` for the last: `len()`, iteration and
+transaction -- unless the text itself says `BEGIN`, in which case it follows
+SQLite's autocommit model and the transaction stays open across calls -- and
+returns a `Result` for the last: `len()`, iteration and
 indexing give `Row`s, `.columns` the names, `.rows` plain tuples, `.changes`
 and `.last_insert_id` the counters, `.first()` and `.scalar()` the usual
 shortcuts. A `Row` indexes by position or by name (case-insensitive, like the
 engine), and has `.keys()`, `.values()`, `.get()` and `.as_dict()`.
 
-Parameters bind left to right from any sequence. Python types map onto the six
-storage classes:
+Parameters bind left to right from any sequence, or by name from a mapping:
+`db.exec("SELECT * FROM t WHERE id = :id", {"id": 4})`, where a key may carry
+its prefix (`":id"`) or not. Python types map onto the six storage classes:
 
 | Python | SQL |
 |---|---|
@@ -135,27 +139,41 @@ storage classes:
 | `bytes`, `bytearray`, `memoryview`, numpy arrays (C-contiguous) | BLOB |
 | `datetime.datetime` (naive is UTC), `datetime.date` | DATETIME |
 
-DATETIME comes back as a timezone-aware `datetime` in UTC. TEXT that is not
-valid UTF-8 decodes with `surrogateescape`.
+DATETIME comes back as a timezone-aware `datetime` in UTC. A bound `datetime`
+keeps that class in any column; to have text compared as a datetime, declare
+the column `DATETIME` in a `STRICT` table (in an ordinary table `DATETIME` is
+just a type name with NUMERIC affinity, as in SQLite). TEXT that is not valid
+UTF-8 decodes with `surrogateescape`.
 
 `db.begin()` returns a write `Transaction`, `db.begin_read()` a snapshot that
 rejects writes. Both are context managers that commit on a clean exit and roll
 back on an exception, and both have `exec`, `commit`, `rollback` and `active`.
 Only one write transaction is live at a time; `begin()` blocks for it.
 
-`db.prepare(sql)` returns a `Statement`: `.bind(i, value)` (1-based),
-`.bind_all(params)`, `.clear()`, and `.exec(params=None, txn=None)`, which runs
-in a transaction of its own or inside `txn`. `.parameters` and `.writes` say
-what it takes and whether it needs a writer.
+`db.changes`, `db.total_changes`, `db.last_insert_rowid` and
+`db.in_transaction` report what SQLite's functions of those names report;
+`db.interrupt()`, from another thread, stops a running statement with an
+`"Interrupted"` error. `libsql.complete(text)` says whether `text` ends with a
+complete statement.
+
+`db.prepare(sql)` returns a `Statement`: `.bind(i_or_name, value)` (1-based
+index or parameter name), `.bind_all(params)` (sequence or mapping),
+`.clear()`, and `.exec(params=None, txn=None)`, which runs in a transaction of
+its own or inside `txn`. `.parameters`, `.columns`, `.writes`,
+`.parameter_index(name)` and `.parameter_name(i)` describe it.
 
 `db.tables()`, `db.table(name)` and `db.indexes(table=None)` describe the schema
 as lists and dicts. A table's `"primary_key"` is the list of its key column
 names in key order: one name for a plain key, several for a composite one, and
-empty for a table keyed by its implicit `rowid`.
+empty for a table keyed by its implicit `rowid`; `"strict"`,
+`"without_rowid"` and `"sql"` (the `CREATE TABLE` text) come with it, and each
+column carries `"declared_type"`, `"affinity"`, `"collation"`,
+`"default_sql"` and `"generated"` besides its constraints.
 
 Errors are `libsql.SqlError` (from the SQL layer) and `libsql.StoreError` (from
 libnosql), both `libsql.Error`, each with `.code` naming the engine's error
-code: `"NoSuchTable"`, `"ConstraintViolation"`, `"ReadOnly"`, `"Busy"`, ...
+code: `"NoSuchTable"`, `"ConstraintViolation"`, `"ReadOnly"`, `"Runtime"`,
+`"Interrupted"`, `"Busy"`, ...
 
 ## Blobs
 

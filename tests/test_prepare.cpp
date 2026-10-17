@@ -133,7 +133,7 @@ TEST(reportsBadStatementsAtPrepareTime)
     Database db = seeded(s);
     CHECK_THROWS(db.prepare("SELCT 1"), ErrorCode::SyntaxError);
     CHECK_THROWS(db.prepare("SELECT * FROM t WHERE"), ErrorCode::SyntaxError);
-    CHECK_THROWS(db.prepare("SELECT lower(name) FROM t"), ErrorCode::Unsupported);
+    CHECK_THROWS(db.prepare("SELECT no_such_function(name) FROM t"), ErrorCode::Unsupported);
     // A missing table is a planning matter, so it surfaces on the run instead.
     Statement late = db.prepare("SELECT * FROM missing");
     CHECK_THROWS(late.exec(), ErrorCode::NoSuchTable);

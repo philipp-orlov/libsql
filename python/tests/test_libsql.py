@@ -87,7 +87,9 @@ class SqlBasics(Scratch):
 
     def test_types_round_trip(self):
         db = libsql.Database(self.path)
-        db.exec("CREATE TABLE v (i INTEGER, r REAL, t TEXT, b BLOB, d DATETIME, n NULL)")
+        # STRICT keeps the datetime class; a flexible DATETIME column has
+        # NUMERIC affinity, as in SQLite.
+        db.exec("CREATE TABLE v (i INTEGER, r REAL, t TEXT, b BLOB, d DATETIME, n ANY) STRICT")
         when = dt.datetime(2024, 5, 1, 9, 30, 15, 123456, tzinfo=UTC)
         db.exec("INSERT INTO v VALUES (?, ?, ?, ?, ?, ?)",
                 (-7, 0.25, "héllo", b"\x00\xff\x00", when, None))
@@ -101,7 +103,7 @@ class SqlBasics(Scratch):
         got = db.exec("SELECT i, d FROM v WHERE t IS NULL ORDER BY d").rows
         self.assertEqual(got, [(1, dt.datetime(2020, 1, 2, 3, 4, 5, tzinfo=UTC)),
                                (0, dt.datetime(2020, 1, 3, tzinfo=UTC))])
-        # Datetime literals compare as datetimes.
+        # Text compares with a STRICT DATETIME column as a datetime.
         self.assertEqual(db.exec("SELECT COUNT(*) FROM v WHERE d > '2021-01-01'").scalar(), 1)
         db.close()
 
@@ -117,6 +119,41 @@ class SqlBasics(Scratch):
         self.assertTrue(np.array_equal(np.frombuffer(row["b"], dtype=np.float32), arr))
         with self.assertRaises(TypeError):
             db.exec("INSERT INTO v (b) VALUES (?)", (arr[::2],))  # not contiguous
+        db.close()
+
+    def test_named_params_and_counters(self):
+        db = libsql.Database(self.path)
+        db.exec("CREATE TABLE p (id INTEGER PRIMARY KEY, name TEXT)")
+        db.exec("INSERT INTO p (name) VALUES (:name), (@other)", {"name": "a", "@other": "b"})
+        self.assertEqual(db.changes, 2)
+        self.assertEqual(db.last_insert_rowid, 2)
+        self.assertEqual(db.exec("SELECT name FROM p WHERE id = $id", {"id": 2}).scalar(), "b")
+        st = db.prepare("SELECT id, name AS n FROM p WHERE name = :name")
+        self.assertEqual(st.columns, ["id", "n"])
+        self.assertEqual(st.parameter_index("name"), 1)
+        self.assertEqual(st.parameter_name(1), ":name")
+        self.assertEqual(st.bind("name", "a").exec().scalar(), 1)
+        self.assertEqual(st.exec({":name": "b"}).scalar(), 2)
+        with db.begin() as t:
+            t.exec("UPDATE p SET name = :n WHERE id = :id", {"n": "c", "id": 1})
+        self.assertEqual(db.exec("SELECT name FROM p WHERE id = 1").scalar(), "c")
+        with self.assertRaises(libsql.SqlError):
+            db.exec("SELECT :missing", {"nope": 1})
+        self.assertFalse(db.in_transaction)
+        db.exec("BEGIN")
+        self.assertTrue(db.in_transaction)
+        db.exec("ROLLBACK")
+        self.assertFalse(db.in_transaction)
+        self.assertGreaterEqual(db.total_changes, 3)
+        self.assertTrue(libsql.complete("SELECT 1;"))
+        self.assertFalse(libsql.complete("CREATE TRIGGER t AFTER INSERT ON p BEGIN SELECT 1;"))
+        row = db.exec("SELECT a.name, b.id FROM p a JOIN p b ON b.id = a.id WHERE a.id = 1")[0]
+        self.assertEqual((row["a.name"], row["b.id"], row["name"]), ("c", 1, "c"))
+        info = db.table("p")
+        self.assertEqual(info["columns"][0]["declared_type"], "INTEGER")
+        self.assertEqual(info["columns"][1]["affinity"], "TEXT")
+        self.assertFalse(info["strict"])
+        self.assertTrue(info["sql"].startswith("CREATE TABLE p"))
         db.close()
 
     def test_errors_carry_codes(self):

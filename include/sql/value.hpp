@@ -85,11 +85,36 @@ public:
     bool isNumeric() const noexcept { return type() == Type::Integer || type() == Type::Real; }
 
     // --- strict accessors: the stored class must match ---
-    std::int64_t integer() const;
-    double real() const;
-    Datetime datetime() const;
-    const std::string& text() const;
-    const Blob& blob() const;
+    std::int64_t integer() const
+    {
+        if (const auto* p = std::get_if<std::int64_t>(&v_))
+            return *p;
+        wrongType(Type::Integer);
+    }
+    double real() const
+    {
+        if (const auto* p = std::get_if<double>(&v_))
+            return *p;
+        wrongType(Type::Real);
+    }
+    Datetime datetime() const
+    {
+        if (const auto* p = std::get_if<Datetime>(&v_))
+            return *p;
+        wrongType(Type::Datetime);
+    }
+    const std::string& text() const
+    {
+        if (const auto* p = std::get_if<std::string>(&v_))
+            return *p;
+        wrongType(Type::Text);
+    }
+    const Blob& blob() const
+    {
+        if (const auto* p = std::get_if<Blob>(&v_))
+            return *p;
+        wrongType(Type::Blob);
+    }
 
     // --- lenient accessors, for callers that just want a number or a string ---
     /// Reals truncate, text and datetimes convert; NULL and blobs throw.
@@ -103,27 +128,35 @@ public:
     /// SQL truth: NULL and zero are false, everything else is true.
     bool truthy() const noexcept;
 
+    /// SQLite's value subtype: a tag that travels with a computed value but is
+    /// never stored. `'J'` marks text that is JSON, so that JSON functions and
+    /// FOR JSON embed it instead of quoting it. Every setter clears it.
+    std::uint8_t subtype() const noexcept { return sub_; }
+    void setSubtype(std::uint8_t s) noexcept { sub_ = s; }
+
     // --- in-place setters: a cell that already holds text or a blob keeps
     // its buffer, so refilling a row of cells allocates nothing once the
     // buffers have grown to fit ---
-    void setNull() noexcept { v_.emplace<std::monostate>(); }
-    void setInteger(std::int64_t i) noexcept { v_.emplace<std::int64_t>(i); }
-    void setReal(double d) noexcept { v_.emplace<double>(d); }
-    void setDatetime(Datetime d) noexcept { v_.emplace<Datetime>(d); }
+    void setNull() noexcept { sub_ = 0; v_.emplace<std::monostate>(); }
+    void setInteger(std::int64_t i) noexcept { sub_ = 0; v_.emplace<std::int64_t>(i); }
+    void setReal(double d) noexcept { sub_ = 0; v_.emplace<double>(d); }
+    void setDatetime(Datetime d) noexcept { sub_ = 0; v_.emplace<Datetime>(d); }
     void setText(std::string_view s)
     {
-        if (auto* p = std::get_if<std::string>(&v_))
-            p->assign(s.data(), s.size());
-        else
-            v_.emplace<std::string>(s);
+        sub_ = 0;
+        auto* p = std::get_if<std::string>(&v_);
+        if (!p)
+            p = &v_.emplace<std::string>();
+        p->assign(s.data(), s.size());
     }
     void setBlob(const void* data, std::size_t size)
     {
+        sub_ = 0;
         const auto* p = static_cast<const std::byte*>(data);
-        if (auto* b = std::get_if<Blob>(&v_))
-            b->assign(p, p + size);
-        else
-            v_.emplace<Blob>(p, p + size);
+        auto* b = std::get_if<Blob>(&v_);
+        if (!b)
+            b = &v_.emplace<Blob>();
+        b->assign(p, p + size);
     }
 
     /// Reinterpret this value as `target`, the way an INSERT into a column of
@@ -136,9 +169,16 @@ public:
     friend int compare(const Value& a, const Value& b) noexcept;
 
 private:
+    /// Throws TypeMismatch for a strict accessor asked for `wanted`.
+    [[noreturn]] void wrongType(Type wanted) const;
+
     // The alternative order must match `Type`.
     std::variant<std::monostate, std::int64_t, double, Datetime, std::string, Blob> v_;
+    std::uint8_t sub_ = 0;
 };
+
+/// The subtype JSON functions put on their text results.
+inline constexpr std::uint8_t kJsonSubtype = 'J';
 
 /// Total order over values: NULL first, then numbers, datetimes, text, blobs.
 /// Integers and reals compare numerically with one another; every other pair of

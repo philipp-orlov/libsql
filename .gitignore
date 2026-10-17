@@ -42,3 +42,6 @@ __pycache__/
 # Stores written by the tests and examples
 *.db
 *.db-journal
+
+# Private design notes
+/docs/internal/

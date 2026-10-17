@@ -139,8 +139,8 @@ TEST(reportsSyntaxProblems)
     CHECK_THROWS(db.exec("SELECT * FROM staff WHERE id = "), ErrorCode::SyntaxError);
     CHECK_THROWS(db.exec("SELECT * FROM staff staff2 extra"), ErrorCode::SyntaxError);
     CHECK_THROWS(db.exec("HELLO"), ErrorCode::SyntaxError);
-    CHECK_THROWS(db.exec("SELECT lower(name) FROM staff"), ErrorCode::Unsupported);
-    CHECK_THROWS(db.exec("SELECT * FROM staff LEFT JOIN staff s2 ON 1"), ErrorCode::Unsupported);
+    CHECK_THROWS(db.exec("SELECT no_such_function(name) FROM staff"), ErrorCode::Unsupported);
+    CHECK_THROWS(db.exec("SELECT lower(name, 1) FROM staff"), ErrorCode::InvalidArgument);
 }
 
 TEST(quotedIdentifiersEscapeKeywords)

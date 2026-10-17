@@ -1,194 +1,160 @@
 // Copyright (c) 2026 Philipp Orlov
 // SPDX-License-Identifier: Apache-2.0
 
-// The schema: what tables and indexes exist, where their sub-databases live,
-// and where the next implicit row key comes from.
+// The schema as one transaction sees it, plus that transaction's handles on
+// the sub-databases it has touched and its rowid bookkeeping.
 //
-// The decoded schema is an immutable snapshot shared between transactions.
-// A transaction that runs no DDL borrows the database's cached snapshot after
-// one lookup of the catalog's version record; one that does copies the
-// snapshot, edits the copy, and publishes it when it commits.
+// On disk everything lives in the sub-database `sql_catalog`:
+//
+//   'o' + lower(name)   table, index or view: kind, name, table, id, sql
+//   'g' + lower(name)   trigger: name, table, id, sql
+//   'a' + id            AUTOINCREMENT high-water mark (sqlite_sequence)
+//   'p' + name          persistent pragma (user_version, application_id)
+//   'v'                 schema version, bumped by every DDL statement
+//   'n'                 next object id
+//
+// Rows of a table live in sub-database "t#<id>", entries of an index in
+// "i#<id>"; the names carry no object name, so renaming is a catalog edit.
 #pragma once
 
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "internal/schema.hpp"
 #include "nosql/nosql.hpp"
-#include "sql/sql.hpp"
 
 namespace sql::internal {
 
-struct Index
-{
-    std::string name;
-    std::string table;
-    std::vector<int> columns;  ///< positions in Table::columns
-    bool unique = false;
-
-    /// Filled in by the schema: the sub-database holding the entries, and the
-    /// index's position in Schema::indexes.
-    std::string entriesDb;
-    unsigned id = 0;
-};
-
-struct Table
-{
-    std::string name;
-    std::vector<ColumnInfo> columns;
-    /// Positions of the PRIMARY KEY columns in key order. Empty when the table
-    /// falls back to an implicit integer key; that key is addressable in SQL as
-    /// `rowid` and occupies the slot just past the declared columns.
-    std::vector<int> primaryKey;
-    std::vector<Index> indexes;
-
-    /// Filled in by the schema: the sub-database holding the rows, the catalog
-    /// key of the rowid counter, and the table's position in Schema::tables.
-    std::string dataDb;
-    std::string rowidKey;
-    unsigned id = 0;
-
-    /// -1 when absent. Case-insensitive, and understands `rowid`.
-    int find(std::string_view column) const noexcept;
-    bool hasRowid() const noexcept { return primaryKey.empty(); }
-    /// The slots whose values, encoded in this order and concatenated, form the
-    /// key a row is stored under: the primary key columns, or the rowid slot.
-    const std::vector<int>& keySlots() const noexcept { return keySlots_; }
-    /// The slot an automatically assigned key lands in; only meaningful when
-    /// autoKey() holds.
-    int autoKeySlot() const noexcept
-    {
-        return primaryKey.empty() ? int(columns.size()) : primaryKey[0];
-    }
-    /// Declared type of a slot, `rowid` included.
-    Type slotType(int slot) const noexcept
-    {
-        return std::size_t(slot) < columns.size() ? columns[std::size_t(slot)].type
-                                                  : Type::Integer;
-    }
-    /// True when the key is one integer the engine may hand out itself.
-    bool autoKey() const noexcept
-    {
-        return primaryKey.empty() ||
-               (primaryKey.size() == 1 && slotType(primaryKey[0]) == Type::Integer);
-    }
-    std::size_t width() const noexcept { return columns.size() + (hasRowid() ? 1 : 0); }
-
-    /// Derives the cached names and slots above; the schema calls it after
-    /// every change to the table.
-    void settle(unsigned id);
-
-private:
-    std::vector<int> keySlots_;
-};
-
-/// One immutable decoded schema. Tables keep their position for the life of a
-/// snapshot, so ids index straight into per-transaction handle caches.
-struct Schema
-{
-    std::uint64_t version = 0;
-    std::vector<Table> tables;  ///< sorted by lowercased name
-    std::size_t indexCount = 0;
-
-    const Table* find(std::string_view name) const noexcept;
-    const Index* findIndex(std::string_view name) const noexcept;
-};
-
-/// The database-wide cache of the newest decoded schema.
+/// The newest decoded schema of one store, shared by the transactions of one
+/// connection.
 struct SchemaCache
 {
     std::mutex mtx;
     std::shared_ptr<const Schema> schema;
-    /// The store commit at which `schema` was last known to be current. Only
-    /// this process writes the store, so a transaction whose snapshot is that
-    /// commit can take the schema without looking at the catalog at all; any
-    /// other snapshot reads the version record and decides from that.
     std::uint64_t validAtTxn = 0;
-    /// Whether the catalog sub-database has been seen to exist. It is never
-    /// dropped, so once true this saves a lookup per transaction.
     bool catalogSeen = false;
 };
 
-/// The schema as one transaction sees it, plus that transaction's handles to
-/// the sub-databases it has touched and its cached rowid counters.
 class Catalog
 {
 public:
-    Catalog(nosql::Txn& txn, SchemaCache& cache);
+    Catalog() = default;
+    Catalog(nosql::Txn& txn, SchemaCache& cache) { open(txn, cache); }
     Catalog(const Catalog&) = delete;
+    /// Starts serving a new transaction, keeping this object's buffers.
+    void open(nosql::Txn& txn, SchemaCache& cache);
+    /// Lets go of the transaction and everything that pins it.
+    void close();
     Catalog& operator=(const Catalog&) = delete;
 
-    const Table* find(std::string_view name) const noexcept { return schema_->find(name); }
-    const Table& get(std::string_view name) const;  ///< throws NoSuchTable
-    std::vector<std::string> tableNames() const;
-    const Index* findIndex(std::string_view name) const noexcept
+    const Schema& schema() const noexcept { return *schema_; }
+    const std::shared_ptr<const Schema>& snapshot() const noexcept { return schema_; }
+
+    const Table* findTable(std::string_view name) const noexcept { return schema_->findTable(name); }
+    const Index* findIndex(std::string_view name) const noexcept { return schema_->findIndex(name); }
+    const View* findView(std::string_view name) const noexcept { return schema_->findView(name); }
+    const Trigger* findTrigger(std::string_view name) const noexcept
     {
-        return schema_->findIndex(name);
+        return schema_->findTrigger(name);
     }
-    std::vector<const Index*> allIndexes() const;
 
-    void addTable(Table table);
-    void dropTable(const Table& table);
-    void addIndex(Index index);
-    void dropIndex(const Index& index);
+    // --- DDL: each writes its records and edits this transaction's schema ---
+    std::uint64_t newId();
+    void addTable(Table t);
+    void addIndex(Index ix);
+    void addView(View v);
+    void addTrigger(Trigger t);
+    void dropTable(std::string_view name);  ///< with its indexes and triggers, and its data
+    void dropIndex(std::string_view name);  ///< and its entries
+    void dropView(std::string_view name);
+    void dropTrigger(std::string_view name);
+    /// Replaces a table's definition (ALTER TABLE): same id and data.
+    void replaceTable(std::string_view oldName, Table t);
+    void replaceIndex(std::string_view oldName, Index ix);
+    void replaceView(std::string_view oldName, View v);
+    void replaceTrigger(std::string_view oldName, Trigger t);
+    void setUserVersion(std::int64_t v);
+    void setApplicationId(std::int64_t v);
 
-    /// The sub-database holding `table`'s rows, keyed by encoded primary key.
-    const nosql::Db& rows(const Table& table) const;
-    /// The sub-database holding `index`'s entries: encoded columns then the
-    /// encoded primary key, with an empty payload.
-    const nosql::Db& entries(const Index& index) const;
+    // --- data ---
+    const nosql::Db& rows(const Table& t);
+    const nosql::Db& entries(const Index& ix);
+    nosql::Txn& txn() const noexcept { return *levels_.back().txn; }
+    nosql::Txn& rootTxn() const noexcept { return *levels_.front().txn; }
+    bool readOnly() const;
 
-    /// Reserves the next implicit key for `table` and records it.
-    std::int64_t nextRowid(const Table& table);
-    /// Keeps the counter ahead of an explicitly supplied integer key.
-    void noteRowid(const Table& table, std::int64_t used);
+    // --- rowids ---
+    /// The rowid an insert that names none gets: one past the largest in use
+    /// (SQLite's rule), or past the AUTOINCREMENT high-water mark. Throws
+    /// "database or disk is full" when the rowid space is exhausted.
+    std::int64_t nextRowid(const Table& t);
+    /// An insert used `rowid`; keep the bookkeeping ahead of it.
+    void noteRowid(const Table& t, std::int64_t rowid);
+    /// A row was deleted; the largest rowid may have gone.
+    void rowidRemoved(const Table& t, std::int64_t rowid);
+    /// AUTOINCREMENT high-water mark (sqlite_sequence.seq); 0 when none.
+    std::int64_t sequence(const Table& t);
+    void setSequence(const Table& t, std::int64_t seq);
 
-    /// Writes back whatever a statement left pending -- rowid counters -- so
-    /// the store agrees with this object. Called after every statement.
+    /// Writes back pending AUTOINCREMENT marks. Called after every statement.
     void flush();
-
-    /// After this write transaction committed as store commit `txnid`: the
-    /// schema it ran with -- edited or not -- is current as of that commit.
+    /// After a successful commit as store transaction `txnid`.
     void committed(std::uint64_t txnid);
 
-    nosql::Txn& txn() const noexcept { return *txn_; }
-    /// The snapshot this transaction plans against; a plan made against the
-    /// same object stays valid.
-    const std::shared_ptr<const Schema>& schema() const noexcept { return schema_; }
+    // --- savepoints and statement transactions ---
+    /// `child` was just opened on top of the current transaction.
+    void pushLevel(nosql::Txn& child);
+    /// The innermost level ended: committed into its parent, or aborted.
+    void popLevel(bool committed);
+    std::size_t depth() const noexcept { return levels_.size(); }
 
 private:
     struct Handle
     {
-        bool open = false;
+        std::uint64_t serial = 0;
         nosql::Db db;
     };
-    struct Rowid
+    struct RowidState
     {
-        bool loaded = false;
-        bool dirty = false;
-        std::int64_t last = 0;
+        bool known = false;
+        std::int64_t max = 0;
+        bool seqLoaded = false;
+        bool seqDirty = false;
+        std::int64_t seq = 0;
+    };
+    struct Level
+    {
+        nosql::Txn* txn;
+        std::shared_ptr<const Schema> schema;
+        std::shared_ptr<Schema> edited;
     };
 
-    const nosql::Db& meta(bool create = false) const;
-    /// The private, editable copy of the schema; made on the first DDL.
+    const nosql::Db& meta(bool create = false);
     Schema& edit();
-    void storeTable(const Table& table);
+    void putObject(char prefix, std::string_view name, char kind, std::string_view table,
+                   std::uint64_t id, std::string_view sql);
+    void eraseObject(char prefix, std::string_view name);
     void storeVersion();
-    void resetHandles();
-    std::int64_t lastRowid(const Table& table);
+    void resetCaches();
+    RowidState& rowidState(const Table& t);
+    std::int64_t largestRowid(const Table& t);
 
-    nosql::Txn* txn_;
-    SchemaCache* cache_;
+    SchemaCache* cache_ = nullptr;
     std::shared_ptr<const Schema> schema_;
-    std::shared_ptr<Schema> edited_;  ///< set once this transaction ran DDL
-    mutable Handle meta_;
-    mutable std::vector<Handle> tableHandles_;
-    mutable std::vector<Handle> indexHandles_;
-    std::vector<Rowid> rowids_;
+    std::shared_ptr<Schema> edited_;
+    std::vector<Level> levels_;
+    std::uint64_t serial_ = 1;
+    Handle meta_;
+    std::vector<Handle> tableHandles_;
+    std::vector<Handle> indexHandles_;
+    std::vector<RowidState> rowids_;
 };
+
+/// Decodes the schema stored in `txn`'s catalog (empty when there is none).
+std::shared_ptr<const Schema> loadSchema(nosql::Txn& txn);
 
 }  // namespace sql::internal

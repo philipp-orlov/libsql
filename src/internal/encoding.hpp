@@ -9,17 +9,19 @@
 //   * row encoding is compact and self-describing, and makes no ordering
 //     promise at all
 //
-// The one gap between the two is that key encoding sorts every INTEGER before
-// every REAL, where sql::compare interleaves them numerically. Column values
-// are cast to the column's declared type on the way in, so a stored column
-// never mixes the two and the gap never shows.
+// Integers and reals share one key tag and interleave numerically, so 1 and
+// 1.0 are the same key, as SQLite says they are equal. Text keys can be
+// collated (NOCASE folds, RTRIM strips) and any component can be descending,
+// which complements its bytes.
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "internal/types.hpp"
 #include "nosql/slice.hpp"
 #include "sql/value.hpp"
 
@@ -36,7 +38,28 @@ inline nosql::Slice sliceOf(std::string_view s) noexcept
 
 // ----------------------------------------------------------------- keys ---
 
-void appendKey(std::string& out, const Value& v);
+void appendKey(std::string& out, const Value& v, Collation c = Collation::Binary,
+               bool desc = false);
+/// A rowid as the storage key of a rowid table: eight bytes, sign-flipped
+/// big-endian, no tag.
+void appendRowidKey(std::string& out, std::int64_t rowid);
+[[noreturn]] void throwTruncatedKey();
+
+/// Reads the 8-byte big-endian, sign-flipped rowid at the front of `in`.
+inline std::int64_t readRowidKey(std::string_view& in)
+{
+    if (in.size() < 8)
+        throwTruncatedKey();
+    std::uint64_t v;
+    std::memcpy(&v, in.data(), 8);
+#if defined(_MSC_VER)
+    v = _byteswap_uint64(v);
+#elif __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    v = __builtin_bswap64(v);
+#endif
+    in.remove_prefix(8);
+    return std::int64_t(v ^ 0x8000000000000000ull);
+}
 std::string encodeKey(const Value& v);
 std::string encodeKey(const std::vector<Value>& values);
 
@@ -60,8 +83,14 @@ std::string encodeRow(const std::vector<Value>& values);
 void encodeRowInto(std::string& out, const Value* values, std::size_t count);
 std::vector<Value> decodeRow(std::string_view in);
 /// Decodes into `width` cells that keep their buffers; columns the record
-/// does not carry become NULL.
-void decodeRowInto(std::string_view in, Value* out, std::size_t width);
+/// does not carry become NULL. Returns how many the record carried (at most
+/// `width`), so a caller can supply defaults for columns added later.
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width);
+/// The same, decoding only the cells whose `used` byte is nonzero; the others
+/// are stepped over and left as they were.
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, const std::uint8_t* used);
+/// How many cells a record holds.
+std::size_t rowColumnCount(std::string_view in);
 
 // ------------------------------------------------------------ primitives --
 

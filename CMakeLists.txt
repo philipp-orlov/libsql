@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(libsql VERSION 0.1.0 LANGUAGES CXX)
+project(libsql VERSION 0.2.0 LANGUAGES CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "libsql requires a 64-bit target")
@@ -9,6 +9,7 @@ option(SQL_BUILD_TESTS "Build the test suite" ON)
 option(SQL_BUILD_EXAMPLES "Build the examples" ON)
 option(SQL_BUILD_TOOLS "Build the sql command line tool" ON)
 option(SQL_BUILD_BENCHMARKS "Build the benchmarks (see benchmarks/)" OFF)
+option(SQL_BUILD_CONFORMANCE "Build the SQLite conformance harness (see tests/conformance/)" OFF)
 option(SQL_ENABLE_ASAN "Build with address+undefined sanitizers" OFF)
 # Experimental: the binding has not been through the security/robustness review
 # the C++ library has. Never part of a product build.
@@ -59,12 +60,28 @@ add_library(sql
     src/value.cpp
     src/database.cpp
     src/json.cpp
-    src/internal/lexer.cpp
-    src/internal/cnumeric.cpp
-    src/internal/parser.cpp
-    src/internal/encoding.cpp
+    src/internal/access.cpp
     src/internal/catalog.cpp
-    src/internal/executor.cpp
+    src/internal/cnumeric.cpp
+    src/internal/ddl.cpp
+    src/internal/dml.cpp
+    src/internal/encoding.cpp
+    src/internal/eval.cpp
+    src/internal/explain.cpp
+    src/internal/func.cpp
+    src/internal/func_aggregate.cpp
+    src/internal/func_core.cpp
+    src/internal/func_date.cpp
+    src/internal/func_json.cpp
+    src/internal/func_printf.cpp
+    src/internal/lexer.cpp
+    src/internal/parser.cpp
+    src/internal/plan_select.cpp
+    src/internal/pragma.cpp
+    src/internal/run_select.cpp
+    src/internal/schema.cpp
+    src/internal/statement.cpp
+    src/internal/types.cpp
 )
 add_library(sql::sql ALIAS sql)
 
@@ -125,6 +142,11 @@ if(SQL_BUILD_EXAMPLES)
 endif()
 if(SQL_BUILD_TOOLS)
     add_subdirectory(tools)
+endif()
+# Before the benchmarks: bench_vs_sqlite links the conformance oracle.
+if(SQL_BUILD_CONFORMANCE)
+    enable_testing()
+    add_subdirectory(tests/conformance)
 endif()
 if(SQL_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)

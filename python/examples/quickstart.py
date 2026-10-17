@@ -24,7 +24,7 @@ with libsql.Database(path) as db:
             title     TEXT NOT NULL,
             price     REAL DEFAULT 0.0,
             released  DATETIME,
-            cover     BLOB);
+            cover     BLOB) STRICT;  -- STRICT: typed columns, and DATETIME as a class
         CREATE INDEX book_by_author ON book (author_id);
         """
     )
@@ -38,7 +38,7 @@ with libsql.Database(path) as db:
     books = [
         (1, "The Dispossessed", 12.50, dt.datetime(1974, 5, 1, tzinfo=dt.timezone.utc)),
         (1, "A Wizard of Earthsea", 9.99, dt.date(1968, 11, 1)),
-        (2, "Use of Weapons", 14.00, "1990-09-01"),  # a literal string parses as a datetime too
+        (2, "Use of Weapons", 14.00, "1990-09-01"),  # text parses into a STRICT DATETIME column
     ]
     # A prepared statement parses once; exec(params, txn=...) runs it inside a
     # transaction you hold, so the whole load is one commit.

@@ -180,7 +180,7 @@ TEST(json_datetime_keeps_microseconds)
 {
     tst::Scratch scratch("json");
     sql::Database db = scratch.open();
-    db.exec("CREATE TABLE t (d DATETIME)");
+    db.exec("CREATE TABLE t (d DATETIME) STRICT");
     db.exec("INSERT INTO t VALUES ('2024-06-05T01:02:03.000450')");
 
     CHECK_EQ(json(db, "SELECT d FROM t FOR JSON AUTO"),
