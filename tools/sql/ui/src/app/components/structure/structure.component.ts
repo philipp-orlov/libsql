@@ -9,6 +9,7 @@ import { ColumnInfo, TableInfo } from '../../models/api.models';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { WorkspaceService } from '../../services/workspace.service';
+import { downloadText } from '../../utils/download';
 import { ObjectKind, dropObjectSql, quoteIdentifier } from '../../utils/sql-builder';
 import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
 import { CreateIndexDialogComponent } from '../create-index-dialog/create-index-dialog.component';
@@ -123,6 +124,15 @@ export class StructureComponent {
       this.workspace.openTable(row.name);
     } else if (row.expandable) {
       this.toggle(row);
+    }
+  }
+
+  protected async exportSql(): Promise<void> {
+    try {
+      const name = (this.db.info()?.path ?? 'database').split('/').pop()!.replace(/\.[^.]*$/, '');
+      downloadText(`${name}.sql`, await this.db.dump(), 'application/sql');
+    } catch (failure) {
+      this.notice.error(failure);
     }
   }
 

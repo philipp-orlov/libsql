@@ -11,10 +11,12 @@ Open `http://127.0.0.1:8080/`. The window has the four tabs of DB Browser:
 
 | Tab | What it does |
 | --- | --- |
-| Database Structure | Lists the tables, indices, views and triggers with their columns. Creates and deletes them, and modifies a table (rename it, rename, drop or add a column). Each dialog shows the SQL before it runs. |
-| Browse Data | Shows a table or view in a grid. Sort by a column heading, filter in the box under it, page through the rows. Double-click a cell to edit it. Add and delete records, set a cell to NULL. |
-| Edit Pragmas | Shows the pragmas libsql supports. Changes the ones that can be changed. |
-| Execute SQL | Runs SQL from editor tabs. Runs the selection when there is one. `Ctrl+Enter` runs. Saves the rows as CSV. |
+| Database Structure | Lists the tables, indices, views and triggers with their columns. Creates and deletes them, and modifies a table (rename it, rename, drop or add a column). Each dialog shows the SQL before it runs. Export SQL downloads a script that rebuilds the schema and the rows. |
+| Browse Data | Shows a table or view in a grid. Sort by a column heading, filter in the box under it, page through the rows. Double-click a cell to edit it, or open the Edit Cell panel to see and edit a long value. Add and delete records, set a cell to NULL. Export CSV saves the rows that match the filter. |
+| Edit Pragmas | Shows the pragmas that change what libsql does, in three groups: saved in the database file, this connection only, and reported by the store. |
+| Execute SQL | Runs SQL from editor tabs. The editor colors the SQL and completes keywords, functions, tables and columns (`Ctrl+Space`, or as you type; `alias.` and `table.` offer columns). Runs the selection when there is one; `Ctrl+Enter` runs. Opens and saves `.sql` files, and saves the rows as CSV. |
+
+The top bar shows which database the page edits and whether it is read-write or read-only.
 
 ## Options
 
@@ -34,6 +36,22 @@ statements that control transactions run as written.
 
 The tool has one database handle. Every browser that connects sees the same pending changes.
 
+## Pragmas
+
+A pragma is a setting. The Edit Pragmas tab says where each one lives:
+
+- **Saved in the database file:** `user_version` and `application_id`. Every program that opens the file sees them.
+- **This connection only:** `foreign_keys`, `recursive_triggers`, `ignore_check_constraints`, `temp_store` and
+  `busy_timeout`. They belong to the connection of this tool. They are lost when the tool stops, and they do not
+  change isvc or any other program that opens the file.
+- **Reported by the store:** `journal_mode`, `encoding`, `page_size`, `page_count`, `freelist_count` and
+  `schema_version`. They cannot be changed.
+
+`journal_mode` always reads `wal`. libsql reports that name because SQLite tools ask for it. The store is a
+copy-on-write B+tree: a commit writes new pages and then switches to them, so there is no journal and no WAL file.
+`PRAGMA cache_size` and `PRAGMA reverse_unordered_selects` are accepted by libsql but have no effect, so the tab
+does not list them.
+
 ## Safety
 
 The interface has no login. Anyone who can reach the port can read and change the data.
@@ -52,6 +70,9 @@ The interface has no login. Anyone who can reach the port can read and change th
 - An INTEGER that a JavaScript number cannot hold is sent as `{"type":"integer","value":"..."}`.
 - All requests that touch the database run one after another on one thread. A long query holds the
   others.
+- Export CSV in Browse Data stops at 100000 rows.
+- Another process cannot open a store while the tool has it open (and the other way round): the store allows one
+  process. Stop isvc before you point the tool at its `metrics.db`.
 
 ## The API
 
@@ -60,8 +81,9 @@ The front end uses a JSON API ([include/web_api.hpp](include/web_api.hpp)). Ever
 
 | Request | Body | Reply |
 | --- | --- | --- |
-| `GET /api/info` | | `path`, `version`, `readOnly` |
+| `GET /api/info` | | `path`, `version`, `readOnly`, `functions` |
 | `GET /api/schema` | | `tables`, `views`, `indexes`, `triggers` |
+| `GET /api/dump` | | `sql`, a script that rebuilds the schema and the rows |
 | `POST /api/sql` | `sql`, `maxRows` | `columns`, `rows`, `rowCount`, `truncated`, `changes`, `lastInsertId`, `elapsedMs` |
 | `POST /api/browse` | `table`, `offset`, `limit`, `sort`, `filters` | `columns`, `rows`, `keys`, `total`, `editable`, `view` |
 | `POST /api/rows/insert` | `table`, `values` | `changes`, `lastInsertId` |
@@ -69,7 +91,7 @@ The front end uses a JSON API ([include/web_api.hpp](include/web_api.hpp)). Ever
 | `POST /api/rows/delete` | `table`, `keys` | `changes` |
 | `POST /api/commit` | `{}` | |
 | `POST /api/revert` | `{}` | |
-| `GET /api/pragmas` | | `pragmas` |
+| `GET /api/pragmas` | | `pragmas`: `name`, `kind`, `scope`, `description`, `readOnly`, `value`, `choices` |
 | `POST /api/pragmas` | `name`, `value` | |
 
 A filter is text typed under a column: plain text finds rows that contain it, and a leading `=`, `<>`,

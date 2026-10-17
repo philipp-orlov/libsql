@@ -37,6 +37,8 @@ public:
 
     Reply info();
     Reply schema();
+    /// {"sql": "..."}: a script that rebuilds the schema and the rows.
+    Reply dump();
 
     /// {"sql": "...", "maxRows": n}: runs the statements and returns the rows of the last one.
     Reply execute(const json::Json& request);

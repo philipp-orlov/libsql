@@ -13,12 +13,15 @@ import { BrowseReply, Cell, SortSpec } from '../../models/api.models';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { WorkspaceService } from '../../services/workspace.service';
-import { cellEditText, cellKind, cellText, inputToCell, isEditableCell } from '../../utils/cell';
+import { cellEditText, cellKind, cellText, inputToCell, isEditableCell, toCsv } from '../../utils/cell';
+import { downloadText } from '../../utils/download';
 import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
 import { RecordDialogComponent } from '../record-dialog/record-dialog.component';
 
 const PAGE_SIZES = [50, 100, 500, 1000];
 const FILTER_DELAY_MS = 300;
+const EXPORT_PAGE_ROWS = 1000;
+const EXPORT_LIMIT = 100000;
 
 interface GridRow {
   index: number;
@@ -45,6 +48,7 @@ export class BrowseComponent {
 
   protected readonly pageSizes = PAGE_SIZES;
   protected readonly cellText = cellText;
+  protected readonly cellEditText = cellEditText;
   protected readonly cellKind = cellKind;
 
   protected readonly table = this.workspace.table;
@@ -67,6 +71,26 @@ export class BrowseComponent {
   protected readonly dataColumns = computed(() => ['rowno', ...this.columnIds()]);
   protected readonly filterColumns = computed(() => ['filter-rowno', ...this.columnIds().map(id => `filter-${id}`)]);
   protected readonly editable = computed(() => this.page()?.editable ?? false);
+
+  protected readonly panelOpen = signal(false);
+  protected readonly panelText = signal('');
+  protected readonly exporting = signal(false);
+  protected readonly activeValue = computed(() => {
+    const active = this.activeCell();
+    return active ? this.page()?.rows[active.row]?.[active.column] : undefined;
+  });
+  protected readonly activeColumn = computed(() => {
+    const active = this.activeCell();
+    return active ? (this.page()?.columns[active.column] ?? null) : null;
+  });
+  protected readonly panelEditable = computed(() => {
+    const value = this.activeValue();
+    return this.editable() && value !== undefined && isEditableCell(value);
+  });
+  protected readonly panelChanged = computed(() => {
+    const value = this.activeValue();
+    return value !== undefined && this.panelText() !== cellEditText(value);
+  });
 
   private loadCount = 0;
   private filterTimer: ReturnType<typeof setTimeout> | undefined;
@@ -91,6 +115,11 @@ export class BrowseComponent {
           void this.load(this.table());
         }
       });
+    });
+    // The panel shows the cell that is active.
+    effect(() => {
+      const value = this.activeValue();
+      untracked(() => this.panelText.set(value === undefined ? '' : cellEditText(value)));
     });
     // A table that was dropped or renamed is no longer there to browse.
     effect(() => {
@@ -236,6 +265,40 @@ export class BrowseComponent {
     const page = this.page();
     if (active && page && isEditableCell(page.rows[active.row][active.column])) {
       await this.update(active.row, page.columns[active.column].name, null);
+    }
+  }
+
+  protected async applyPanel(): Promise<void> {
+    const active = this.activeCell();
+    const column = this.activeColumn();
+    if (active && column && this.panelEditable() && this.panelChanged()) {
+      await this.update(active.row, column.name, inputToCell(this.panelText(), column));
+    }
+  }
+
+  /** Saves every row the filter matches, the way the grid shows them, up to a limit. */
+  protected async exportCsv(): Promise<void> {
+    const page = this.page();
+    if (!page || this.exporting()) {
+      return;
+    }
+    this.exporting.set(true);
+    try {
+      const sort = this.sort();
+      const wanted = Math.min(page.total, EXPORT_LIMIT);
+      const rows: Cell[][] = [];
+      for (let offset = 0; offset < wanted; offset += EXPORT_PAGE_ROWS) {
+        const part = await this.db.browse({ table: page.table, offset, limit: EXPORT_PAGE_ROWS, sort: sort ? [sort] : [], filters: this.filters() });
+        rows.push(...part.rows);
+      }
+      downloadText(`${page.table}.csv`, toCsv(page.columns.map(column => column.name), rows), 'text/csv');
+      if (page.total > EXPORT_LIMIT) {
+        this.notice.info(`Only the first ${EXPORT_LIMIT} of ${page.total} rows were exported.`);
+      }
+    } catch (failure) {
+      this.notice.error(failure);
+    } finally {
+      this.exporting.set(false);
     }
   }
 

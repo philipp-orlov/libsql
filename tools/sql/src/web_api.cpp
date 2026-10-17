@@ -429,32 +429,68 @@ struct PragmaChoice
     const char* label;
 };
 
+// Where a pragma lives: in the database file, in the connection of this tool (lost when the tool
+// exits, and not shared with any other process), or only reported by the store.
 struct PragmaSpec
 {
     const char* name;
     const char* kind;  // boolean, integer, choice or text
     bool readOnly;
+    const char* scope;  // file, session or store
+    const char* description;
     std::vector<PragmaChoice> choices;
 };
 
+// Only pragmas that change what libsql does are listed.
 const std::vector<PragmaSpec>& pragmaSpecs()
 {
     static const std::vector<PragmaSpec> specs = {
-        {"foreign_keys", "boolean", false, {}},
-        {"recursive_triggers", "boolean", false, {}},
-        {"ignore_check_constraints", "boolean", false, {}},
-        {"reverse_unordered_selects", "boolean", false, {}},
-        {"temp_store", "choice", false, {{0, "Default"}, {1, "File"}, {2, "Memory"}}},
-        {"user_version", "integer", false, {}},
-        {"application_id", "integer", false, {}},
-        {"busy_timeout", "integer", false, {}},
-        {"cache_size", "integer", false, {}},
-        {"journal_mode", "text", true, {}},
-        {"encoding", "text", true, {}},
-        {"page_size", "integer", true, {}},
-        {"page_count", "integer", true, {}},
-        {"freelist_count", "integer", true, {}},
-        {"schema_version", "integer", true, {}},
+        {"foreign_keys", "boolean", false, "session", "Enforce FOREIGN KEY constraints.", {}},
+        {"recursive_triggers", "boolean", false, "session", "Let a trigger fire itself.", {}},
+        {"ignore_check_constraints",
+         "boolean",
+         false,
+         "session",
+         "Do not enforce CHECK constraints.",
+         {}},
+        {"temp_store",
+         "choice",
+         false,
+         "session",
+         "Where a large ORDER BY may put its sorted runs. Memory never writes a temporary file.",
+         {{0, "Default"}, {1, "File"}, {2, "Memory"}}},
+        {"busy_timeout",
+         "integer",
+         false,
+         "session",
+         "Milliseconds a write waits for another writer. 0 waits without a limit.",
+         {}},
+        {"user_version",
+         "integer",
+         false,
+         "file",
+         "A number the application keeps in the file, for example a schema version.",
+         {}},
+        {"application_id",
+         "integer",
+         false,
+         "file",
+         "A number that tells which application owns the file.",
+         {}},
+        {"journal_mode",
+         "text",
+         true,
+         "store",
+         "Always wal. libsql reports this name because SQLite tools ask for it. The store is "
+         "copy-on-write: a "
+         "commit writes new pages and then switches to them, so there is no journal and no WAL "
+         "file.",
+         {}},
+        {"encoding", "text", true, "store", "Text is always UTF-8.", {}},
+        {"page_size", "integer", true, "store", "Bytes in one page of the store.", {}},
+        {"page_count", "integer", true, "store", "Pages in use.", {}},
+        {"freelist_count", "integer", true, "store", "Pages free for reuse.", {}},
+        {"schema_version", "integer", true, "store", "Counts the changes to the schema.", {}},
     };
     return specs;
 }
@@ -468,8 +504,48 @@ WebApi::WebApi(sql::Database& db, bool readOnly) : db_(db), readOnly_(readOnly) 
 Reply WebApi::info()
 {
     return guarded(db_, [&] {
-        return Json{
-            {"path", db_.path().string()}, {"version", sql::version()}, {"readOnly", readOnly_}};
+        // The names the SQL editor offers beside the keywords.
+        Json functions = Json::array();
+        for (const sql::Row& row :
+             db_.exec("SELECT DISTINCT name FROM pragma_function_list ORDER BY name"))
+            functions.push_back(row[0].toText());
+        return Json{{"path", db_.path().string()},
+                    {"version", sql::version()},
+                    {"readOnly", readOnly_},
+                    {"functions", std::move(functions)}};
+    });
+}
+
+// A script that rebuilds the schema and the rows, as `.dump` of the command line does.
+Reply WebApi::dump()
+{
+    return guarded(db_, [&] {
+        std::string script = "BEGIN TRANSACTION;\n";
+        const sql::Result tables = db_.exec(
+            "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND sql IS NOT NULL");
+        for (const sql::Row& table : tables) {
+            const std::string name = table[0].toText();
+            script += table[1].toText() + ";\n";
+            std::string columns;
+            std::string values;
+            for (const sql::ColumnInfo& c : db_.table(name).columns) {
+                if (c.generated)
+                    continue;
+                columns += (columns.empty() ? "" : ",") + quote(c.name);
+                values +=
+                    (values.empty() ? "" : "||','||") + std::string("quote(") + quote(c.name) + ")";
+            }
+            if (columns.empty())
+                continue;
+            const std::string prefix = "INSERT INTO " + quote(name) + "(" + columns + ") VALUES(";
+            for (const sql::Row& row : db_.exec("SELECT " + values + " FROM " + quote(name)))
+                script += prefix + row[0].toText() + ");\n";
+        }
+        for (const sql::Row& row :
+             db_.exec("SELECT sql FROM sqlite_schema WHERE type <> 'table' AND sql IS NOT NULL"))
+            script += row[0].toText() + ";\n";
+        script += "COMMIT;\n";
+        return Json{{"sql", std::move(script)}};
     });
 }
 
@@ -773,6 +849,8 @@ Reply WebApi::pragmas()
                 choices.push_back(Json{{"value", choice.value}, {"label", choice.label}});
             list.push_back(Json{{"name", spec.name},
                                 {"kind", spec.kind},
+                                {"scope", spec.scope},
+                                {"description", spec.description},
                                 {"readOnly", spec.readOnly || readOnly_},
                                 {"value", encodeValue(result[0][0])},
                                 {"choices", std::move(choices)}});

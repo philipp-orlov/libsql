@@ -174,6 +174,7 @@ struct WebServer::Impl
     {
         get("/api/info", &WebApi::info);
         get("/api/schema", &WebApi::schema);
+        get("/api/dump", &WebApi::dump);
         get("/api/pragmas", &WebApi::pragmas);
         post("/api/sql", &WebApi::execute);
         post("/api/browse", &WebApi::browse);

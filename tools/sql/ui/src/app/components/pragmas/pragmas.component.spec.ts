@@ -100,4 +100,25 @@ describe('PragmasComponent', () => {
     await create();
     expect(notice.error).toHaveBeenCalledTimes(1);
   });
+
+  it('groups the pragmas by where they live', async () => {
+    const el = await create();
+    const groups = Array.from(el.querySelectorAll('section.group'));
+    expect(groups.map(group => group.getAttribute('data-scope'))).toEqual(['file', 'session', 'store']);
+    expect(Array.from(groups[0].querySelectorAll('.pragma')).map(p => p.getAttribute('data-name'))).toEqual(['user_version']);
+    expect(Array.from(groups[1].querySelectorAll('.pragma')).map(p => p.getAttribute('data-name'))).toEqual(['foreign_keys', 'temp_store']);
+    expect(Array.from(groups[2].querySelectorAll('.pragma')).map(p => p.getAttribute('data-name'))).toEqual(['journal_mode']);
+    expect(groups[1].textContent).toContain('do not change isvc');
+  });
+
+  it('says what each pragma does', async () => {
+    const el = await create();
+    expect(pragma(el, 'foreign_keys').querySelector('.description')!.textContent).toBe('Enforce FOREIGN KEY constraints.');
+    expect(pragma(el, 'journal_mode').querySelector('.description')!.textContent).toBe('Always wal.');
+  });
+
+  it('names the database it is about', async () => {
+    const el = await create();
+    expect(query(el, '.intro').textContent).toContain('/data/people.sqldb');
+  });
 });

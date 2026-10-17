@@ -66,14 +66,25 @@ export function sqlReply(overrides: Partial<SqlReply> = {}): SqlReply {
 }
 
 export function fakeInfo(overrides: Partial<DatabaseInfo> = {}): DatabaseInfo {
-  return { path: '/data/people.sqldb', version: '0.2.0', readOnly: false, inTransaction: false, ...overrides };
+  return { path: '/data/people.sqldb', version: '0.2.0', readOnly: false, inTransaction: false, functions: ['count', 'lower'], ...overrides };
 }
 
 export const SAMPLE_PRAGMAS: PragmaInfo[] = [
-  { name: 'foreign_keys', kind: 'boolean', readOnly: false, value: 0, choices: [] },
-  { name: 'temp_store', kind: 'choice', readOnly: false, value: 0, choices: [{ value: 0, label: 'Default' }, { value: 2, label: 'Memory' }] },
-  { name: 'user_version', kind: 'integer', readOnly: false, value: 3, choices: [] },
-  { name: 'journal_mode', kind: 'text', readOnly: true, value: 'wal', choices: [] },
+  { name: 'foreign_keys', kind: 'boolean', scope: 'session', description: 'Enforce FOREIGN KEY constraints.', readOnly: false, value: 0, choices: [] },
+  {
+    name: 'temp_store',
+    kind: 'choice',
+    scope: 'session',
+    description: 'Where a large ORDER BY puts its runs.',
+    readOnly: false,
+    value: 0,
+    choices: [
+      { value: 0, label: 'Default' },
+      { value: 2, label: 'Memory' },
+    ],
+  },
+  { name: 'user_version', kind: 'integer', scope: 'file', description: 'A number the application keeps in the file.', readOnly: false, value: 3, choices: [] },
+  { name: 'journal_mode', kind: 'text', scope: 'store', description: 'Always wal.', readOnly: true, value: 'wal', choices: [] },
 ];
 
 /** A DatabaseService whose calls are spies; the signals are real, so the views react. */
@@ -94,6 +105,7 @@ export function fakeDatabase() {
     revert: jasmine.createSpy('revert').and.resolveTo(),
     pragmas: jasmine.createSpy('pragmas').and.callFake(async () => ({ inTransaction: false, pragmas: SAMPLE_PRAGMAS })),
     setPragma: jasmine.createSpy('setPragma').and.resolveTo(),
+    dump: jasmine.createSpy('dump').and.resolveTo('BEGIN TRANSACTION;\nCOMMIT;\n'),
   };
 }
 

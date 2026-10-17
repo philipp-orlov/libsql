@@ -5,29 +5,40 @@
   </div>
 
   <div class="list">
-    @for (pragma of pragmas(); track pragma.name) {
-      <div class="pragma" [attr.data-name]="pragma.name">
-        <span class="label mono">{{ pragma.name }}</span>
-        <span class="control">
-          @if (pragma.readOnly || pragma.kind === 'text') {
-            <span class="readonly mono">{{ cellText(pragma.value) }}</span>
-          } @else if (pragma.kind === 'boolean') {
-            <mat-checkbox [checked]="value(pragma) === 1" (change)="edit(pragma, $event.checked ? 1 : 0)" />
-          } @else if (pragma.kind === 'choice') {
-            <mat-form-field subscriptSizing="dynamic">
-              <mat-select [value]="value(pragma)" (selectionChange)="edit(pragma, $event.value)">
-                @for (choice of pragma.choices; track choice.value) {
-                  <mat-option [value]="choice.value">{{ choice.label }}</mat-option>
-                }
-              </mat-select>
-            </mat-form-field>
-          } @else {
-            <mat-form-field subscriptSizing="dynamic">
-              <input matInput class="number" type="number" #box [value]="value(pragma)" (input)="edit(pragma, box.valueAsNumber)" />
-            </mat-form-field>
-          }
-        </span>
-      </div>
+    <p class="intro">
+      Settings of the database <span class="mono">{{ path() }}</span
+      >. Each group says where its settings live.
+    </p>
+    @for (group of groups(); track group.scope) {
+      <section class="group" [attr.data-scope]="group.scope">
+        <h3>{{ group.title }}</h3>
+        <p class="note">{{ group.note }}</p>
+        @for (pragma of group.pragmas; track pragma.name) {
+          <div class="pragma" [attr.data-name]="pragma.name">
+            <span class="label mono">{{ pragma.name }}</span>
+            <span class="control">
+              @if (pragma.readOnly || pragma.kind === 'text') {
+                <span class="readonly mono">{{ cellText(pragma.value) }}</span>
+              } @else if (pragma.kind === 'boolean') {
+                <mat-checkbox [checked]="value(pragma) === 1" (change)="edit(pragma, $event.checked ? 1 : 0)" />
+              } @else if (pragma.kind === 'choice') {
+                <mat-form-field subscriptSizing="dynamic">
+                  <mat-select [value]="value(pragma)" (selectionChange)="edit(pragma, $event.value)" [attr.aria-label]="pragma.name">
+                    @for (choice of pragma.choices; track choice.value) {
+                      <mat-option [value]="choice.value">{{ choice.label }}</mat-option>
+                    }
+                  </mat-select>
+                </mat-form-field>
+              } @else {
+                <mat-form-field subscriptSizing="dynamic">
+                  <input matInput class="number" type="number" #box [value]="value(pragma)" (input)="edit(pragma, box.valueAsNumber)" [attr.aria-label]="pragma.name" />
+                </mat-form-field>
+              }
+            </span>
+            <span class="description">{{ pragma.description }}</span>
+          </div>
+        }
+      </section>
     }
   </div>
 </div>

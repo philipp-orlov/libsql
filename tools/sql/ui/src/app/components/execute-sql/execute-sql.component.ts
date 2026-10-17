@@ -9,6 +9,7 @@ import { SqlReply } from '../../models/api.models';
 import { DatabaseService } from '../../services/database.service';
 import { cellKind, cellText, toCsv } from '../../utils/cell';
 import { downloadText } from '../../utils/download';
+import { SqlEditorComponent } from '../sql-editor/sql-editor.component';
 
 export interface Editor {
   id: number;
@@ -37,12 +38,12 @@ function newEditor(id: number): Editor {
 /** The Execute SQL tab: editors in tabs, each with the result of its last run. */
 @Component({
   selector: 'app-execute-sql',
-  imports: [MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, MatTooltipModule],
+  imports: [MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, MatTooltipModule, SqlEditorComponent],
   templateUrl: './execute-sql.component.html',
   styleUrl: './execute-sql.component.scss',
 })
 export class ExecuteSqlComponent {
-  private readonly db = inject(DatabaseService);
+  protected readonly db = inject(DatabaseService);
 
   protected readonly cellText = cellText;
   protected readonly cellKind = cellKind;
@@ -68,9 +69,9 @@ export class ExecuteSqlComponent {
     this.patch(id, { sql });
   }
 
-  /** Runs what is selected in the box, or all of it. */
-  protected async run(editor: Editor, box: HTMLTextAreaElement): Promise<void> {
-    const text = box.selectionStart !== box.selectionEnd ? box.value.substring(box.selectionStart, box.selectionEnd) : box.value;
+  /** Runs what is selected in the editor, or all of it. */
+  protected async run(editor: Editor, box: SqlEditorComponent): Promise<void> {
+    const text = box.selectedText();
     if (text.trim() === '' || editor.running) {
       return;
     }
@@ -94,11 +95,16 @@ export class ExecuteSqlComponent {
     }
   }
 
-  protected onKeydown(event: KeyboardEvent, editor: Editor, box: HTMLTextAreaElement): void {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-      event.preventDefault();
-      void this.run(editor, box);
+  protected async openFile(editor: Editor, input: HTMLInputElement): Promise<void> {
+    const file = input.files?.[0];
+    if (file) {
+      this.patch(editor.id, { sql: await file.text(), title: file.name });
     }
+    input.value = '';
+  }
+
+  protected saveFile(editor: Editor): void {
+    downloadText(editor.title.endsWith('.sql') ? editor.title : `${editor.title.replace(/\s+/g, '-').toLowerCase()}.sql`, editor.sql, 'application/sql');
   }
 
   private patch(id: number, changes: Partial<Editor>): void {

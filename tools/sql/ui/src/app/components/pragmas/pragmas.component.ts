@@ -6,10 +6,20 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 
-import { PragmaInfo } from '../../models/api.models';
+import { PragmaInfo, PragmaScope } from '../../models/api.models';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { cellText } from '../../utils/cell';
+
+const GROUPS: { scope: PragmaScope; title: string; note: string }[] = [
+  { scope: 'file', title: 'Saved in the database file', note: 'Every program that opens the file sees these.' },
+  {
+    scope: 'session',
+    title: 'This connection only',
+    note: 'They belong to the connection of this tool. They are lost when the tool stops, and they do not change isvc or any other program that opens the file.',
+  },
+  { scope: 'store', title: 'Reported by the store', note: 'Read-only.' },
+];
 
 /** The Edit Pragmas tab. */
 @Component({
@@ -19,7 +29,7 @@ import { cellText } from '../../utils/cell';
   styleUrl: './pragmas.component.scss',
 })
 export class PragmasComponent {
-  private readonly db = inject(DatabaseService);
+  protected readonly db = inject(DatabaseService);
   private readonly notice = inject(NoticeService);
 
   protected readonly pragmas = signal<PragmaInfo[]>([]);
@@ -27,6 +37,10 @@ export class PragmasComponent {
   protected readonly edits = signal<Record<string, number>>({});
   protected readonly changed = computed(() => Object.keys(this.edits()).length > 0);
   protected readonly cellText = cellText;
+  protected readonly path = computed(() => this.db.info()?.path ?? '');
+  protected readonly groups = computed(() =>
+    GROUPS.map(group => ({ ...group, pragmas: this.pragmas().filter(pragma => pragma.scope === group.scope) })).filter(group => group.pragmas.length > 0),
+  );
 
   constructor() {
     // The server's state can change under this tab: Write Changes, a PRAGMA run in Execute SQL.

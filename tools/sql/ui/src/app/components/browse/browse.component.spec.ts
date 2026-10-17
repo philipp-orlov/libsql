@@ -363,4 +363,133 @@ describe('BrowseComponent', () => {
       expect(notice.error).toHaveBeenCalledWith(jasmine.objectContaining({ message: 'NOT NULL constraint failed: person.name' }));
     });
   });
+
+  describe('the Edit Cell panel', () => {
+    const toggle = (el: HTMLElement) => button(el, 'toggle-panel');
+    const panelBox = (el: HTMLElement) => query<HTMLTextAreaElement>(el, '.panel-text');
+
+    it('is closed until it is asked for', async () => {
+      const { el } = await create();
+      expect(el.querySelector('.panel')).toBeNull();
+      toggle(el).click();
+      await settle();
+      expect(el.querySelector('.panel')).not.toBeNull();
+      expect(query(el, '.panel .hint').textContent).toContain('Select a cell');
+    });
+
+    it('shows the value of the selected cell in full', async () => {
+      db.browse.and.callFake(async () => personPage({ rows: [[1, 'a very long text '.repeat(10), 36, null]], keys: [[1]] }));
+      const { el } = await create();
+      toggle(el).click();
+      cell(el, 0, 1).click();
+      await settle();
+      expect(panelBox(el).value).toBe('a very long text '.repeat(10));
+      expect(query(el, '.panel .meta').textContent).toContain('person.name');
+      expect(query(el, '.panel .meta').textContent).toContain('170 characters');
+    });
+
+    it('follows the selected cell', async () => {
+      const { el } = await create();
+      toggle(el).click();
+      cell(el, 0, 1).click();
+      await settle();
+      expect(panelBox(el).value).toBe('Ada');
+      cell(el, 2, 3).click();
+      await settle();
+      expect(panelBox(el).value).toBe('third');
+    });
+
+    it('writes what is typed when Apply is pressed', async () => {
+      const { el } = await create();
+      toggle(el).click();
+      cell(el, 0, 2).click();
+      await settle();
+      expect(button(el, 'apply').disabled).toBeTrue();
+      typeInto(panelBox(el), '41');
+      await settle();
+      expect(button(el, 'apply').disabled).toBeFalse();
+      button(el, 'apply').click();
+      await settle();
+      expect(db.updateRow).toHaveBeenCalledOnceWith('person', [1], { age: 41 });
+    });
+
+    it('puts the value back on Revert', async () => {
+      const { el } = await create();
+      toggle(el).click();
+      cell(el, 0, 1).click();
+      await settle();
+      typeInto(panelBox(el), 'Zed');
+      await settle();
+      button(el, 'reset').click();
+      await settle();
+      expect(panelBox(el).value).toBe('Ada');
+      expect(db.updateRow).not.toHaveBeenCalled();
+    });
+
+    it('only shows a cell that cannot be edited', async () => {
+      db.browse.and.callFake(async () => personPage({ editable: false, view: true }));
+      const { el } = await create();
+      toggle(el).click();
+      cell(el, 0, 1).click();
+      await settle();
+      expect(panelBox(el).readOnly).toBeTrue();
+      expect(button(el, 'apply').disabled).toBeTrue();
+      expect(query(el, '.panel .hint').textContent).toContain('cannot be edited');
+    });
+  });
+
+  describe('Export CSV', () => {
+    function captureDownloads() {
+      const blobs: Blob[] = [];
+      spyOn(URL, 'createObjectURL').and.callFake(blob => {
+        blobs.push(blob as Blob);
+        return 'blob:test';
+      });
+      spyOn(URL, 'revokeObjectURL');
+      const names: string[] = [];
+      spyOn(HTMLAnchorElement.prototype, 'click').and.callFake(function (this: HTMLAnchorElement) {
+        names.push(this.download);
+      });
+      return { blobs, names };
+    }
+
+    it('is off until a table is shown', async () => {
+      const { el } = await create(null);
+      expect(button(el, 'export').disabled).toBeTrue();
+    });
+
+    it('saves every row that matches, in the order of the grid', async () => {
+      const { blobs, names } = captureDownloads();
+      const { el } = await create();
+      el.querySelectorAll<HTMLElement>('th.sortable')[1].click();
+      await settle();
+      db.browse.calls.reset();
+      button(el, 'export').click();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      await settle();
+      expect(db.browse).toHaveBeenCalledOnceWith({ table: 'person', offset: 0, limit: 1000, sort: [{ column: 'name', descending: false }], filters: {} });
+      expect(names).toEqual(['person.csv']);
+      expect(await blobs[0].text()).toBe('id,name,age,note\r\n1,Ada,36,first\r\n2,Bob,17,\r\n3,Cyd,52,third\r\n');
+    });
+
+    it('reads a big table a page at a time', async () => {
+      captureDownloads();
+      db.browse.and.callFake(async () => personPage({ total: 2500 }));
+      const { el } = await create();
+      db.browse.calls.reset();
+      button(el, 'export').click();
+      await new Promise(resolve => setTimeout(resolve, 50));
+      await settle();
+      expect(db.browse.calls.allArgs().map(args => args[0].offset)).toEqual([0, 1000, 2000]);
+    });
+
+    it('reports a table that cannot be read', async () => {
+      const { el } = await create();
+      db.browse.and.rejectWith(new Error('disk error'));
+      button(el, 'export').click();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      await settle();
+      expect(notice.error).toHaveBeenCalledWith(jasmine.objectContaining({ message: 'disk error' }));
+    });
+  });
 });

@@ -29,10 +29,66 @@
   background: var(--mat-sys-outline-variant);
 }
 
-.grid-area {
+.spacer {
+  flex: 1;
+}
+
+.toggle-panel.on {
+  background: var(--mat-sys-secondary-container);
+}
+
+.body {
+  display: flex;
   flex: 1;
   min-height: 0;
+}
+
+.grid-area {
+  flex: 1;
+  min-width: 0;
   overflow: auto;
+}
+
+.panel {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 320px;
+  padding: 8px 12px;
+  border-left: 1px solid var(--mat-sys-outline-variant);
+  background: var(--mat-sys-surface-container-low);
+
+  h3 {
+    margin: 4px 0;
+    font-size: 15px;
+    font-weight: 500;
+  }
+
+  .meta {
+    display: flex;
+    flex-direction: column;
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: var(--mat-sys-on-surface-variant);
+  }
+
+  .panel-text {
+    flex: 1;
+    min-height: 120px;
+    padding: 8px;
+    resize: none;
+    border: 1px solid var(--mat-sys-outline-variant);
+    border-radius: 4px;
+    background: var(--mat-sys-surface);
+    color: inherit;
+    font-size: 13px;
+  }
+
+  .panel-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
 }
 
 .hint {
