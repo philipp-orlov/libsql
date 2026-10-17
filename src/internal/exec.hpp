@@ -478,6 +478,9 @@ struct CorePlan
     /// that slot before the next row replaces it), or -1. Empty until the
     /// first projection decides.
     std::vector<int> swapFrom;
+    /// The first of the slots every output takes in order, when they are
+    /// consecutive: the row goes to the sink from there, uncopied. Else -1.
+    int directFrom = -1;
     bool swapDecided = false;
     FlatKeySet seen;
     std::vector<const Value*> argv;

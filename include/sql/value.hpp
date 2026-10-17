@@ -159,9 +159,28 @@ public:
         std::swap(sub_, other.sub_);
     }
 
-    void setNull() noexcept { sub_ = 0; v_.emplace<std::monostate>(); }
-    void setInteger(std::int64_t i) noexcept { sub_ = 0; v_.emplace<std::int64_t>(i); }
-    void setReal(double d) noexcept { sub_ = 0; v_.emplace<double>(d); }
+    void setNull() noexcept
+    {
+        sub_ = 0;
+        if (v_.index() != 0)
+            v_.emplace<std::monostate>();
+    }
+    void setInteger(std::int64_t i) noexcept
+    {
+        sub_ = 0;
+        if (auto* p = std::get_if<std::int64_t>(&v_))
+            *p = i;
+        else
+            v_.emplace<std::int64_t>(i);
+    }
+    void setReal(double d) noexcept
+    {
+        sub_ = 0;
+        if (auto* p = std::get_if<double>(&v_))
+            *p = d;
+        else
+            v_.emplace<double>(d);
+    }
     void setDatetime(Datetime d) noexcept { sub_ = 0; v_.emplace<Datetime>(d); }
     void setText(std::string_view s)
     {

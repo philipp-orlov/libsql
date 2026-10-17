@@ -518,6 +518,11 @@ void decideSwaps(CorePlan& p)
             std::size_t(e->slot) < s.base + s.width && reads[std::size_t(e->slot) - s.base] == 1)
             p.swapFrom[i] = e->slot;
     }
+    p.directFrom = p.swapFrom.empty() ? -1 : p.swapFrom[0];
+    for (std::size_t i = 0; i < p.swapFrom.size() && p.directFrom >= 0; ++i) {
+        if (p.swapFrom[i] != p.directFrom + int(i))
+            p.directFrom = -1;
+    }
 }
 
 /// Output `i` of the current row: swapped out of its slot when allowed.
@@ -593,6 +598,8 @@ bool project(CorePlan& p, Ctx& c, RowSink& sink)
         }
         finishSources(p, c);
     }
+    if (p.directFrom >= 0 && !p.distinct)
+        return sink.take(c, c.slots + p.directFrom, n);
     for (std::size_t i = 0; i < n; ++i)
         produce(p, c, i);
     if (p.distinct) {
@@ -1639,7 +1646,11 @@ void runRows(SelectPlan& sp, Ctx& c, RowSink& sink)
     if (!compound && sp.order.empty()) {
         TrimSink trim(sink, columns);
         if (limit < 0 && offset == 0) {
-            runCore(sp.cores[0], c, trim);
+            // Nothing hidden to trim: one virtual call per row fewer.
+            if (sp.cores[0].outputs.size() <= columns)
+                runCore(sp.cores[0], c, sink);
+            else
+                runCore(sp.cores[0], c, trim);
             return;
         }
         LimitSink lim(trim, limit, offset);
