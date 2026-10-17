@@ -317,6 +317,9 @@ sql <database> [options]
   --mode M      output as table (default), csv or list
   --no-header   leave the column names out
   --readonly    open an existing database and refuse to write to it
+  --listen PORT serve a web interface on PORT, after any -c or -f
+  --host ADDR   with --listen, bind to ADDR (default 127.0.0.1; there is no login)
+  --public DIR  with --listen, serve the files of DIR instead of the built-in page
 ```
 
 With no `-c` and no `-f` it reads statements from stdin -- a statement ends at
@@ -337,6 +340,10 @@ $ sql catalog.db --mode table -c "SELECT title, price FROM book ORDER BY price"
 ```
 
 Exit status: 0 ok, 1 bad usage, 2 statement or store error.
+
+`--listen PORT` serves a browser front end that works like DB Browser for
+SQLite: the structure of the database, a grid to browse and edit a table, the
+pragmas, and an Execute SQL tab. See [tools/sql/README.md](tools/sql/README.md).
 
 ## Performance
 

@@ -1,0 +1,14 @@
+.content {
+  display: flex;
+  flex-direction: column;
+  min-width: 360px;
+}
+
+.field {
+  width: 100%;
+}
+
+.type {
+  color: var(--mat-sys-outline);
+  font-size: 11px;
+}

@@ -1,0 +1,113 @@
+:host {
+  display: block;
+  height: 100%;
+}
+
+.execute {
+  position: relative;
+  height: 100%;
+}
+
+.editors {
+  height: 100%;
+
+  ::ng-deep .mat-mdc-tab-body-wrapper {
+    flex: 1;
+    min-height: 0;
+  }
+}
+
+// Sits at the right end of the tab strip.
+.add-tab {
+  position: absolute;
+  top: 0;
+  right: 8px;
+}
+
+.tab-title {
+  margin-right: 4px;
+}
+
+.close-tab {
+  transform: scale(0.7);
+}
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.actions {
+  flex: none;
+  padding: 4px 8px;
+}
+
+.sql {
+  flex: none;
+  box-sizing: border-box;
+  height: 30%;
+  min-height: 80px;
+  margin: 0 8px;
+  padding: 8px;
+  resize: vertical;
+  tab-size: 4;
+  border: 1px solid var(--mat-sys-outline-variant);
+  border-radius: 4px;
+  background: var(--mat-sys-surface);
+  color: inherit;
+  font-size: 13px;
+
+  &:focus {
+    outline: 2px solid var(--mat-sys-primary);
+    outline-offset: -1px;
+  }
+}
+
+.results {
+  flex: 1;
+  min-height: 0;
+  margin: 8px 8px 0;
+  overflow: auto;
+}
+
+.grid {
+  min-width: 100%;
+  width: max-content;
+
+  th,
+  td {
+    max-width: 360px;
+    padding: 0 8px;
+    border-right: 1px solid var(--mat-sys-surface-container-high);
+    white-space: nowrap;
+  }
+
+  th {
+    background: var(--mat-sys-surface-container);
+  }
+
+  .value {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.message {
+  flex: none;
+  min-height: 2.5em;
+  max-height: 20%;
+  margin: 0;
+  padding: 6px 12px;
+  overflow: auto;
+  border-top: 1px solid var(--mat-sys-outline-variant);
+  background: var(--mat-sys-surface-container-low);
+  font-family: inherit;
+  font-size: 13px;
+  white-space: pre-wrap;
+
+  &.failed {
+    color: var(--mat-sys-error);
+  }
+}

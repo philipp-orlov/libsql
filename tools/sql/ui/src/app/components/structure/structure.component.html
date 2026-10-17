@@ -1,0 +1,52 @@
+<div class="structure">
+  <div class="actions">
+    <button mat-button class="create-table" (click)="createTable()" [disabled]="readOnly()">
+      <mat-icon>add_box</mat-icon>
+      Create Table
+    </button>
+    <button mat-button class="create-index" (click)="createIndex()" [disabled]="readOnly() || db.schema().tables.length === 0">
+      <mat-icon>playlist_add</mat-icon>
+      Create Index
+    </button>
+    <button mat-button class="modify-table" (click)="modifyTable()" [disabled]="readOnly() || !selectedTable()">
+      <mat-icon>edit</mat-icon>
+      Modify Table
+    </button>
+    <button mat-button class="delete" (click)="deleteSelected()" [disabled]="readOnly() || !deletable()">
+      <mat-icon>delete</mat-icon>
+      Delete
+    </button>
+  </div>
+
+  <div class="tree" role="tree">
+    <div class="head row">
+      <span class="name">Name</span>
+      <span class="type">Type</span>
+      <span class="schema">Schema</span>
+    </div>
+    @for (row of rows(); track row.id) {
+      <div
+        class="row"
+        role="treeitem"
+        [class.selected]="row.id === selectedId()"
+        [class.group]="row.kind === 'group'"
+        [attr.data-kind]="row.kind"
+        (click)="selectedId.set(row.id)"
+        (dblclick)="open(row)"
+      >
+        <span class="name" [style.padding-left.px]="row.depth * 20">
+          @if (row.expandable) {
+            <button class="toggle" (click)="toggle(row); $event.stopPropagation()" [attr.aria-label]="expanded().has(row.id) ? 'Collapse' : 'Expand'">
+              <mat-icon>{{ expanded().has(row.id) ? 'expand_more' : 'chevron_right' }}</mat-icon>
+            </button>
+          } @else {
+            <span class="toggle"></span>
+          }
+          <span class="label">{{ row.name }}</span>
+        </span>
+        <span class="type mono">{{ row.type }}</span>
+        <span class="schema mono" [title]="row.schema">{{ row.schema }}</span>
+      </div>
+    }
+  </div>
+</div>

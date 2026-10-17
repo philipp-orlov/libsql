@@ -1,0 +1,32 @@
+.content {
+  min-width: 460px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.columns {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.column {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+
+  .use {
+    flex: 1;
+  }
+}
+
+.preview {
+  margin: 12px 0 0;
+  padding: 8px;
+  overflow: auto;
+  background: var(--mat-sys-surface-container);
+  font-size: 12px;
+}

@@ -1,0 +1,13 @@
+<h2 mat-dialog-title>New Record in {{ data.table }}</h2>
+<mat-dialog-content class="content">
+  @for (column of columns; track column.name) {
+    <mat-form-field class="field">
+      <mat-label>{{ column.name }} <span class="type">{{ column.type }}</span></mat-label>
+      <input matInput class="value" #box [placeholder]="hint(column)" (input)="set(column.name, box.value)" />
+    </mat-form-field>
+  }
+</mat-dialog-content>
+<mat-dialog-actions align="end">
+  <button mat-button mat-dialog-close>Cancel</button>
+  <button mat-flat-button class="ok" [mat-dialog-close]="values()">Add</button>
+</mat-dialog-actions>

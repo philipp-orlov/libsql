@@ -7,9 +7,12 @@
 //
 // With no -c and no -f it reads statements from stdin, which makes it both a
 // prompt to poke at a database with and a pipe to feed a schema through.
+// With --listen it serves a browser front end for the database instead.
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +29,10 @@
 #endif
 
 #include "sql/sql.hpp"
+
+#ifdef SQL_TOOL_WEB
+#include "web_server.hpp"
+#endif
 
 namespace {
 
@@ -44,6 +51,9 @@ constexpr const char* kUsage =
     "  --mode M      output as table (default), csv or list\n"
     "  --no-header   leave the column names out\n"
     "  --readonly    open an existing database and refuse to write to it\n"
+    "  --listen PORT serve a web interface on PORT, after any -c or -f\n"
+    "  --host ADDR   with --listen, bind to ADDR (default 127.0.0.1; there is no login)\n"
+    "  --public DIR  with --listen, serve the files of DIR instead of the built-in page\n"
     "  -h, --help    this text\n"
     "\n"
     "dot commands, when reading statements from stdin:\n"
@@ -383,6 +393,36 @@ int prompt(Database& db, Settings& settings)
     return kOk;
 }
 
+#ifdef SQL_TOOL_WEB
+volatile std::sig_atomic_t stopRequested = 0;
+
+void requestStop(int)
+{
+    stopRequested = 1;
+}
+
+int serve(Database& db, sqlweb::WebOptions options)
+{
+    try {
+        sqlweb::WebServer server(db, options);
+        std::signal(SIGINT, requestStop);
+        std::signal(SIGTERM, requestStop);
+        std::printf("sql: serving %s on http://%s:%u/ (Ctrl-C to stop)\n",
+                    db.path().string().c_str(), options.host.c_str(), unsigned(options.port));
+        if (options.host != "127.0.0.1" && options.host != "localhost" && options.host != "::1")
+            std::printf(
+                "sql: warning: the web interface has no login; anyone who can reach it can change "
+                "the data\n");
+        std::fflush(stdout);
+        server.run([] { return stopRequested != 0; });
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "sql: %s\n", e.what());
+        return kStatementError;
+    }
+    return kOk;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -393,6 +433,9 @@ int main(int argc, char** argv)
     bool interactive = false;
     bool readOnly = false;
     bool modeGiven = false;
+    int listenPort = 0;
+    std::string host = "127.0.0.1";
+    std::string publicDir;
 
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -436,6 +479,18 @@ int main(int argc, char** argv)
             settings.headers = false;
         } else if (arg == "--readonly") {
             readOnly = true;
+        } else if (arg == "--listen") {
+            const std::string_view text = value("--listen");
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), listenPort);
+            if (parsed.ec != std::errc() || parsed.ptr != text.data() + text.size() ||
+                listenPort < 1 || listenPort > 65535) {
+                std::fprintf(stderr, "sql: --listen wants a port from 1 to 65535\n");
+                return kUsageError;
+            }
+        } else if (arg == "--host") {
+            host = value("--host");
+        } else if (arg == "--public") {
+            publicDir = value("--public");
         } else if (!arg.empty() && arg[0] == '-') {
             std::fprintf(stderr, "sql: unknown option: %s\n\n", argv[i]);
             std::fputs(kUsage, stderr);
@@ -452,6 +507,12 @@ int main(int argc, char** argv)
         std::fputs(kUsage, stderr);
         return kUsageError;
     }
+#ifndef SQL_TOOL_WEB
+    if (listenPort != 0) {
+        std::fprintf(stderr, "sql: this build has no web interface\n");
+        return kUsageError;
+    }
+#endif
     // Piped batches default to something a script can parse.
     if (!modeGiven && !batches.empty())
         settings.mode = Mode::List;
@@ -469,6 +530,20 @@ int main(int argc, char** argv)
         if (!run(db, settings, batch))
             status = kStatementError;
     }
+#ifdef SQL_TOOL_WEB
+    if (listenPort != 0) {
+        sqlweb::WebOptions options;
+        options.host = host;
+        options.port = static_cast<std::uint16_t>(listenPort);
+        options.readOnly = readOnly;
+        if (!publicDir.empty()) {
+            options.publicDir = publicDir;
+            options.publicDirOverridden = true;
+        }
+        const int served = serve(db, std::move(options));
+        return served != kOk ? served : status;
+    }
+#endif
     if (batches.empty() || interactive)
         prompt(db, settings);
     return status;

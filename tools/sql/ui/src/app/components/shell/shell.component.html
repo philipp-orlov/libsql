@@ -1,0 +1,42 @@
+<div class="app">
+  <mat-toolbar class="toolbar">
+    <button mat-button class="write" (click)="write()" [disabled]="!db.inTransaction()" matTooltip="Write changes (Ctrl+S)">
+      <mat-icon>save</mat-icon>
+      Write Changes
+    </button>
+    <button mat-button class="revert" (click)="revert()" [disabled]="!db.inTransaction()" matTooltip="Revert changes">
+      <mat-icon>undo</mat-icon>
+      Revert Changes
+    </button>
+    <span class="spacer"></span>
+    <span class="path mono" [matTooltip]="db.info()?.path ?? ''">{{ db.info()?.path }}</span>
+  </mat-toolbar>
+
+  <mat-tab-group class="tabs" animationDuration="0ms" mat-stretch-tabs="false" mat-align-tabs="start" [(selectedIndex)]="workspace.tab">
+    <mat-tab label="Database Structure">
+      <app-structure />
+    </mat-tab>
+    <mat-tab label="Browse Data">
+      <app-browse />
+    </mat-tab>
+    <mat-tab label="Edit Pragmas">
+      <app-pragmas />
+    </mat-tab>
+    <mat-tab label="Execute SQL">
+      <app-execute-sql />
+    </mat-tab>
+  </mat-tab-group>
+
+  <footer class="status">
+    @if (db.inTransaction()) {
+      <span class="pending">Changes are waiting to be written</span>
+    }
+    @if (readOnly()) {
+      <span>Read-only</span>
+    }
+    <span class="spacer"></span>
+    @if (db.info(); as info) {
+      <span>libsql {{ info.version }}</span>
+    }
+  </footer>
+</div>
