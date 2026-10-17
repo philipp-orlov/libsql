@@ -26,6 +26,23 @@ enum class ErrorCode
     BadTransaction,        ///< use of a committed or rolled-back transaction
     ReadOnly,
     Internal,
+    Runtime,      ///< an error raised while running: integer overflow, malformed JSON, RAISE
+    Busy,         ///< a deferred transaction could not become a writer, or a store is in use
+    Interrupted,  ///< Database::interrupt() stopped the statement
+};
+
+/// Which constraint a ConstraintViolation came from, as SQLite's extended
+/// result codes tell them apart.
+enum class Constraint
+{
+    None = 0,
+    PrimaryKey,
+    Unique,
+    NotNull,
+    Check,
+    ForeignKey,
+    Trigger,   ///< RAISE(ABORT|FAIL|ROLLBACK, ...)
+    Datatype,  ///< a STRICT column refused a value
 };
 
 const char* toString(ErrorCode) noexcept;
@@ -36,12 +53,18 @@ class Error : public std::runtime_error
 {
 public:
     Error(ErrorCode code, const std::string& what) : std::runtime_error(what), code_(code) {}
+    Error(ErrorCode code, Constraint constraint, const std::string& what)
+        : std::runtime_error(what), code_(code), constraint_(constraint)
+    {}
     explicit Error(ErrorCode code) : std::runtime_error(toString(code)), code_(code) {}
 
     ErrorCode code() const noexcept { return code_; }
+    /// For ConstraintViolation, the kind of constraint; None otherwise.
+    Constraint constraint() const noexcept { return constraint_; }
 
 private:
     ErrorCode code_;
+    Constraint constraint_ = Constraint::None;
 };
 
 }  // namespace sql

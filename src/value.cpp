@@ -13,7 +13,7 @@
 #include <limits>
 
 #include "internal/cnumeric.hpp"
-#include "internal/lexer.hpp"
+#include "internal/util.hpp"
 #include "sql/sql.hpp"
 
 namespace sql {
@@ -38,6 +38,9 @@ const char* toString(ErrorCode c) noexcept
         case ErrorCode::BadTransaction: return "transaction is no longer usable";
         case ErrorCode::ReadOnly: return "database is read-only";
         case ErrorCode::Internal: return "internal error";
+        case ErrorCode::Runtime: return "runtime error";
+        case ErrorCode::Busy: return "database is locked";
+        case ErrorCode::Interrupted: return "interrupted";
     }
     return "unknown error";
 }
@@ -243,39 +246,9 @@ Value Value::blob(const void* data, std::size_t size)
     return Value(Blob(p, p + size));
 }
 
-std::int64_t Value::integer() const
+void Value::wrongType(Type wanted) const
 {
-    if (type() != Type::Integer)
-        mismatch(std::string("value is ") + toString(type()) + ", not INTEGER");
-    return std::get<std::int64_t>(v_);
-}
-
-double Value::real() const
-{
-    if (type() != Type::Real)
-        mismatch(std::string("value is ") + toString(type()) + ", not REAL");
-    return std::get<double>(v_);
-}
-
-Datetime Value::datetime() const
-{
-    if (type() != Type::Datetime)
-        mismatch(std::string("value is ") + toString(type()) + ", not DATETIME");
-    return std::get<Datetime>(v_);
-}
-
-const std::string& Value::text() const
-{
-    if (type() != Type::Text)
-        mismatch(std::string("value is ") + toString(type()) + ", not TEXT");
-    return std::get<std::string>(v_);
-}
-
-const Blob& Value::blob() const
-{
-    if (type() != Type::Blob)
-        mismatch(std::string("value is ") + toString(type()) + ", not BLOB");
-    return std::get<Blob>(v_);
+    mismatch(std::string("value is ") + toString(type()) + ", not " + toString(wanted));
 }
 
 std::int64_t Value::toInteger() const

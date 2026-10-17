@@ -1,9 +1,11 @@
 # libsql
 
-A small SQL engine on top of [libnosql](../libnosql). Tables, indexes and rows
-live in one libnosql store, so libsql inherits that store's ACID commits,
-single-writer/many-reader MVCC and single-file layout, and adds a schema, a
-query language and a planner that uses the indexes you declare.
+A SQL engine on top of [libnosql](../libnosql) that speaks the SQL language of
+SQLite 3.45, plus a `FOR JSON` clause and a `DATETIME` storage class of its own.
+Tables, indexes and rows live in one libnosql store, so libsql inherits that
+store's ACID commits, single-writer/many-reader MVCC and single-file layout,
+and adds a schema, the query language and a planner that uses the indexes you
+declare.
 
 ```cpp
 #include "sql/sql.hpp"
@@ -13,21 +15,21 @@ sql::Database db("catalog.db");
 db.exec("CREATE TABLE author (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)");
 db.exec("CREATE TABLE book ("
         "  id INTEGER PRIMARY KEY,"
-        "  author_id INTEGER NOT NULL,"
+        "  author_id INTEGER NOT NULL REFERENCES author(id),"
         "  title TEXT NOT NULL,"
         "  price REAL DEFAULT 0.0,"
         "  released DATETIME,"
-        "  cover BLOB)");
+        "  cover BLOB) STRICT");
 db.exec("CREATE INDEX book_by_author ON book (author_id)");
 
 db.exec("INSERT INTO author (name) VALUES ('Le Guin')");
-db.exec("INSERT INTO book (author_id, title, price, released) VALUES (?, ?, ?, ?)",
-        {sql::Value(1), sql::Value("The Dispossessed"), sql::Value(12.50),
-         sql::Value("1974-05-01")});
+db.exec("INSERT INTO book (author_id, title, price, released) VALUES (:a, :t, :p, :r)",
+        sql::NamedParams{{"a", sql::Value(1)}, {"t", sql::Value("The Dispossessed")},
+                         {"p", sql::Value(12.50)}, {"r", sql::Value("1974-05-01")}});
 
 for (const sql::Row& r : db.exec(
          "SELECT a.name, b.title FROM book b"
-         " INNER JOIN author a ON b.author_id = a.id"
+         " JOIN author a ON b.author_id = a.id"
          " WHERE b.price < 20 ORDER BY b.released")) {
     std::printf("%s -- %s\n", r["a.name"].toText().c_str(), r["b.title"].toText().c_str());
 }
@@ -35,52 +37,37 @@ for (const sql::Row& r : db.exec(
 
 ## What it does
 
-**Statements**
+**The language**
+
+Every statement in SQLite's language reference except `CREATE VIRTUAL TABLE`:
 
 | | |
 | --- | --- |
-| `CREATE TABLE [IF NOT EXISTS] t (col TYPE [constraints], ...)` | `PRIMARY KEY`, `NOT NULL`, `UNIQUE`, `DEFAULT literal`, and table-level `PRIMARY KEY (a, b, ...)` and `UNIQUE (a, b, ...)` |
-| `DROP TABLE [IF EXISTS] t` | takes the table's indexes with it |
-| `CREATE [UNIQUE] INDEX [IF NOT EXISTS] i ON t (a, b, ...)` | backfilled over the rows already there |
-| `DROP INDEX [IF EXISTS] i` | |
-| `INSERT INTO t [(cols)] VALUES (...), (...)` | multi-row, defaults filled in |
-| `SELECT ... FROM t [alias] [INNER JOIN u ON ...] [WHERE ...] [GROUP BY ...] [HAVING ...] [ORDER BY ... [DESC]] [LIMIT n [OFFSET m]] [FOR JSON ...]` | `*`, `t.*`, expressions, `AS` aliases |
-| `UPDATE t SET col = expr, ... [WHERE ...]` | may move the primary key |
-| `DELETE FROM t [WHERE ...]` | |
+| `CREATE TABLE` | column and table constraints (`PRIMARY KEY [ASC\|DESC] [AUTOINCREMENT]`, `NOT NULL`, `UNIQUE`, `CHECK`, `DEFAULT` expressions, `COLLATE`, `GENERATED ALWAYS AS (...) VIRTUAL\|STORED`, `REFERENCES ... ON DELETE/UPDATE ...`), `ON CONFLICT` clauses, `STRICT`, `WITHOUT ROWID`, `CREATE TABLE ... AS SELECT`, `TEMP` |
+| `ALTER TABLE` | `RENAME TO`, `RENAME COLUMN`, `ADD COLUMN`, `DROP COLUMN`, rewriting the views, triggers and indexes that name what changed |
+| `CREATE [UNIQUE] INDEX` | on expressions, `COLLATE`/`ASC`/`DESC` per part, partial (`WHERE`) |
+| `CREATE VIEW`, `CREATE TRIGGER` | `BEFORE`/`AFTER`/`INSTEAD OF`, `FOR EACH ROW`, `WHEN`, `UPDATE OF`, `RAISE(...)`, recursive triggers off by default |
+| `INSERT` / `REPLACE` | `OR ABORT\|FAIL\|IGNORE\|REPLACE\|ROLLBACK`, `DEFAULT VALUES`, `INSERT ... SELECT`, upsert (`ON CONFLICT ... DO UPDATE\|NOTHING`), `RETURNING` |
+| `UPDATE` / `DELETE` | `UPDATE ... FROM`, row-value assignments, `ORDER BY ... LIMIT`, `RETURNING` |
+| `SELECT` | `WITH [RECURSIVE]`, `DISTINCT`, every join (`LEFT`, `RIGHT`, `FULL`, `CROSS`, `NATURAL`, `USING`), sub-queries anywhere, `UNION [ALL]`/`INTERSECT`/`EXCEPT`, `VALUES`, window functions with named windows, frames and `FILTER`, `NULLS FIRST/LAST`, table-valued `json_each`/`json_tree`/`pragma_*` |
+| transactions | `BEGIN [DEFERRED\|IMMEDIATE\|EXCLUSIVE]`, `COMMIT`/`END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `ROLLBACK TO` |
+| the rest | `PRAGMA` (the ones meaningful for a libnosql store), `ATTACH`/`DETACH` (files and `:memory:`), `VACUUM [INTO]`, `ANALYZE` (fills `sqlite_stat1`), `REINDEX`, `EXPLAIN [QUERY PLAN]` |
 
-Expressions cover `AND OR NOT`, `= <> != < <= > >=`, `+ - * / %`, `||`,
-`IS [NOT] NULL`, `[NOT] IN (...)`, `[NOT] BETWEEN a AND b`, `[NOT] LIKE` with
-`%` and `_`, parentheses, and `?` parameters bound left to right. NULL follows
-SQL's three-valued logic. Identifiers may be quoted with `"..."`, `` `...` ``
-or `[...]`, and are matched case-insensitively otherwise. `--` and `/* */`
-comments are ignored.
+Expressions are SQLite's: operators including `->`/`->>`, `IS [NOT] DISTINCT
+FROM`, `GLOB`, `LIKE ... ESCAPE`, `CAST`, `CASE`, `COLLATE`, `EXISTS`, scalar
+and `IN` sub-queries, row values, and the parameter spellings `?`, `?NNN`,
+`:name`, `@name` and `$name`. The built-in functions are those of a default
+SQLite build: the core scalars, `printf`/`format`, the date and time
+functions, the math functions, the aggregates (with `ORDER BY` inside them),
+the window functions and the JSON functions. `SELECT name FROM
+pragma_function_list` lists them. The schema is visible in `sqlite_schema`
+(alias `sqlite_master`), `sqlite_temp_schema` and `sqlite_sequence`.
 
-**Aggregates**
-
-`COUNT(*)`, `COUNT(x)`, `SUM(x)`, `AVG(x)`, `MIN(x)` and `MAX(x)`, alone or
-inside a larger expression. All but `COUNT(*)` skip NULL inputs, and return
-NULL when a group has nothing left to work with. `SUM` of integers stays an
-integer; `AVG` is always real.
-
-```sql
-SELECT region, COUNT(*) AS n, SUM(amount) AS total
-  FROM sale
- GROUP BY region
-HAVING SUM(amount) > 100
- ORDER BY total DESC;
-```
-
-Without `GROUP BY` the whole result is one group, and aggregating no rows still
-reports one row — `COUNT(*)` is 0 rather than absent. With `GROUP BY` an empty
-input has no keys and so produces no rows. Groups come out in key order unless
-`ORDER BY` says otherwise, and a NULL key forms a group of its own.
-
-A column selected outside `GROUP BY` reports the first row of its group rather
-than being an error, which is the useful reading of
-`SELECT dept, name, COUNT(*) ... GROUP BY dept`.
-
-`ORDER BY` may name a result column by its alias or by its 1-based position,
-which is the only way to sort on something the row itself does not hold.
+Results match SQLite's to the value: the same type rules, the same text for
+reals (`%!.15g`), the same result column names, the same error messages where
+an application might match on them. The engine is checked against SQLite
+3.45.1 by the whole sqllogictest corpus (5.9 million records, all passing)
+and by a differential fuzzer; see [tests/conformance/](tests/conformance/).
 
 **JSON results**
 
@@ -94,11 +81,11 @@ SELECT ... FOR JSON {AUTO | PATH}
                     [, WITHOUT_ARRAY_WRAPPER]
 ```
 
-`AUTO` takes its shape from the `FROM` clause: the first table is the object,
-and each joined table is nested one level further in under its alias, with
-consecutive rows that agree on the enclosing columns collapsed into a single
-element. Order the query the way you want the document nested — `AUTO` groups
-rows as they arrive, so `ORDER BY` the outer key first.
+`AUTO` takes its shape from the `FROM` clause as written: the first table is
+the object, and each joined table is nested one level further in under its
+alias, with consecutive rows that agree on the enclosing columns collapsed into
+a single element. Order the query the way you want the document nested --
+`AUTO` groups rows as they arrive, so `ORDER BY` the outer key first.
 
 ```sql
 SELECT c.name, l.item, l.qty
@@ -125,11 +112,17 @@ a one-property object, defaulting to the name `root`. `WITHOUT_ARRAY_WRAPPER`
 drops the enclosing brackets, and cannot be combined with `ROOT`. An empty
 result renders as `[]` rather than as no rows at all.
 
+`FOR JSON` works wherever a `SELECT` does: in a sub-query, a view, a CTE. A
+nested `FOR JSON` result -- and any value a JSON function produced -- is
+embedded as JSON rather than quoted as a string, so
+`SELECT c.name, (SELECT item FROM line l WHERE l.customer_id = c.id FOR JSON PATH) AS lines FROM customer c FOR JSON PATH`
+builds a nested document in one statement.
+
 Integers and reals go out as JSON numbers, shortest round-trip; `DATETIME`
 becomes ISO-8601 in UTC (`"2024-03-01T09:00:00Z"`, with `.ffffff` when the
 fraction is nonzero); `BLOB` becomes base64; `TEXT` is escaped and is expected
-to be UTF-8 — bind anything else as a blob. `FOR` is a reserved word from now
-on, so a column of that name needs quoting.
+to be UTF-8 -- bind anything else as a blob. `FOR` is recognized as the clause
+only after a complete `SELECT`, so it stays usable as a column name.
 
 The same renderer is available to C++ over any `Result`, through
 [include/sql/json.hpp](include/sql/json.hpp):
@@ -143,36 +136,43 @@ For anything in a loop, use a `sql::JsonWriter` instead and keep it: it holds on
 to its buffer and to the plan it derived from the column names, and it measures
 the document before writing it, so the buffer grows at most once and a warmed-up
 writer allocates nothing per query. `appendTo` does the same onto a buffer you
-own — a response body, say — and `write(result, paths)` renders a query under
+own -- a response body, say -- and `write(result, paths)` renders a query under
 different property paths without rewriting it.
 [examples/json.cpp](examples/json.cpp) runs through all of it.
 
 **Types**
 
-`NULL`, `INTEGER` (signed 64-bit), `REAL` (double), `TEXT`, `DATETIME`
-(microseconds since the Unix epoch, UTC) and `BLOB`. The usual spellings map
-onto them: `INT`/`BIGINT`, `FLOAT`/`DOUBLE`, `VARCHAR(n)`/`CHAR`/`STRING`,
-`TIMESTAMP`/`DATE`, `BINARY`.
+Ordinary tables use SQLite's flexible typing: a column's declared type gives it
+an affinity (`INTEGER`, `REAL`, `NUMERIC`, `TEXT` or `BLOB`, by SQLite's
+substring rules), values are converted toward it when that loses nothing, and
+any value can be stored in any column. `STRICT` tables check types instead,
+over `INT`, `INTEGER`, `REAL`, `TEXT`, `BLOB` and `ANY`, raising
+`ConstraintViolation` ("cannot store TEXT value in INTEGER column t.c") on a
+value that does not convert losslessly.
 
-A value is converted to the column's declared type on the way in, and a literal
-compared against a column is read the way that column is stored, so
-`WHERE released > '2024-01-01'` compares two datetimes. A conversion that
-cannot work raises `TypeMismatch` rather than storing something else. A column
-declared `NULL` accepts any type and stores it as-is.
+libsql adds a sixth storage class, `DATETIME` (microseconds since the Unix
+epoch, UTC; `typeof` says `'datetime'`; it sorts between numbers and text). A
+`STRICT` table may declare a `DATETIME` column: text written to it is parsed as
+a date, and text compared with it is read as one, so
+`WHERE released > '2024-01-01'` compares two datetimes. Bound
+`sql::Datetime` values keep the class in any column. In a flexible table
+`DATETIME` is just a type name with `NUMERIC` affinity, as in SQLite. The date
+and time functions accept the class as a time value. Datetime text is
+`YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS[.ffffff]]`, with `T` allowed for the
+separator and a trailing `Z` accepted.
 
-Datetime literals are `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS[.ffffff]]`, with `T`
-allowed for the separator and a trailing `Z` accepted. Blob literals are
-`x'00ff'`; binary is usually better bound as a parameter, which
-[examples/blobs.cpp](examples/blobs.cpp) works through end to end.
+Blob literals are `x'00ff'`; binary is usually better bound as a parameter,
+which [examples/blobs.cpp](examples/blobs.cpp) works through end to end.
 
 **Keys and indexes**
 
-Every table has a key. Declare one with `PRIMARY KEY` on a column or with a
-table-level `PRIMARY KEY (a, b, ...)` over several, or let the engine keep an
-implicit integer key that SQL can still address as `rowid`. A single integer
-primary key left NULL on insert is assigned the next free value, and an
-explicitly supplied one pushes that counter forward; a composite key has to be
-supplied whole, and no part of it may be NULL.
+A table without a declared key, or with an `INTEGER PRIMARY KEY`, is stored by
+its rowid, and a new row gets one past the largest rowid in use (or, with
+`AUTOINCREMENT`, one past the largest ever used). A table with any other
+`PRIMARY KEY` -- one column or several -- is stored clustered under that key,
+so the key is also the table's order and its first index; it still has a
+hidden rowid, which is never reused. `WITHOUT ROWID` tables have no rowid at
+all. Primary key columns are always `NOT NULL`.
 
 ```sql
 CREATE TABLE price (
@@ -184,61 +184,92 @@ CREATE TABLE price (
 );
 ```
 
-Rows are stored under their key columns encoded in key order, so the key is also
-the table's clustering order and its first index: a leading run of key columns
-pinned by equality (here `sku`, or `sku` and `region`) plus a range on the next
-one is answered from a window over the rows themselves. A table-level
-`UNIQUE (a, b, ...)` becomes a unique index over those columns, as a column-level
-`UNIQUE` does for one.
+A leading run of key columns pinned by equality (here `sku`, or `sku` and
+`region`) plus a range on the next one is answered from a window over the rows
+themselves. `UNIQUE` constraints become indexes named
+`sqlite_autoindex_<table>_<n>`, as in SQLite.
 
 The planner looks at the conjuncts constraining each table and picks the
-narrowest of a primary-key lookup, an index lookup (equality on a leading run of
-index columns, plus a range on the column after it) and a full scan. Joins are
-nested loops, and the inner table is planned with the outer tables' columns
-already bound, so `ON a.id = b.a_id` becomes a lookup rather than a second scan.
-Whatever the plan, every predicate is re-checked against the row, so a plan is
-only ever allowed to be too wide, never too narrow.
+narrowest of a rowid or key lookup, an index lookup (equality on a leading run
+of index columns, `IN` lists, plus a range on the column after them) and a full
+scan. Inner joins are reordered so the most selective access runs outermost
+(`CROSS JOIN` pins the order, as in SQLite); each inner table is planned with
+the outer tables' columns already bound, so `ON a.id = b.a_id` becomes a lookup
+rather than a second scan, and an inner table that does not depend on the outer
+ones is read once and cached. Whatever the plan, every predicate is re-checked
+against the row, so a plan is only ever allowed to be too wide, never too
+narrow. `EXPLAIN QUERY PLAN` shows the choice.
 
 ## Transactions
 
 `Database::exec` runs every `;`-separated statement in its argument inside one
-transaction: committed on return, rolled back if anything throws. For a
-transaction spanning several calls, use `Database::begin`, which returns a
-`Transaction` that rolls back if it is destroyed without a `commit`.
+transaction: committed on return, rolled back if anything throws. A batch that
+contains transaction control (`BEGIN`, `COMMIT`, `SAVEPOINT`, ...) follows
+SQLite's autocommit model instead, and a transaction opened by `BEGIN` stays
+open across `exec` calls until `COMMIT` or `ROLLBACK`; `inTransaction()` says
+whether one is. A failing statement undoes only its own changes, the way
+SQLite's statement journal does, and `ON CONFLICT ROLLBACK`/`RAISE(ROLLBACK)`
+end the whole transaction.
 
-`begin` takes the writer slot and so blocks until any other write transaction
-finishes. For multi-statement reads use `Database::beginRead`, which takes a
-snapshot instead: it neither blocks nor is blocked, and it rejects any statement
-that would write.
+For a transaction driven from C++, use `Database::begin`, which returns a
+`Transaction` that rolls back if it is destroyed without a `commit`, and inside
+which `SAVEPOINT`/`RELEASE`/`ROLLBACK TO` work. `begin` takes the writer slot
+and so waits until any other write transaction finishes -- indefinitely by
+default, or for at most `PRAGMA busy_timeout` milliseconds (also settable as
+`Database::configure().busyTimeout(...)`), after which it fails with `Busy`
+("database is locked"). For multi-statement
+reads use `Database::beginRead`, which takes a snapshot instead: it neither
+blocks nor is blocked, and it rejects any statement that would write.
+
+`changes()`, `totalChanges()` and `lastInsertRowid()` report what SQLite's
+functions of the same names report; `interrupt()` stops running statements
+from another thread.
 
 ## Prepared statements
 
 `Database::prepare` parses once so that running costs no parsing, which is worth
-it for anything in a loop. Parameters are bound 1-based as in SQLite, and ones
-never bound are NULL.
+it for anything in a loop. Parameters are bound 1-based as in SQLite, or by
+name -- with its prefix (`":id"`) or without (`"id"`) -- and ones never bound
+are NULL.
 
 ```cpp
-sql::Statement insert = db.prepare("INSERT INTO book (title, price) VALUES (?, ?)");
+sql::Statement insert = db.prepare("INSERT INTO book (title, price) VALUES (:title, ?)");
 sql::Transaction t = db.begin();
 for (const Book& b : books)
-    insert.bind(1, sql::Value(b.title)).bind(2, sql::Value(b.price)).exec(t);
+    insert.bind("title", sql::Value(b.title)).bind(2, sql::Value(b.price)).exec(t);
 t.commit();
 ```
 
 `exec()` runs in a transaction of its own; `exec(txn)` runs in one you control.
-Both take an optional `Params` to bind and run in a single call.
+Both take an optional `Params` or `NamedParams` to bind and run in a single
+call. `parameterIndex`, `parameterName` and `columnNames` describe the
+statement; `sql::complete(text)` tells a prompt whether a statement is finished.
 
 A prepared statement also keeps its plan -- the columns it bound, the access
 path it chose for each table, the layout and names of its result -- and reuses
 it for as long as the schema it was planned against is the one the transaction
-sees. A `CREATE INDEX` or `DROP TABLE` anywhere makes the next run plan again,
-so a prepared statement keeps working after the schema changes and picks up an
-index created after it was prepared. A statement belongs to the database it
-came from and holds it open. It is move-only and not safe to run from two
-threads at once.
+sees. Any DDL makes the next run plan again, so a prepared statement keeps
+working after the schema changes and picks up an index created after it was
+prepared. A statement belongs to the database it came from and holds it open.
+It is move-only and not safe to run from two threads at once.
 
 Results own their values, so a `Result` outlives the transaction that produced
-it.
+it. For large results, `each` hands the rows to a callback as they are
+produced instead, with nothing collected:
+
+```cpp
+sql::Statement scan = db.prepare("SELECT id, name FROM book WHERE price < ?");
+scan.bind(1, sql::Value(20.0)).each([&](const sql::RowView& r) {
+    index.add(r[0].integer(), r["name"].text());  // valid only during the call
+    return true;                                  // false stops the statement
+});
+```
+
+`ORDER BY` without `LIMIT` over more rows than fit in the sort memory
+(`Database::configure().sortMemoryLimit(bytes)`, 64 MiB by default) writes
+sorted runs to a temporary file and merges them; with `LIMIT` it only ever
+holds the rows that can still make the cut. `PRAGMA temp_store = MEMORY` keeps
+every sort in memory.
 
 ## The store underneath
 
@@ -248,16 +279,22 @@ libnosql layers can share the file: `nosql::BlobStorage::open(db.env(), "images"
 keeps bulk payloads in a side-car tar archive with its index in this database,
 and `blobs.beginWrite(t.txn())` puts the appends under the same commit as the
 rows that describe them. Both are borrowed -- valid while the database is open
-and the transaction live. The sub-database names `sql_catalog`, `tbl:*` and
-`idx:*` belong to libsql.
+and the transaction live. The sub-database names `sql_catalog`, `t#*` and
+`i#*` belong to libsql.
 
-`Database::configure().cacheReadChecksums()` passes libnosql's read cache
-through: a page whose checksum this process has verified since it was last
+The catalog stores each object's `CREATE` statement, exactly as
+`sqlite_schema.sql` shows it, and re-reads the schema from that text. This
+release changed the format of keys and of the catalog: a store written by
+libsql 0.1 is refused with `Internal` rather than misread.
+
+libnosql verifies a page's checksum when it reads it. libsql turns on its
+read cache: a page whose checksum this process has verified since it was last
 written is not re-hashed on the next read, which roughly halves the cost of a
 point lookup and of every probe inside a join. The trade is that damage done to
 the file from outside is noticed on the next re-verification -- every minute by
 default, `cacheReadChecksums(true, interval)` to change it -- rather than the
-next read; writes always verify. It is off by default.
+next read; writes always verify. `Database::configure().cacheReadChecksums(false)`
+verifies every page on every read.
 
 ## Python
 
@@ -281,9 +318,11 @@ sql <database> [options]
   --readonly    open an existing database and refuse to write to it
 ```
 
-With no `-c` and no `-f` it reads statements from stdin and offers
-`.tables`, `.schema [TABLE]`, `.indexes [TABLE]`, `.mode`, `.headers`, `.help`
-and `.quit`.
+With no `-c` and no `-f` it reads statements from stdin -- a statement ends at
+a `;` outside quotes, comments and trigger bodies -- and offers `.tables`,
+`.schema [TABLE]` (the `CREATE` statements as they were written), `.dump
+[TABLE]` (a script that rebuilds the schema and the rows), `.indexes [TABLE]`,
+`.mode`, `.headers`, `.help` and `.quit`.
 
 ```
 $ sql catalog.db --mode table -c "SELECT title, price FROM book ORDER BY price"
@@ -304,39 +343,93 @@ Exit status: 0 ok, 1 bad usage, 2 statement or store error.
 table with two indexes and a 400,000-row joined table, and reports the median
 ns/op of each together with the heap allocations it made. Run it pinned to a
 core in Release; `--json` and `--csv` write the figures out, `--only` picks
-workloads, `--cache` turns the read cache on and `--durable` fsyncs every commit.
+workloads, `--no-cache` turns the read-checksum cache off and `--durable`
+fsyncs every commit.
 
-The engine is built so that a statement that has run once allocates almost
-nothing on the next run: a prepared statement keeps its plan (bound columns,
-access paths, output layout, column names) until the schema changes, decodes
-rows into cells that keep their buffers, builds keys and payloads in strings it
-reuses, evaluates expressions through references rather than copies, and drives
-a recycled cursor for every scan. The schema itself is decoded once per change
-and shared by every transaction that sees that version. On a 2.1 GHz Xeon Gold
-6252 (GCC 13.3, Release, one pinned core, `durable(false)`), before and after:
+`benchmarks/bench_vs_sqlite` (built when both `SQL_BUILD_BENCHMARKS` and
+`SQL_BUILD_CONFORMANCE` are on) runs the same kind of workloads, on the same
+data and schema, against libsql and against the SQLite 3.45.1 amalgamation the
+conformance harness fetches, and prints the two side by side. Each engine gets
+its fastest honest setup: libsql with `durable(false)`; SQLite in WAL mode with
+`synchronous=OFF`, a 256 MiB page cache, a 1 GiB mmap and `THREADSAFE=0`. Both
+read every column of every row in place -- `sqlite3_column_*` on one side,
+`Statement::each` on the other (`--materialize` makes libsql build a `Result`
+instead). On a Xeon Gold 5420+ (GCC 13.3, Release, one pinned core):
 
-| statement | before | after | after, `cacheReadChecksums()` |
+| workload | libsql | SQLite | |
 |---|---:|---:|---:|
-| `SELECT ... WHERE id = ?`, prepared, own transaction | 7.6 µs, 47 allocations | 3.5 µs, 7 | 2.0 µs, 7 |
-| the same inside one read transaction | 6.8 µs, 47 | 2.1 µs, 6 | 1.8 µs |
-| `SELECT ... WHERE id = ?` as one-off `exec` | 12.1 µs, 64 | 8.5 µs, 41 | 8.5 µs |
-| `INSERT` of a 6-column row, 2 indexes, prepared, batches of 1,000 | 10.3 µs, 38 | 6.3 µs, 2 | 5.8 µs |
-| the same `INSERT`, one transaction per row | 25.6 µs, 44 | 13.6 µs, 6 | 13.6 µs |
-| index equality returning ~200 rows | 380 µs, 1,049 | 330 µs, 414 | 198 µs |
-| `SELECT COUNT(*)` over 200,000 rows, per row | 430 ns, 3 | 152 ns, 0 | 139 ns |
-| `ORDER BY name LIMIT 100` over a full scan, per row | 1,727 ns, 5 | 893 ns, 1 | 805 ns |
-| join through an index, ~400 output rows | 1.46 ms, 22,590 | 1.22 ms, 8,160 | 0.74 ms |
-| join with `GROUP BY` over 1,000 items | 6.0 ms, 140,810 | 5.2 ms, 70,280 | 3.0 ms |
-| `UPDATE ... WHERE id = ?`, prepared, batches of 1,000 | 18.6 µs, 61 | 11.5 µs, 4 | 11.2 µs |
-| `UPDATE ... WHERE id = ?`, own transaction | 147 µs, 57 | 25.7 µs, 8 | 36 µs |
+| `INSERT`, 2 indexes, prepared, batches of 1,000 | 3.9 µs | 4.7 µs | 0.82x |
+| the same, one transaction per row | 10.7 µs | 11.9 µs | 0.90x |
+| `INSERT` prepared and run once each | 10.8 µs | 14.1 µs | 0.77x |
+| `SELECT ... WHERE id = ?`, prepared, own transaction | 1.78 µs | 1.89 µs | 0.94x |
+| the same inside one read transaction | 0.87 µs | 0.74 µs | 1.18x |
+| `SELECT ... WHERE id = ?` prepared and run once each | 1.84 µs | 4.17 µs | 0.44x |
+| `SELECT id FROM item WHERE name = ?` | 1.84 µs | 1.99 µs | 0.93x |
+| index equality returning ~200 rows | 68 µs | 74 µs | 0.91x |
+| rowid range of 100 rows | 10.1 µs | 8.9 µs | 1.13x |
+| index equality, `ORDER BY name LIMIT 10` | 75 µs | 81 µs | 0.92x |
+| `count(*)` of ~200 rows through an index | 10.7 µs | 6.5 µs | 1.65x |
+| `count(*)` of the whole table | constant | 0.1 ns/row | |
+| full scan with a predicate, per row | 63 ns | 35 ns | 1.83x |
+| `GROUP BY` over a full scan, per row | 176 ns | 368 ns | 0.48x |
+| `ORDER BY price LIMIT 100` over a full scan, per row | 89 ns | 52 ns | 1.71x |
+| covering index scan returning 100,000 names, per row | 32 ns | 21 ns | 1.56x |
+| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 3.4 ns | 2.0 ns | 1.73x |
+| full sort of 200,000 rows, per row | 625 ns | 660 ns | 0.95x |
+| join through an index, ~400 output rows | 401 µs | 372 µs | 1.08x |
+| join with `GROUP BY` over 1,000 items | 1.39 ms | 1.23 ms | 1.12x |
+| `UPDATE ... WHERE id = ?`, batches of 1,000 | 3.0 µs | 4.3 µs | 0.69x |
+| `UPDATE` of an indexed column, batches of 1,000 | 6.5 µs | 10.4 µs | 0.63x |
+| `UPDATE ... WHERE id = ?`, one transaction each | 13.1 µs | 7.5 µs | 1.74x |
+| `DELETE` + re-`INSERT` by key, batches of 1,000 | 13.8 µs | 23.5 µs | 0.58x |
+| `prepare` and discard a `SELECT` | 3.7 µs | 2.5 µs | 1.51x |
+| `prepare` and discard a join | 5.0 µs | 5.0 µs | 0.99x |
+| a trivial statement run once | 1.8 µs | 3.2 µs | 0.57x |
 
-Allocation counts are heap allocations per statement (per row for the scans),
-measured by the benchmark's replaced `operator new`.
+libsql is ahead on writes in batches, on one-off statements (a per-connection
+cache of parsed batches; SQLite parses every call), on index lookups, grouping
+and sorting. SQLite is ahead on tight scans and on small transactions:
 
-The `UPDATE` line is the store's doing rather than the SQL layer's: a small
-commit on a database that had just been bulk loaded used to pay for the size of
-the free list and of the dirty-page table the load left behind, and no longer
-does (see libnosql's README, "Numbers").
+- A scan costs SQLite one cursor step and a lazy column read per row; libsql
+  spends 30-60 ns more in its general join loop. Narrow scans are bounded by
+  that, not by the store (a libnosql cursor step is about 5 ns).
+- A small commit is a copy-on-write commit: libnosql rewrites and checksums
+  the leaf, its path to the root, the catalog entry that holds the tree's root
+  and the free list -- about ten pages -- where SQLite's WAL appends one. That
+  is the price of readers that never block and a file that is always
+  consistent; batch writes and it disappears (0.69x).
+- `prepare` parses SQLite's full grammar into an AST; libsql plans at the
+  first run instead, so a prepared statement pays it once.
+
+What the read path does to get there:
+
+- **Checksums verified once.** libnosql checksums every page; libsql turns on
+  its read cache by default, so a page verified since it was last written is
+  not re-hashed on every read (every remembered check expires after a minute,
+  and writes always verify). `cacheReadChecksums(false)` restores
+  verify-every-read.
+- **Index-only scans.** When an index holds every column a query reads, the
+  table is never touched (`SCAN t USING COVERING INDEX i`), and a plain scan
+  switches to the narrowest such index. Index entries carry a small flag set
+  so a covered REAL that is a whole number reads back as REAL.
+- **Exact windows.** Equality on key and index parts, and ranges on the rowid
+  and on ascending BINARY parts, are turned into exact key windows, so those
+  conditions are not evaluated again per row.
+- **Only the columns read are decoded**, and a `count(*)` with no `WHERE` uses
+  the store's entry count. `SELECT DISTINCT` over an index's leading columns
+  seeks past each distinct value instead of reading every entry.
+- **Top-N.** `ORDER BY ... LIMIT n` keeps only rows that can still make the cut
+  and drops the rest after one comparison.
+- **No copies on the way out.** Result rows hold up to four values inline and
+  take their values from the scratch row instead of copying them;
+  `Statement::each` skips building a `Result` altogether.
+
+Against libsql 0.1 on the same machine, everything but two batched write
+paths got faster: one-off statements by 70%, point and range reads by 20-70%,
+joins by 55-64%, `UPDATE` by 36-60%. Batched `INSERT` is 8% and batched
+`DELETE` + re-`INSERT` 14% slower, the cost of doing more per row (triggers,
+foreign keys, `CHECK`, conflict clauses and statement-level rollback are all
+checked for, and skipped when a table has none).
 
 ## Long runs
 
@@ -390,6 +483,13 @@ rather than into temporary strings. The clause keeps one writer per thread for
 the life of the process, which is why running the same query a million times
 leaves the plan and the buffers where they were.
 
+Scratch that outlives a statement is bounded so that one unusual query cannot
+pin memory for the life of the process: a plan's sort buffer is given back once
+it exceeds 65,536 cells, a result is pre-sized from the previous run only up to
+65,536 rows, the parser's per-thread token buffers are kept only up to 4,096
+tokens and four at a time, and an `ORDER BY` larger than the sort memory goes
+to a temporary file rather than the heap.
+
 The soak also re-checks, at every sample point, that each index returns exactly
 what a full scan finds. A stale index entry is the failure mode that a long run
 produces and a short one hides.
@@ -400,13 +500,45 @@ Everything the SQL layer rejects throws `sql::Error`, carrying a
 `sql::ErrorCode`: `SyntaxError`, `Unsupported`, `InvalidArgument`,
 `NoSuchTable`, `TableExists`, `NoSuchColumn`, `AmbiguousColumn`, `NoSuchIndex`,
 `IndexExists`, `TypeMismatch`, `ConstraintViolation`, `BadTransaction`,
-`ReadOnly`, `Internal`. Storage-level failures keep arriving as `nosql::Error`.
+`ReadOnly`, `Runtime`, `Busy`, `Interrupted`, `Internal`. A
+`ConstraintViolation` also says which kind through `Error::constraint()`
+(`PrimaryKey`, `Unique`, `NotNull`, `Check`, `ForeignKey`, `Trigger`, ...).
+Messages are SQLite's where SQLite has one ("UNIQUE constraint failed: t.a",
+"no such column: x"). Planning errors are `InvalidArgument`, errors while
+running are `Runtime`, an unknown function is `Unsupported`. Storage-level
+failures keep arriving as `nosql::Error`.
 
-## Not implemented
+## Where it differs from SQLite
 
-Outer and comma joins, sub-queries, `UNION`, `DISTINCT`, `ALTER TABLE`, views,
-triggers and scalar functions. Each of these is reported as `Unsupported`
-rather than misread.
+Deliberately, and nowhere else:
+
+- the `DATETIME` storage class and `FOR JSON`, above;
+- `Database::exec` runs a batch without transaction control as one
+  transaction (`sqlite3_exec` commits each statement);
+- primary key columns are always `NOT NULL`; tables with a declared key are
+  clustered by it, so an unordered scan comes out in key order; their hidden
+  rowids are never reused;
+- double-quoted strings are always identifiers, never string literals
+  (SQLite's recommended `DQS=0`);
+- `EXPLAIN` lists libsql's plan operators rather than VDBE byte code, and
+  `EXPLAIN QUERY PLAN` wording is close to SQLite's but not identical;
+  `sqlite_schema.rootpage` is the object's id;
+- attached databases are separate libnosql stores and commit one after the
+  other, not atomically together (as SQLite in WAL mode);
+- only `ORDER BY` spills to a temporary file; grouping, `DISTINCT`, compound
+  selects, window partitions and materialized sub-queries stay in memory;
+- `BEGIN EXCLUSIVE` does not block readers, which are lock-free snapshots;
+  `PRAGMA busy_timeout = 0` (the default) makes a writer wait for the writer
+  slot as long as it takes rather than fail at once, since the threads sharing
+  a `Database` expect to take turns; `VACUUM` compacts nothing in place
+  (`VACUUM INTO` copies).
+- an unordered scan may come out in index order: a scan that a narrower index
+  covers reads that index, as SQLite does.
+
+Not implemented: `CREATE VIRTUAL TABLE` and every module (FTS, R*Tree,
+`generate_series`, ...), `load_extension()`, a `REGEXP` function, the
+`sqlite3_*` C API and SQLite's file format. Each is reported as an error
+("no such module: fts5") rather than misread.
 
 ## Building
 
@@ -421,7 +553,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 Options: `SQL_BUILD_TESTS`, `SQL_BUILD_EXAMPLES`, `SQL_BUILD_TOOLS`,
-`SQL_BUILD_BENCHMARKS`, `SQL_BUILD_PYTHON`, `SQL_ENABLE_ASAN`. Benchmarks and
+`SQL_BUILD_BENCHMARKS`, `SQL_BUILD_PYTHON`, `SQL_BUILD_CONFORMANCE` (the
+SQLite differential harness; downloads the SQLite 3.45.1 amalgamation as a
+test-only oracle), `SQL_ENABLE_ASAN`. Benchmarks and
 the Python binding are off by default; the binding is experimental and has not
 been through the robustness review the C++ library has. When libsql builds its
 sibling libnosql it compiles only the pieces it needs (`NOSQL_WITH_BLOB` for

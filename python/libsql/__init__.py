@@ -34,6 +34,7 @@ from ._libsql import (  # noqa: F401
     Transaction,
     Writer,
     __version__,
+    complete,
 )
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "Transaction",
     "Writer",
     "__version__",
+    "complete",
 ]
 
 

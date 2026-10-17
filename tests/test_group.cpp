@@ -187,11 +187,11 @@ TEST(rejectsAggregatesWhereTheyCannotWork)
     CHECK_THROWS(db.exec("SELECT name FROM staff WHERE COUNT(*) > 1"),
                  ErrorCode::InvalidArgument);
     CHECK_THROWS(db.exec("SELECT dept FROM staff GROUP BY COUNT(*)"), ErrorCode::InvalidArgument);
-    CHECK_THROWS(db.exec("SELECT SUM(COUNT(pay)) FROM staff"), ErrorCode::Unsupported);
-    CHECK_THROWS(db.exec("SELECT COUNT(DISTINCT dept) FROM staff"), ErrorCode::Unsupported);
-    CHECK_THROWS(db.exec("SELECT upper(name) FROM staff"), ErrorCode::Unsupported);
+    CHECK_THROWS(db.exec("SELECT SUM(COUNT(pay)) FROM staff"), ErrorCode::InvalidArgument);
+    CHECK_THROWS(db.exec("SELECT nope(name) FROM staff"), ErrorCode::Unsupported);
     CHECK_THROWS(db.exec("SELECT COUNT(*) FROM staff GROUP BY nope"), ErrorCode::NoSuchColumn);
-    CHECK_THROWS(db.exec("SELECT SUM(name) FROM staff"), ErrorCode::TypeMismatch);
+    // SQLite sums text by its numeric prefix rather than refusing it.
+    CHECK_EQ(db.exec("SELECT SUM(name) FROM staff")[0][0].type(), Type::Real);
     CHECK_THROWS(db.exec("SELECT COUNT(*"), ErrorCode::SyntaxError);
 }
 

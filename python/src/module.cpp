@@ -57,6 +57,9 @@ const char* codeName(sql::ErrorCode c)
     case sql::ErrorCode::BadTransaction: return "BadTransaction";
     case sql::ErrorCode::ReadOnly: return "ReadOnly";
     case sql::ErrorCode::Internal: return "Internal";
+    case sql::ErrorCode::Runtime: return "Runtime";
+    case sql::ErrorCode::Busy: return "Busy";
+    case sql::ErrorCode::Interrupted: return "Interrupted";
     }
     return "Unknown";
 }
@@ -245,6 +248,25 @@ sql::Params paramsFrom(py::handle seq)
     return out;
 }
 
+/// A mapping binds by name: {"id": 4} or {":id": 4}.
+bool isNamed(py::handle params)
+{
+    return PyDict_Check(params.ptr()) ||
+           (!params.is_none() && PyMapping_Check(params.ptr()) && !PySequence_Check(params.ptr()));
+}
+
+sql::NamedParams namedFrom(py::handle mapping)
+{
+    sql::NamedParams out;
+    for (py::handle item : py::reinterpret_borrow<py::object>(mapping).attr("items")()) {
+        const py::tuple kv = py::reinterpret_borrow<py::tuple>(item);
+        if (!PyUnicode_Check(kv[0].ptr()))
+            throw py::type_error("parameter names must be str");
+        out.emplace_back(kv[0].cast<std::string>(), fromPy(kv[1]));
+    }
+    return out;
+}
+
 // ------------------------------------------------------------------ keys ---
 
 std::string keyBytes(py::handle k)
@@ -413,6 +435,12 @@ Result wrap(const sql::Result& r)
     cols->names = r.columns();
     for (std::size_t i = 0; i < cols->names.size(); ++i)
         cols->byLower.emplace(lower(cols->names[i]), i);
+    // "alias.column" finds a plain column reference, as in C++.
+    const std::vector<std::string>& qualified = r.qualifiedColumns();
+    for (std::size_t i = 0; i < qualified.size(); ++i) {
+        if (!qualified[i].empty())
+            cols->byLower.emplace(lower(qualified[i]), i);
+    }
     Result out;
     out.cols = cols;
     out.changes = r.changes();
@@ -499,15 +527,28 @@ struct Statement
     sql::Statement s;
 };
 
-Result execText(sql::Database& db, const std::string& text, py::handle params)
+template <class Target>
+Result execText(Target& target, const std::string& text, py::handle params)
 {
-    const sql::Params p = paramsFrom(params);
     sql::Result r;
-    {
+    if (isNamed(params)) {
+        const sql::NamedParams p = namedFrom(params);
         py::gil_scoped_release nogil;
-        r = db.exec(text, p);
+        r = target.exec(text, p);
+    } else {
+        const sql::Params p = paramsFrom(params);
+        py::gil_scoped_release nogil;
+        r = target.exec(text, p);
     }
     return wrap(r);
+}
+
+void bindFrom(sql::Statement& s, py::handle params)
+{
+    if (isNamed(params))
+        s.bind(namedFrom(params));
+    else
+        s.bind(paramsFrom(params));
 }
 
 // ----------------------------------------------------------------- blobs ---
@@ -660,6 +701,8 @@ PYBIND11_MODULE(_libsql, m)
 {
     m.doc() = "libsql: a small SQL engine over libnosql, with a zero-copy blob archive";
     m.attr("__version__") = sql::version();
+    m.def("complete", [](const std::string& text) { return sql::complete(text); }, py::arg("sql"),
+          "True when `sql` ends with a complete statement (sqlite3_complete).");
 
     // --- exceptions ---------------------------------------------------------
     gError = py::handle(PyErr_NewException("libsql.Error", PyExc_Exception, nullptr));
@@ -756,16 +799,10 @@ PYBIND11_MODULE(_libsql, m)
                             "A multi-statement transaction. As a context manager it commits on a clean "
                             "exit and rolls back on an exception.")
         .def("exec", [](Transaction& t, const std::string& text, py::handle params) {
-            const sql::Params p = paramsFrom(params);
-            sql::Transaction& txn = t.live();
-            sql::Result r;
-            {
-                py::gil_scoped_release nogil;
-                r = txn.exec(text, p);
-            }
-            return wrap(r);
+            return execText(t.live(), text, params);
         }, py::arg("sql"), py::arg("params") = py::none(),
-           "Run every `;`-separated statement in `sql` and return the last one's result.")
+           "Run every `;`-separated statement in `sql` and return the last one's result. `params` "
+           "is a sequence for `?` placeholders or a mapping for named ones.")
         .def("commit", [](Transaction& t) {
             sql::Transaction& txn = t.live();
             py::gil_scoped_release nogil;
@@ -792,21 +829,33 @@ PYBIND11_MODULE(_libsql, m)
         .def_property_readonly("parameters", [](const Statement& s) { return s.s.parameters(); },
                                "How many `?` placeholders the statement has.")
         .def_property_readonly("writes", [](const Statement& s) { return s.s.writes(); })
-        .def("bind", [](Statement& s, std::size_t index, py::handle value) -> Statement& {
-            s.s.bind(index, fromPy(value));
+        .def_property_readonly("columns", [](Statement& s) { return s.s.columnNames(); },
+                               "The names of the result columns; empty for a statement returning none.")
+        .def("parameter_index", [](const Statement& s, const std::string& name) {
+            return s.s.parameterIndex(name);
+        }, py::arg("name"), "1-based index of the parameter named `name` (':id' or 'id'); 0 if none.")
+        .def("parameter_name", [](const Statement& s, std::size_t index) {
+            return s.s.parameterName(index);
+        }, py::arg("index"), "The spelling of parameter `index`; '' for a plain `?`.")
+        .def("bind", [](Statement& s, py::handle key, py::handle value) -> Statement& {
+            if (PyUnicode_Check(key.ptr()))
+                s.s.bind(std::string_view(key.cast<std::string>()), fromPy(value));
+            else
+                s.s.bind(key.cast<std::size_t>(), fromPy(value));
             return s;
-        }, py::arg("index"), py::arg("value"), "Bind one parameter; `index` is 1-based.")
+        }, py::arg("index"), py::arg("value"),
+           "Bind one parameter by 1-based index or by name.")
         .def("bind_all", [](Statement& s, py::handle params) -> Statement& {
-            s.s.bind(paramsFrom(params));
+            bindFrom(s.s, params);
             return s;
-        }, py::arg("params"))
+        }, py::arg("params"), "Bind a sequence (positional) or a mapping (named).")
         .def("clear", [](Statement& s) -> Statement& {
             s.s.clear();
             return s;
         }, "Put every parameter back to NULL.")
         .def("exec", [](Statement& s, py::handle params, py::object txn) {
             if (!params.is_none())
-                s.s.bind(paramsFrom(params));
+                bindFrom(s.s, params);
             sql::Result r;
             if (txn.is_none()) {
                 py::gil_scoped_release nogil;
@@ -847,7 +896,9 @@ PYBIND11_MODULE(_libsql, m)
         .def("exec", [](Database& d, const std::string& text, py::handle params) {
             return execText(d.db(), text, params);
         }, py::arg("sql"), py::arg("params") = py::none(),
-           "Run every `;`-separated statement in one transaction; return the last one's result.")
+           "Run every `;`-separated statement in one transaction (unless the text itself says BEGIN) "
+           "and return the last one's result. `params` is a sequence for `?` placeholders or a "
+           "mapping for named ones.")
         .def("prepare", [](Database& d, const std::string& text) {
             return Statement{d.db().prepare(text)};
         }, py::arg("sql"), "Parse now, run later; worth it for anything in a loop.")
@@ -877,6 +928,12 @@ PYBIND11_MODULE(_libsql, m)
                 col["not_null"] = c.notNull;
                 col["unique"] = c.unique;
                 col["default"] = c.hasDefault ? toPy(c.defaultValue) : py::none();
+                col["declared_type"] = c.declaredType;
+                col["affinity"] = c.affinity;
+                col["collation"] = c.collation;
+                col["default_sql"] = c.defaultSql;
+                col["generated"] = c.generated == 0 ? py::object(py::none())
+                                   : py::object(py::str(c.generated == 1 ? "virtual" : "stored"));
                 cols.append(col);
             }
             py::dict out;
@@ -886,6 +943,9 @@ PYBIND11_MODULE(_libsql, m)
             for (const int c : t.primaryKey)
                 key.append(t.columns[std::size_t(c)].name);
             out["primary_key"] = key;
+            out["strict"] = t.strict;
+            out["without_rowid"] = t.withoutRowid;
+            out["sql"] = t.sql;
             return out;
         }, py::arg("name"),
         "The table's schema: its name, a dict per column, and 'primary_key', the key's column "
@@ -898,10 +958,23 @@ PYBIND11_MODULE(_libsql, m)
                 e["table"] = ix.table;
                 e["columns"] = ix.columns;
                 e["unique"] = ix.unique;
+                e["partial"] = ix.partial;
+                e["sql"] = ix.sql;
                 out.append(e);
             }
             return out;
         }, py::arg("table") = py::none())
+        .def_property_readonly("changes", [](Database& d) { return d.db().changes(); },
+                               "Rows the most recent INSERT, UPDATE or DELETE changed.")
+        .def_property_readonly("total_changes", [](Database& d) { return d.db().totalChanges(); },
+                               "Rows changed since the database was opened.")
+        .def_property_readonly("last_insert_rowid", [](Database& d) { return d.db().lastInsertRowid(); },
+                               "The rowid of the most recent successful INSERT.")
+        .def_property_readonly("in_transaction", [](Database& d) { return d.db().inTransaction(); },
+                               "True while a BEGIN issued through exec() is open.")
+        .def("interrupt", [](Database& d) { d.db().interrupt(); },
+             "Make statements running on this database stop with an Interrupted error. Safe to call "
+             "from another thread.")
         .def("close", [](Database& d) { d.h->requestClose(); },
              "Release the store. Statements, transactions and BlobStorage objects already created "
              "keep it open until they go; this handle refuses further work at once.")

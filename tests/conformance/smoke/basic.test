@@ -1,0 +1,280 @@
+# Smoke sqllogictest file shared by sqlite and today's libsql subset.
+
+hash-threshold 1000
+
+statement ok
+CREATE TABLE staff (id INTEGER PRIMARY KEY, name TEXT, dept TEXT, pay INTEGER)
+
+statement ok
+INSERT INTO staff VALUES
+ (1, 'ada',     'eng', 100),
+ (2, 'grace',   'eng', 120),
+ (3, 'edsger',  'ops',  90),
+ (4, 'barbara', 'ops', 130),
+ (5, 'alan',    NULL,  NULL)
+
+statement ok
+CREATE INDEX by_staff_pay ON staff(pay)
+
+statement ok
+CREATE TABLE site (dept TEXT PRIMARY KEY, city TEXT)
+
+statement ok
+INSERT INTO site VALUES ('eng', 'oslo'), ('ops', 'lima')
+
+statement ok
+CREATE TABLE nums (id INTEGER PRIMARY KEY, n INTEGER, r REAL, t TEXT, b BLOB)
+
+statement ok
+INSERT INTO nums VALUES (1, 1, 1.25, 'one', x'31'), (2, 2, 2.5, 'two', x'32'), (3, NULL, NULL, '', x'')
+
+query I
+SELECT COUNT(*) FROM staff
+----
+5
+
+query IIRII
+SELECT COUNT(*), SUM(pay), AVG(pay), MIN(pay), MAX(pay) FROM staff
+----
+5
+440
+110.000
+90
+130
+
+query TII rowsort
+SELECT dept, COUNT(*), SUM(pay) FROM staff GROUP BY dept
+----
+NULL
+1
+NULL
+eng
+2
+220
+ops
+2
+220
+
+query TI
+SELECT dept, COUNT(*) FROM staff GROUP BY dept HAVING COUNT(*) > 1 ORDER BY dept
+----
+eng
+2
+ops
+2
+
+query T
+SELECT name FROM staff ORDER BY name LIMIT 3
+----
+ada
+alan
+barbara
+
+query T
+SELECT name FROM staff ORDER BY pay DESC LIMIT 2
+----
+barbara
+grace
+
+query I
+SELECT id FROM staff WHERE name = 'ada'
+----
+1
+
+query T
+SELECT dept FROM staff WHERE name = 'alan'
+----
+NULL
+
+query T
+SELECT '' FROM staff WHERE id = 1
+----
+(empty)
+
+query T
+SELECT b FROM nums WHERE id = 1
+----
+1
+
+query T
+SELECT t FROM nums WHERE id = 2
+----
+two
+
+query R
+SELECT 12.3456 FROM staff WHERE id = 1
+----
+12.346
+
+query I
+SELECT SUM(pay) / COUNT(pay) FROM staff
+----
+110
+
+query T
+SELECT 'n=' || COUNT(*) FROM staff
+----
+n=5
+
+query T rowsort
+SELECT name FROM staff WHERE pay > 100
+----
+barbara
+grace
+
+query I
+SELECT COUNT(*) FROM staff WHERE pay IS NULL
+----
+1
+
+query TI rowsort
+SELECT pay > 100, COUNT(*) FROM staff WHERE pay IS NOT NULL GROUP BY pay > 100
+----
+0
+2
+1
+2
+
+query TT
+SELECT s.name, t.city FROM staff s JOIN site t ON s.dept = t.dept ORDER BY s.name LIMIT 3
+----
+ada
+oslo
+barbara
+lima
+edsger
+lima
+
+query I
+SELECT COUNT(*) FROM staff s JOIN site t ON s.dept = t.dept
+----
+4
+
+query TT rowsort
+SELECT s.name, t.city FROM staff s JOIN site t ON s.dept = t.dept
+----
+ada
+oslo
+barbara
+lima
+edsger
+lima
+grace
+oslo
+
+statement ok
+UPDATE staff SET pay = pay + 10 WHERE dept = 'eng'
+
+query I
+SELECT SUM(pay) FROM staff WHERE dept = 'eng'
+----
+240
+
+statement ok
+DELETE FROM staff WHERE name = 'alan'
+
+query I
+SELECT COUNT(*) FROM staff
+----
+4
+
+statement error
+INSERT INTO staff(id, name) VALUES (1, 'duplicate')
+
+query IT rowsort
+SELECT id, name FROM staff
+----
+1
+ada
+2
+grace
+3
+edsger
+4
+barbara
+
+query I
+SELECT COUNT(*) FROM nums
+----
+3
+
+query TT
+SELECT MIN(t), MAX(t) FROM nums
+----
+(empty)
+two
+
+statement ok
+INSERT INTO nums VALUES (4, NULL, 4.5, NULL, NULL)
+
+query I
+SELECT COUNT(*) FROM nums WHERE n IS NULL
+----
+2
+
+statement ok
+UPDATE nums SET n = n + 1 WHERE n = 1
+
+query I
+SELECT n FROM nums WHERE id = 1
+----
+2
+
+query I rowsort
+SELECT id FROM nums WHERE n BETWEEN 2 AND 3
+----
+1
+2
+
+query I
+SELECT n FROM nums WHERE t = 'two'
+----
+2
+
+query T
+SELECT t FROM nums ORDER BY id LIMIT 1 OFFSET 2
+----
+(empty)
+
+statement ok
+DELETE FROM nums WHERE id = 4
+
+query I
+SELECT COUNT(*) FROM nums
+----
+3
+
+query TI
+SELECT name, pay FROM staff ORDER BY pay DESC, name LIMIT 1
+----
+barbara
+130
+
+query TI
+SELECT dept, MAX(pay) FROM staff GROUP BY dept HAVING MAX(pay) >= 130
+----
+eng
+130
+ops
+130
+
+query T
+SELECT city FROM site ORDER BY city
+----
+lima
+oslo
+
+query I
+SELECT COUNT(*) FROM staff WHERE dept IN ('eng', 'ops')
+----
+4
+
+query I
+SELECT COUNT(*) FROM staff WHERE name <> 'ada'
+----
+3
+
+query I
+SELECT COUNT(*) FROM nums WHERE b IS NOT NULL
+----
+3

@@ -62,8 +62,12 @@ TEST(declaresAndReportsACompositeKey)
     CHECK(info.columns[1].primaryKey);
     CHECK(info.columns[1].notNull);
     CHECK(!info.columns[2].primaryKey);
-    // The key stands in for the rowid, which the table therefore lacks.
-    CHECK_THROWS(db.exec("SELECT rowid FROM t"), ErrorCode::NoSuchColumn);
+    // Rows are clustered by the key, and the table still has a rowid, as
+    // every SQLite table without WITHOUT ROWID does (ledger C8).
+    db.exec("INSERT INTO t VALUES (1, 'x', 0.5)");
+    CHECK_EQ(tst::only(db.exec("SELECT rowid FROM t")), std::string("1"));
+    db.exec("CREATE TABLE w (a INTEGER, b TEXT, PRIMARY KEY (b, a)) WITHOUT ROWID");
+    CHECK_THROWS(db.exec("SELECT rowid FROM w"), ErrorCode::NoSuchColumn);
     // No index is needed to enforce the key; the rows themselves do.
     CHECK(db.indexes("t").empty());
 }
@@ -97,10 +101,8 @@ TEST(compositeKeysMustBeWholeAndUnique)
     CHECK_THROWS(db.exec("INSERT INTO t VALUES (3, NULL, 'x')"), ErrorCode::ConstraintViolation);
     CHECK_THROWS(db.exec("INSERT INTO t (a, note) VALUES (3, 'x')"),
                  ErrorCode::ConstraintViolation);
-    CHECK_EQ(db.exec("INSERT INTO t VALUES (3, 3, 'x')").lastInsertId(), std::int64_t(0));
-
-    // Key columns are typed like any other.
-    CHECK_THROWS(db.exec("INSERT INTO t VALUES ('one', 1, 'x')"), ErrorCode::TypeMismatch);
+    // The insert reports the row's (hidden) rowid, as SQLite does (ledger C8).
+    CHECK_EQ(db.exec("INSERT INTO t VALUES (3, 3, 'x')").lastInsertId(), std::int64_t(4));
     // And a key value spelled as text is read as the column's type.
     db.exec("INSERT INTO t VALUES ('4', '4', 'y')");
     CHECK_EQ(tst::only(db.exec("SELECT note FROM t WHERE a = 4 AND b = 4")), std::string("y"));
@@ -243,7 +245,8 @@ TEST(groupsAndOrdersOverACompositeKey)
                        " WHERE region >= 'north' GROUP BY region ORDER BY region");
     CHECK_EQ(tst::flatten(r), std::string("north|60|570;south|60|570;west|60|570"));
     r = db.exec("SELECT day, seq FROM keyed WHERE region = 'east' ORDER BY day DESC, seq DESC LIMIT 2");
-    CHECK_EQ(tst::flatten(r), std::string("2024-01-09 00:00:00|19;2024-01-09 00:00:00|18"));
+    // DATE has NUMERIC affinity, so text that is not a number stays text (C7).
+    CHECK_EQ(tst::flatten(r), std::string("2024-01-09|19;2024-01-09|18"));
 }
 
 TEST(preparedStatementsBindCompositeKeys)
@@ -272,15 +275,16 @@ TEST(rejectsMalformedCompositeKeys)
     Database db = s.open();
     CHECK_THROWS(db.exec("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (a, c))"),
                  ErrorCode::NoSuchColumn);
-    CHECK_THROWS(db.exec("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (a, a))"),
-                 ErrorCode::InvalidArgument);
+    // A repeated key column is accepted and counted once, as in SQLite.
+    db.exec("CREATE TABLE once (a INTEGER, b INTEGER, PRIMARY KEY (a, a))");
+    CHECK_EQ(db.table("once").primaryKey, (std::vector<int>{0}));
     CHECK_THROWS(db.exec("CREATE TABLE t (a INTEGER PRIMARY KEY, b INTEGER, PRIMARY KEY (a, b))"),
                  ErrorCode::InvalidArgument);
     CHECK_THROWS(db.exec("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY (a), PRIMARY KEY (b))"),
-                 ErrorCode::SyntaxError);
+                 ErrorCode::InvalidArgument);
     CHECK_THROWS(db.exec("CREATE TABLE t (a INTEGER, b INTEGER, PRIMARY KEY ())"),
                  ErrorCode::SyntaxError);
-    CHECK(db.tables().empty());
+    CHECK_EQ(db.tables(), (std::vector<std::string>{"once"}));
 }
 
 TEST(tableLevelUniqueConstraints)
@@ -328,7 +332,8 @@ TEST(uniqueConstraintsTheKeyAlreadyGivesAreDropped)
     CHECK_THROWS(db.exec("INSERT INTO u VALUES (1, 2)"), ErrorCode::ConstraintViolation);
 
     CHECK_THROWS(db.exec("CREATE TABLE v (a INTEGER, UNIQUE (nope))"), ErrorCode::NoSuchColumn);
-    CHECK_THROWS(db.exec("CREATE TABLE v (a INTEGER, UNIQUE (a, a))"), ErrorCode::InvalidArgument);
+    // A repeated column in UNIQUE is accepted, as in SQLite.
+    db.exec("CREATE TABLE v (a INTEGER, UNIQUE (a, a))");
 }
 
 TEST(singleColumnKeysAreUnchanged)

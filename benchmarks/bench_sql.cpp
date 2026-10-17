@@ -5,7 +5,7 @@
 // the allocations each repetition made. Rows, parameters and keys are
 // generated ahead of time so the loops time the engine and nothing else.
 //
-//   bench_sql [--rows N] [--reps R] [--batch B] [--durable] [--cache]
+//   bench_sql [--rows N] [--reps R] [--batch B] [--durable] [--no-cache]
 //             [--json out.json] [--csv out.csv] [--quick] [--only name,name]
 
 #define BENCH_DEFINE_ALLOC_HOOKS
@@ -24,7 +24,7 @@ struct Config
     std::uint64_t batch = 1000;
     int reps = 3;
     bool durable = false;
-    bool cache = false;
+    bool cache = true;
     std::vector<std::string> only;
 
     bool wants(const char* name) const
@@ -134,7 +134,7 @@ int main(int argc, char** argv)
     c.batch = args.getU("--batch", c.batch);
     c.reps = int(args.getU("--reps", std::uint64_t(c.reps)));
     c.durable = args.has("--durable");
-    c.cache = args.has("--cache");
+    c.cache = !args.has("--no-cache");
     {
         std::string list = args.get("--only", "");
         while (!list.empty()) {

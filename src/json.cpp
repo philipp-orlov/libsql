@@ -173,6 +173,12 @@ void putValue(Out& o, const Value& v)
         case Type::Real: putReal(o, v.real()); break;
         case Type::Datetime: putDatetime(o, v.datetime()); break;
         case Type::Text:
+            // Text that is already JSON (a nested FOR JSON, a json_* result)
+            // is embedded, not quoted.
+            if (v.subtype() == kJsonSubtype && !v.text().empty()) {
+                o.put(v.text().data(), v.text().size());
+                break;
+            }
             o.put('"');
             putEscaped(o, v.text());
             o.put('"');
@@ -184,7 +190,7 @@ void putValue(Out& o, const Value& v)
 const Value& cell(const Row& row, int column)
 {
     static const Value kNull;
-    const std::vector<Value>& values = row.values();
+    const Values& values = row.values();
     return std::size_t(column) < values.size() ? values[std::size_t(column)] : kNull;
 }
 

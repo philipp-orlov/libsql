@@ -27,8 +27,12 @@ TEST(joinsOnTheKeyOfTheInnerTable)
     Result r = db.exec("SELECT s.name, d.name FROM staff s INNER JOIN dept d ON s.dept_id = d.id"
                        " ORDER BY s.id");
     CHECK_EQ(tst::flatten(r), std::string("ada|eng;grace|eng;alan|ops"));
-    CHECK_EQ(r.columns()[0], std::string("s.name"));
-    CHECK_EQ(r.columns()[1], std::string("d.name"));
+    // Result columns carry SQLite's names (ledger C6); the qualified name still
+    // finds a column.
+    CHECK_EQ(r.columns()[0], std::string("name"));
+    CHECK_EQ(r.columns()[1], std::string("name"));
+    CHECK_EQ(r[0]["s.name"].text(), std::string("ada"));
+    CHECK_EQ(r[0]["d.name"].text(), std::string("eng"));
 }
 
 TEST(joinsInEitherDirection)
@@ -46,7 +50,8 @@ TEST(joinStarsExpandPerTable)
     Database db = seeded(s);
     Result r = db.exec("SELECT * FROM staff s JOIN dept d ON s.dept_id = d.id WHERE s.id = 10");
     CHECK_EQ(r.columns().size(), std::size_t(5));
-    CHECK_EQ(r.columns()[0], std::string("s.id"));
+    CHECK_EQ(r.columns()[0], std::string("id"));
+    CHECK_EQ(r[0]["d.id"].integer(), std::int64_t(1));
     CHECK_EQ(tst::flatten(r), std::string("10|ada|1|1|eng"));
 
     r = db.exec("SELECT d.* FROM staff s JOIN dept d ON s.dept_id = d.id WHERE s.id = 10");
@@ -108,9 +113,10 @@ TEST(joinDiagnosesBadNames)
     Database db = seeded(s);
     CHECK_THROWS(db.exec("SELECT name FROM staff s JOIN dept d ON s.dept_id = d.id"),
                  ErrorCode::AmbiguousColumn);
+    // Two sources under one alias make every use of it ambiguous, as in SQLite.
     CHECK_THROWS(db.exec("SELECT s.name FROM staff s JOIN dept s ON 1 = 1"),
-                 ErrorCode::InvalidArgument);
-    CHECK_THROWS(db.exec("SELECT s.name FROM staff s JOIN nothing d ON 1 = 1"),
+                 ErrorCode::AmbiguousColumn);
+    CHECK_THROWS(db.exec("SELECT s.name FROM staff s JOIN missing d ON 1 = 1"),
                  ErrorCode::NoSuchTable);
 }
 

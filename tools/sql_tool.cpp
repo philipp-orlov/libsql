@@ -48,7 +48,8 @@ constexpr const char* kUsage =
     "\n"
     "dot commands, when reading statements from stdin:\n"
     "  .tables               names of the tables\n"
-    "  .schema [TABLE]       the CREATE statements that would rebuild it\n"
+    "  .schema [TABLE]       the CREATE statements, as they were written\n"
+    "  .dump [TABLE]         a script that rebuilds the schema and the rows\n"
     "  .indexes [TABLE]      indexes, with the columns they cover\n"
     "  .mode table|csv|list  change the output format\n"
     "  .headers on|off       show or hide the column names\n"
@@ -186,55 +187,73 @@ void report(const Result& r, const Settings& settings)
 
 std::string quoteName(const std::string& name)
 {
+    std::string out = "\"";
     for (const char c : name) {
-        const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                           (c >= '0' && c <= '9') || c == '_';
-        if (!plain)
-            return "\"" + name + "\"";
+        if (c == '"')
+            out += '"';
+        out += c;
     }
-    return name;
+    return out + "\"";
 }
 
+/// Runs `text`, binding `name` to ?1 when the text uses it.
+Result query(Database& db, const char* text, const std::string& name)
+{
+    Statement s = db.prepare(text);
+    if (s.parameters() > 0)
+        s.bind(1, Value(name));
+    return s.exec();
+}
+
+/// The CREATE statements exactly as they were written, in creation order.
 void printSchema(Database& db, const std::string& only)
 {
-    for (const std::string& name : db.tables()) {
-        if (!only.empty() && name != only)
-            continue;
+    const Result r = only.empty()
+        ? query(db, "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL", only)
+        : query(db, "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL AND tbl_name = ?1 COLLATE NOCASE",
+                only);
+    for (const Row& row : r)
+        std::printf("%s;\n", row[0].toText().c_str());
+}
+
+/// Writes a script that rebuilds the database: tables and their rows first,
+/// then indexes, views and triggers, all inside one transaction.
+void dump(Database& db, const std::string& only)
+{
+    std::printf("BEGIN TRANSACTION;\n");
+    const char* tablesSql = only.empty()
+        ? "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND sql IS NOT NULL"
+        : "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND sql IS NOT NULL AND name = ?1 "
+          "COLLATE NOCASE";
+    for (const Row& table : query(db, tablesSql, only)) {
+        const std::string name = table[0].toText();
+        std::printf("%s;\n", table[1].toText().c_str());
         const TableInfo info = db.table(name);
-        // A one-column key is printed inline; a composite one as a table
-        // constraint after the columns, the only way SQL can spell it.
-        const bool composite = info.primaryKey.size() > 1;
-        std::printf("CREATE TABLE %s (\n", quoteName(info.name).c_str());
-        for (std::size_t i = 0; i < info.columns.size(); ++i) {
-            const ColumnInfo& c = info.columns[i];
-            std::printf("  %s %s", quoteName(c.name).c_str(), toString(c.type));
-            if (c.primaryKey && !composite)
-                std::printf(" PRIMARY KEY");
-            else if (c.notNull)
-                std::printf(" NOT NULL");
-            if (c.unique)
-                std::printf(" UNIQUE");
-            if (c.hasDefault)
-                std::printf(" DEFAULT %s", c.defaultValue.toLiteral().c_str());
-            std::printf("%s\n", i + 1 < info.columns.size() || composite ? "," : "");
-        }
-        if (composite) {
-            std::printf("  PRIMARY KEY (");
-            for (std::size_t i = 0; i < info.primaryKey.size(); ++i) {
-                const ColumnInfo& c = info.columns[std::size_t(info.primaryKey[i])];
-                std::printf("%s%s", i ? ", " : "", quoteName(c.name).c_str());
+        std::string columns, values;
+        for (const ColumnInfo& c : info.columns) {
+            if (c.generated)
+                continue;
+            if (!columns.empty()) {
+                columns += ',';
+                values += "||','||";
             }
-            std::printf(")\n");
+            columns += quoteName(c.name);
+            values += "quote(" + quoteName(c.name) + ")";
         }
-        std::printf(");\n");
-        for (const IndexInfo& ix : db.indexes(name)) {
-            std::printf("CREATE %sINDEX %s ON %s (", ix.unique ? "UNIQUE " : "",
-                        quoteName(ix.name).c_str(), quoteName(ix.table).c_str());
-            for (std::size_t i = 0; i < ix.columns.size(); ++i)
-                std::printf("%s%s", i ? ", " : "", quoteName(ix.columns[i]).c_str());
-            std::printf(");\n");
-        }
+        if (columns.empty())
+            continue;
+        const std::string prefix = "INSERT INTO " + quoteName(name) + "(" + columns + ") VALUES(";
+        const Result rows = db.exec("SELECT " + values + " FROM " + quoteName(name));
+        for (const Row& row : rows)
+            std::printf("%s%s);\n", prefix.c_str(), row[0].toText().c_str());
     }
+    const char* restSql = only.empty()
+        ? "SELECT sql FROM sqlite_schema WHERE type <> 'table' AND sql IS NOT NULL"
+        : "SELECT sql FROM sqlite_schema WHERE type <> 'table' AND sql IS NOT NULL AND tbl_name = ?1 "
+          "COLLATE NOCASE";
+    for (const Row& row : query(db, restSql, only))
+        std::printf("%s;\n", row[0].toText().c_str());
+    std::printf("COMMIT;\n");
 }
 
 /// Returns false when the command asked to quit.
@@ -265,6 +284,8 @@ bool dotCommand(Database& db, Settings& settings, std::string_view line)
             std::printf("%s\n", name.c_str());
     } else if (command == ".schema") {
         printSchema(db, argument);
+    } else if (command == ".dump") {
+        dump(db, argument);
     } else if (command == ".indexes") {
         for (const IndexInfo& ix : db.indexes(argument)) {
             std::printf("%s on %s (", ix.name.c_str(), ix.table.c_str());
@@ -290,39 +311,6 @@ bool dotCommand(Database& db, Settings& settings, std::string_view line)
 }
 
 // --------------------------------------------------------------- input ----
-
-/// True once the buffer holds a statement terminator that is not inside a
-/// literal or a comment, so the prompt knows when to stop collecting lines.
-bool complete(std::string_view text)
-{
-    bool terminated = false;
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        const char c = text[i];
-        if (c == '\'' || c == '"' || c == '`') {
-            const char close = c;
-            for (++i; i < text.size() && text[i] != close; ++i) {
-            }
-            continue;
-        }
-        if (c == '-' && i + 1 < text.size() && text[i + 1] == '-') {
-            while (i < text.size() && text[i] != '\n')
-                ++i;
-            continue;
-        }
-        if (c == '/' && i + 1 < text.size() && text[i + 1] == '*') {
-            i += 2;
-            while (i + 1 < text.size() && !(text[i] == '*' && text[i + 1] == '/'))
-                ++i;
-            ++i;
-            continue;
-        }
-        if (c == ';')
-            terminated = true;
-        else if (!std::isspace(static_cast<unsigned char>(c)))
-            terminated = false;
-    }
-    return terminated;
-}
 
 bool blank(std::string_view text)
 {
@@ -375,12 +363,16 @@ int prompt(Database& db, Settings& settings)
             break;
 
         if (pending.empty() && line[0] == '.') {
-            if (!dotCommand(db, settings, line))
-                break;
+            try {
+                if (!dotCommand(db, settings, line))
+                    break;
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "sql: %s\n", e.what());
+            }
             continue;
         }
         pending += line;
-        if (!complete(pending))
+        if (!sql::complete(pending))
             continue;
         if (!blank(pending))
             run(db, settings, pending);

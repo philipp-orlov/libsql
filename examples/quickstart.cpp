@@ -20,13 +20,15 @@ int main()
     db.exec("CREATE TABLE author ("
             "  id   INTEGER PRIMARY KEY,"
             "  name TEXT NOT NULL UNIQUE)");
+    // STRICT checks types, and makes `released` hold the DATETIME class, so the
+    // comparison with '1965-01-01' below is between two datetimes.
     db.exec("CREATE TABLE book ("
             "  id        INTEGER PRIMARY KEY,"
-            "  author_id INTEGER NOT NULL,"
+            "  author_id INTEGER NOT NULL REFERENCES author (id),"
             "  title     TEXT NOT NULL,"
             "  price     REAL DEFAULT 0.0,"
             "  released  DATETIME,"
-            "  cover     BLOB)");
+            "  cover     BLOB) STRICT");
     db.exec("CREATE INDEX book_by_author ON book (author_id)");
 
     // One transaction, several statements: all of it lands or none of it does.
