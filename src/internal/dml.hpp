@@ -86,6 +86,8 @@ struct TablePlan
     bool fkPlanned = false;
     // scratch
     std::string key, oldKey, payload, entry, probe;
+    /// Per column: stored as NULL (the rowid alias, virtual generated columns).
+    std::vector<std::uint8_t> storedNull;
     std::string flags;  ///< an index entry's value: see entryFor
 };
 

@@ -225,6 +225,99 @@ int compareOperands(const Expr& l, const Value& a, const Expr& r, const Value& b
 
 namespace {
 
+// ------------------------------------------------- direct comparisons ----
+//
+// A comparison of a column with a constant (or two columns) is most of what
+// WHERE and ON clauses hold. compareOperands copies and converts only when
+// affinity would change an operand; when neither value changes it is plain
+// compareValues. Which value types change depends only on the two operand
+// expressions, so it is settled once per node here, and the common cases --
+// two numbers, or two texts under BINARY -- are then compared without
+// evaluating the operand nodes or consulting affinity again.
+
+enum : std::uint8_t
+{
+    kShapeNone = 1,
+    kShapeDirect = 2,     ///< both operands are columns, literals or parameters
+    kNumericOk = 1 << 2,  ///< two numbers compare as they are
+    kTextOk = 1 << 3,     ///< two texts compare as they are (BINARY)
+};
+
+bool directOperand(const Expr& x) noexcept
+{
+    return x.kind == ExprKind::Column || x.kind == ExprKind::Literal || x.kind == ExprKind::Parameter;
+}
+
+std::uint8_t classifyComparison(const Expr& e) noexcept
+{
+    const Expr& l = *e.lhs;
+    const Expr& r = *e.rhs;
+    if (!directOperand(l) || !directOperand(r) || l.sub || r.sub)
+        return kShapeNone;
+    const Affinity la = comparisonAffinity(l, r), ra = comparisonAffinity(r, l);
+    auto numeric = [](Affinity a) { return a == Affinity::Integer || a == Affinity::Real || a == Affinity::Numeric; };
+    std::uint8_t shape = kShapeDirect;
+    if (la != Affinity::Text && ra != Affinity::Text)
+        shape |= kNumericOk;
+    if (!numeric(la) && !numeric(ra) && !isDatetimeOperand(l) && !isDatetimeOperand(r) &&
+        e.collation == Collation::Binary)
+        shape |= kTextOk;
+    return shape;
+}
+
+inline const Value& directValue(const Expr& x, const Ctx& c) noexcept
+{
+    if (x.kind == ExprKind::Column)
+        return c.slots[x.slot];
+    if (x.kind == ExprKind::Literal)
+        return x.literal;
+    if (!c.params || x.param >= c.params->size())
+        return nullValue();
+    return (*c.params)[x.param];
+}
+
+}  // namespace
+
+/// 1 true, 0 false, -1 NULL, 2 not decided here (use the general path).
+int directCompare(const Expr& e, const Ctx& c) noexcept
+{
+    if (e.fastShape == 0)
+        e.fastShape = classifyComparison(e);
+    const std::uint8_t shape = e.fastShape;
+    if (!(shape & kShapeDirect))
+        return 2;
+    const Value& a = directValue(*e.lhs, c);
+    const Value& b = directValue(*e.rhs, c);
+    const Type ta = a.type(), tb = b.type();
+    if (ta == Type::Null || tb == Type::Null)
+        return -1;
+    int cmp;
+    if (ta == Type::Integer && tb == Type::Integer && (shape & kNumericOk)) {
+        cmp = a.integer() < b.integer() ? -1 : a.integer() > b.integer();
+    } else if (ta == Type::Real && tb == Type::Real && (shape & kNumericOk)) {
+        cmp = a.real() < b.real() ? -1 : a.real() > b.real();
+    } else if (ta == Type::Integer && tb == Type::Real && (shape & kNumericOk)) {
+        cmp = compareIntReal(a.integer(), b.real());
+    } else if (ta == Type::Real && tb == Type::Integer && (shape & kNumericOk)) {
+        cmp = -compareIntReal(b.integer(), a.real());
+    } else if (ta == Type::Text && tb == Type::Text && (shape & kTextOk)) {
+        cmp = a.text().compare(b.text());
+    } else {
+        return 2;
+    }
+    switch (BinaryOp(e.op)) {
+        case BinaryOp::Eq: return cmp == 0;
+        case BinaryOp::Ne: return cmp != 0;
+        case BinaryOp::Lt: return cmp < 0;
+        case BinaryOp::Le: return cmp <= 0;
+        case BinaryOp::Gt: return cmp > 0;
+        case BinaryOp::Ge: return cmp >= 0;
+        default: return 2;
+    }
+}
+
+namespace {
+
 bool relation(BinaryOp op, int c) noexcept
 {
     switch (op) {
@@ -440,7 +533,7 @@ const Value& evalInSelect(const Expr& e, Ctx& c)
         e.scratch.setNull();
         return e.scratch;
     }
-    if (s.keys.count(key)) {
+    if (s.keys.contains(key)) {
         setTruth(e.scratch, !e.negated);
         return e.scratch;
     }
@@ -616,6 +709,12 @@ const Value& eval(const Expr& e, Ctx& c)
                         setTruth(e.scratch, r == 1);
                         return e.scratch;
                     }
+                    if (const int d = directCompare(e, c); d != 2) {
+                        if (d < 0)
+                            return nullValue();
+                        setTruth(e.scratch, d == 1);
+                        return e.scratch;
+                    }
                     const Value& a = eval(*e.lhs, c);
                     const Value& b = eval(*e.rhs, c);
                     bool isNull = false;
@@ -721,6 +820,11 @@ bool holds(const Expr* e, Ctx& c)
 {
     if (!e)
         return true;
+    if (e->kind == ExprKind::Binary && e->op >= std::uint8_t(BinaryOp::Eq) && e->op <= std::uint8_t(BinaryOp::Ge) &&
+        e->fastShape != kShapeNone) {
+        if (const int d = directCompare(*e, c); d != 2)
+            return d == 1;
+    }
     return isTrue(eval(*e, c));
 }
 

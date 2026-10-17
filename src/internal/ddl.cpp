@@ -969,11 +969,9 @@ struct AlterPlan final : ExecPlan
                             const Column& cc = t.columns[i];
                             vals[i] = cc.hasDefault && cc.defaultConstant ? cc.defaultValue : Value();
                         }
-                        putVarint(out, vals.size() - 1);
-                        for (std::size_t i = 0; i < vals.size(); ++i) {
-                            if (int(i) != col)
-                                putValue(out, vals[i]);
-                        }
+                        vals.erase(vals.begin() + col);
+                        encodeRowInto(out, vals.data(), vals.size());
+                        vals.resize(t.columns.size());
                         rewritten.emplace_back(std::string(viewOf(cur.key())), std::move(out));
                     }
                 }

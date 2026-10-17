@@ -22,6 +22,36 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Link-time optimization for optimized builds: libsql calls into libnosql's
+# cursor on every row, and only LTO can inline across the two libraries.
+option(SQL_LTO "Link-time optimization in Release/RelWithDebInfo builds" OFF)
+if(SQL_LTO AND NOT SQL_ENABLE_ASAN)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT sql_ipo_ok OUTPUT sql_ipo_msg LANGUAGES CXX)
+    if(sql_ipo_ok)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+    else()
+        message(STATUS "libsql: LTO not supported here: ${sql_ipo_msg}")
+    endif()
+endif()
+
+# Profile-guided optimization (GCC/Clang). Build with GENERATE, run a
+# representative workload (tools/pgo-build.sh runs the benchmarks), then
+# rebuild the same tree with USE. Applies to libnosql as well.
+set(SQL_PGO "" CACHE STRING "Profile-guided optimization: empty, GENERATE or USE")
+set_property(CACHE SQL_PGO PROPERTY STRINGS "" GENERATE USE)
+set(SQL_PGO_DIR "${CMAKE_BINARY_DIR}/pgo-data" CACHE PATH "Where PGO profiles are written and read")
+if(SQL_PGO STREQUAL "GENERATE")
+    add_compile_options(-fprofile-generate=${SQL_PGO_DIR} -fprofile-update=atomic)
+    add_link_options(-fprofile-generate=${SQL_PGO_DIR})
+elseif(SQL_PGO STREQUAL "USE")
+    add_compile_options(-fprofile-use=${SQL_PGO_DIR} -fprofile-partial-training -Wno-missing-profile)
+    add_link_options(-fprofile-use=${SQL_PGO_DIR})
+elseif(NOT SQL_PGO STREQUAL "")
+    message(FATAL_ERROR "SQL_PGO must be empty, GENERATE or USE")
+endif()
+
 # An extension module is a shared object, so everything linked into it --
 # libnosql included, which is added below -- has to be position independent.
 if(SQL_BUILD_PYTHON)

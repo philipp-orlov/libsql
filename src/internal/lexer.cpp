@@ -6,7 +6,6 @@
 
 #include "internal/lexer.hpp"
 
-#include <unordered_set>
 
 #include "internal/cnumeric.hpp"
 #include "internal/types.hpp"
@@ -98,67 +97,135 @@ std::uint16_t punctOps(std::string_view p) noexcept
     return 0;
 }
 
-std::uint16_t keywordOps(std::string_view w) noexcept
+/// The words the lexer flags: reserved (SQLite keywords without %fallback,
+/// never a bare name), join words, and the operator words of the expression
+/// grammar. Looked up for every identifier, through a small open-addressing
+/// table keyed by the token's folded spelling.
+struct WordInfo
 {
-    if (w.size() < 2 || w.size() > 7)
-        return 0;
-    switch (lowerAscii(w[0])) {
-        case 'o': return equalsNoCase(w, "OR") ? kOpOr : 0;
-        case 'a': return equalsNoCase(w, "AND") ? kOpAnd : 0;
-        case 'c': return equalsNoCase(w, "COLLATE") ? kOpCollate : 0;
-        case 'i':
-            return (equalsNoCase(w, "IS") || equalsNoCase(w, "IN") || equalsNoCase(w, "ISNULL")) ? kOpEquality : 0;
-        case 'n': return (equalsNoCase(w, "NOT") || equalsNoCase(w, "NOTNULL")) ? kOpEquality : 0;
-        case 'b': return equalsNoCase(w, "BETWEEN") ? kOpEquality : 0;
-        case 'l': return equalsNoCase(w, "LIKE") ? kOpEquality : 0;
-        case 'g': return equalsNoCase(w, "GLOB") ? kOpEquality : 0;
-        case 'r': return equalsNoCase(w, "REGEXP") ? kOpEquality : 0;
-        case 'm': return equalsNoCase(w, "MATCH") ? kOpEquality : 0;
-        default: return 0;
+    const char* word;
+    bool reserved;
+    bool join;
+    std::uint16_t ops;
+};
+
+constexpr WordInfo kWordList[] = {
+    {"ADD", true, false, 0},          {"ALL", true, false, 0},
+    {"ALTER", true, false, 0},        {"AND", true, false, kOpAnd},
+    {"AS", true, false, 0},           {"AUTOINCREMENT", true, false, 0},
+    {"BETWEEN", true, false, kOpEquality}, {"CASE", true, false, 0},
+    {"CHECK", true, false, 0},        {"COLLATE", true, false, kOpCollate},
+    {"COMMIT", true, false, 0},       {"CONSTRAINT", true, false, 0},
+    {"CREATE", true, false, 0},       {"DEFAULT", true, false, 0},
+    {"DEFERRABLE", true, false, 0},   {"DELETE", true, false, 0},
+    {"DISTINCT", true, false, 0},     {"DROP", true, false, 0},
+    {"ELSE", true, false, 0},         {"ESCAPE", true, false, 0},
+    {"EXCEPT", true, false, 0},       {"EXISTS", true, false, 0},
+    {"FOREIGN", true, false, 0},      {"FROM", true, false, 0},
+    {"GROUP", true, false, 0},        {"HAVING", true, false, 0},
+    {"IN", true, false, kOpEquality}, {"INDEX", true, false, 0},
+    {"INSERT", true, false, 0},       {"INTERSECT", true, false, 0},
+    {"INTO", true, false, 0},         {"IS", true, false, kOpEquality},
+    {"ISNULL", true, false, kOpEquality}, {"JOIN", true, false, 0},
+    {"LIMIT", true, false, 0},        {"NOT", true, false, kOpEquality},
+    {"NOTHING", true, false, 0},      {"NOTNULL", true, false, kOpEquality},
+    {"NULL", true, false, 0},         {"ON", true, false, 0},
+    {"OR", true, false, kOpOr},       {"ORDER", true, false, 0},
+    {"PRIMARY", true, false, 0},      {"REFERENCES", true, false, 0},
+    {"SELECT", true, false, 0},       {"SET", true, false, 0},
+    {"TABLE", true, false, 0},        {"THEN", true, false, 0},
+    {"TO", true, false, 0},           {"TRANSACTION", true, false, 0},
+    {"UNION", true, false, 0},        {"UNIQUE", true, false, 0},
+    {"UPDATE", true, false, 0},       {"USING", true, false, 0},
+    {"VALUES", true, false, 0},       {"WHEN", true, false, 0},
+    {"WHERE", true, false, 0},
+    {"NATURAL", false, true, 0},      {"LEFT", false, true, 0},
+    {"RIGHT", false, true, 0},        {"FULL", false, true, 0},
+    {"OUTER", false, true, 0},        {"CROSS", false, true, 0},
+    {"INNER", false, true, 0},
+    {"LIKE", false, false, kOpEquality}, {"GLOB", false, false, kOpEquality},
+    {"REGEXP", false, false, kOpEquality}, {"MATCH", false, false, kOpEquality},
+};
+
+constexpr std::size_t kWordSlots = 256;  // a power of two, under a third full
+
+constexpr std::size_t wordSlot(std::uint64_t fold, std::size_t length) noexcept
+{
+    std::uint64_t h = (fold ^ (std::uint64_t(length) << 56)) * 0x9E3779B97F4A7C15ull;
+    return std::size_t(h >> 56) & (kWordSlots - 1);
+}
+
+constexpr std::size_t cstrlen(const char* s) noexcept
+{
+    std::size_t n = 0;
+    while (s[n])
+        ++n;
+    return n;
+}
+
+class WordTable
+{
+public:
+    WordTable() noexcept
+    {
+        for (std::int16_t& s : slots_)
+            s = -1;
+        for (std::size_t i = 0; i < sizeof kWordList / sizeof kWordList[0]; ++i) {
+            const std::size_t n = cstrlen(kWordList[i].word);
+            const std::uint64_t f = Token::foldWord(kWordList[i].word, n);
+            std::size_t at = wordSlot(f, n);
+            while (slots_[at] >= 0)
+                at = (at + 1) & (kWordSlots - 1);
+            slots_[at] = std::int16_t(i);
+            folds_[at] = f;
+            lengths_[at] = std::uint8_t(n);
+        }
     }
+
+    /// The entry spelled `w` (any case), or null. `fold` is foldWord(w).
+    const WordInfo* find(std::string_view w, std::uint64_t fold) const noexcept
+    {
+        if (w.empty() || w.size() > 15)
+            return nullptr;
+        for (std::size_t at = wordSlot(fold, w.size());; at = (at + 1) & (kWordSlots - 1)) {
+            const std::int16_t i = slots_[at];
+            if (i < 0)
+                return nullptr;
+            if (folds_[at] == fold && lengths_[at] == w.size() &&
+                (w.size() <= 8 || equalsNoCase(w.substr(8), std::string_view(kWordList[i].word + 8))))
+                return &kWordList[i];
+        }
+    }
+
+private:
+    std::int16_t slots_[kWordSlots];
+    std::uint64_t folds_[kWordSlots] = {};
+    std::uint8_t lengths_[kWordSlots] = {};
+};
+
+const WordTable& words() noexcept
+{
+    static const WordTable table;
+    return table;
+}
+
+const WordInfo* lookupWord(std::string_view w) noexcept
+{
+    return words().find(w, Token::foldWord(w.data(), w.size()));
 }
 
 }  // namespace
 
-/// Lowercases `w` into `buf` when it is short enough to be a keyword.
-static bool lowerWord(std::string_view w, char (&buf)[16], std::string_view& out) noexcept
-{
-    if (w.empty() || w.size() >= sizeof buf)
-        return false;
-    for (std::size_t i = 0; i < w.size(); ++i)
-        buf[i] = lowerAscii(w[i]);
-    out = std::string_view(buf, w.size());
-    return true;
-}
-
-/// Words that can never be a bare name: SQLite keywords without %fallback.
-/// Asked for nearly every identifier, so it is a hash lookup.
 bool isReservedWord(std::string_view w) noexcept
 {
-    static const std::unordered_set<std::string_view> kWords = {
-        "add",       "all",       "alter",      "and",       "as",         "autoincrement",
-        "between",   "case",      "check",      "collate",   "commit",     "constraint",
-        "create",    "default",   "deferrable", "delete",    "distinct",   "drop",
-        "else",      "escape",    "except",     "exists",    "foreign",    "from",
-        "group",     "having",    "in",         "index",     "insert",     "intersect",
-        "into",      "is",        "isnull",     "join",      "limit",      "not",
-        "nothing",   "notnull",   "null",       "on",        "or",         "order",
-        "primary",   "references", "select",    "set",       "table",      "then",
-        "to",        "transaction", "union",    "unique",    "update",     "using",
-        "values",    "when",      "where",
-    };
-    char buf[16];
-    std::string_view lower;
-    return lowerWord(w, buf, lower) && kWords.count(lower) != 0;
+    const WordInfo* info = lookupWord(w);
+    return info && info->reserved;
 }
 
 bool isJoinWord(std::string_view w) noexcept
 {
-    static const std::unordered_set<std::string_view> kWords = {"natural", "left", "right", "full",
-                                                                 "outer", "cross", "inner"};
-    char buf[16];
-    std::string_view lower;
-    return lowerWord(w, buf, lower) && kWords.count(lower) != 0;
+    const WordInfo* info = lookupWord(w);
+    return info && info->join;
 }
 
 std::vector<Token> tokenize(std::string_view text)
@@ -355,10 +422,13 @@ void tokenizeInto(std::string_view text, std::vector<Token>& out)
         if (t.kind == Tok::Punct)
             t.ops = punctOps(t.text);
         else if (t.kind == Tok::Identifier) {
-            if (!t.quoted)
-                t.ops = keywordOps(t.text);
-            t.reserved = isReservedWord(t.text);
-            t.joinWord = !t.reserved && isJoinWord(t.text);
+            t.fold = Token::foldWord(t.text.data(), t.text.size());
+            if (const WordInfo* info = words().find(t.text, t.fold)) {
+                if (!t.quoted)
+                    t.ops = info->ops;
+                t.reserved = info->reserved;
+                t.joinWord = info->join;
+            }
         }
     }
 

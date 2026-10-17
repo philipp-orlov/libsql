@@ -205,6 +205,19 @@ schema pointer or schema stamp differs. The stamp matters inside a transaction:
 DDL edits a transaction-local schema copy in place, so pointer identity alone
 would not notice a second DDL statement.
 
+One-off texts get the same treatment through a `BatchCache` per `Database`
+and per transaction: an LRU of parsed batches indexed by text, holding up to
+`statementCacheSize` entries (`MemoryProfile`). Entries are shared pointers,
+so a batch that is running survives being evicted by what it runs, or the
+cache being cleared by its own `DETACH`.
+
+Each parsed statement owns an `Arena` (`StatementNode::arena`, declared before
+the body so the body is destroyed first). While a statement is parsed,
+`makeExpr` places nodes in it -- `ExprPtr`'s deleter only destructs a node
+marked `inArena` -- so a statement tree is a few blocks of
+`arenaBlockSize` rather than one heap allocation per node. Nodes the planner
+makes later stay on the heap.
+
 ---
 
 ## 3. The storage engine underneath
@@ -511,28 +524,33 @@ There is no tag. This makes signed rowids sort in numeric order.
 
 ### 6.5 Row records
 
-Rows use:
+Rows use (format 2, recorded in the catalog as `f`; a store with another row
+format is refused):
 
 ```text
 varint column-count
-typed cell 0
-typed cell 1
-...
+varint header-bytes      bytes of the type codes that follow
+varint type-code ...     one per column
+payload ...              one per column, in order, sizes implied by the codes
 ```
 
-Cell tags are the public `Type` enum values:
-
-| Tag | Class | Payload |
+| Type code | Class | Payload |
 | --- | --- | --- |
 | `0` | NULL | none |
-| `1` | INTEGER | zigzag varint |
-| `2` | REAL | raw 8-byte `double` bytes |
-| `3` | DATETIME | zigzag varint microseconds |
-| `4` | TEXT | varint length + bytes |
-| `5` | BLOB | varint length + bytes |
+| `1`-`6` | INTEGER | 1, 2, 3, 4, 6 or 8 bytes, little-endian, sign-extended |
+| `7` | REAL | raw 8-byte `double` |
+| `8`, `9` | INTEGER 0, 1 | none |
+| `10` | DATETIME | 8 bytes of microseconds, little-endian |
+| even `N >= 12` | BLOB | `(N - 12) / 2` bytes |
+| odd `N >= 13` | TEXT | `(N - 13) / 2` bytes |
 
-`decodeRowInto` fills missing trailing columns with NULL. Callers that know a
-column was added later may replace those NULLs with constant defaults.
+Knowing where the payloads start, a reader walks the codes and the payloads
+together and steps over a column without looking at its bytes, so decoding
+only the used columns (`decodeRowInto` with a mask) costs a byte per skipped
+column. `decodeRowInto` fills missing trailing columns with NULL. Callers that
+know a column was added later may replace those NULLs with constant defaults.
+`encodeRowInto` takes a mask of columns to store as NULL whatever they hold
+(the rowid alias, virtual generated columns).
 
 ### 6.6 Table and index payload layout
 
@@ -766,8 +784,12 @@ Preparing is kept cheap because it is paid by every one-off `exec`:
   start or continue (`kOpOr`, `kOpCompare`, `kOpAdd`, ...), so each level of
   the expression grammar returns at once when the next token is not one of its
   operators instead of trying each spelling;
-- identifiers carry `reserved` and `joinWord` flags computed once by the lexer
-  (`isReservedWord`, `isJoinWord`).
+- identifiers carry `reserved` and `joinWord` flags and their operator bits
+  computed once by the lexer from one static table of the words that have any
+  (an open-addressing table keyed by the folded spelling), and `fold`, their
+  first eight characters uppercased and packed into a word; `isKeyword` on a
+  string literal compares the length and that word, with the literal's folded
+  form a compile-time constant.
 
 `isCompleteStatement` is a token-level `sqlite3_complete` equivalent. It
 requires a semicolon outside quotes and treats semicolons inside a
@@ -893,7 +915,13 @@ Important behavior:
 - `RAISE()` throws `TriggerIgnore` or `RaiseError` and is allowed only in
   trigger scopes.
 
-Comparisons copy an operand only when affinity actually converts it.
+Comparisons copy an operand only when affinity actually converts it. A
+comparison whose operands are each a column, literal or parameter is
+classified once (`Expr::fastShape`): from the operands' comparison affinities
+it records whether two numbers, and whether two texts under BINARY, would
+compare as they are. `holds` and `eval` then compare such values directly
+(`directCompare`) without evaluating the operand nodes; anything else --
+mixed classes, DATETIME operands, collations -- takes the general path.
 
 TEXT may hold NUL bytes. Functions follow SQLite on where the text "ends":
 `length`, `substr`, `hex`, `quote`, `instr` and `trim`'s subject use the full
@@ -1048,7 +1076,27 @@ missing trailing columns, and computes virtual generated columns in two passes.
 It copies the row key into `rowKey` only for RIGHT and FULL joins.
 
 Scans step the libnosql cursor with `next(key, value)`, which moves and returns
-the entry in one call, and keep the entry in `entryKey`/`entryValue`.
+the entry in one call, and keep the entry in `entryKey`/`entryValue`. A source
+keeps its cursor from one open to the next while it still reads the same
+database in the same transaction (`nosql::Cursor::boundTo`), and index reads
+fetch rows through a second kept cursor (`rowCursor`, `seekExact(key, value)`):
+libnosql answers a seek that falls inside the cursor's current leaf without
+descending from the root, and stops trying for a while on a cursor whose seeks
+keep missing.
+
+**Two-phase rows.** At the first open in `nest`, `decideSplit` gives a table
+source two column masks when its level has terms that can reject rows: the
+columns those terms read (and, for the innermost source of a plain core under
+`ORDER BY ... LIMIT`, the columns its sort-key outputs read) are decoded by
+`loadRow`; the rest of `used` waits in `restRecord` until `finishRow`. `nest`
+calls `finishRow` once the row has passed its filters and before descending;
+`project` calls it after a top-N sink has said the row can place
+(`RowSink::rejectKeys`/`rejects`). The invariant is that a row is complete
+whenever anything beyond its own level's filters reads it: the cache fill,
+the right-join remainder, emission and DML all see whole rows. Equality terms
+the access path pins count as columns to decode but not as a reason to split.
+Terms with sub-queries, generated columns and index-only reads disable the
+split.
 
 ### 12.3 Exact windows
 
@@ -1094,7 +1142,18 @@ instead of stepping (`skipComponents`).
 
 A core that is `count(*)` over one table and nothing else (no filters, no
 grouping, no bare column) is answered from the table's entry count
-(`CorePlan::countRows`, libnosql's O(1) `Db::count`).
+(`CorePlan::countRows`, libnosql's O(1) `Db::count`). With a `WHERE` and
+nothing else reading the row (`CorePlan::countWindow`), `countByWindow` opens
+the source and, when its window enforces every term (no IN probes, no point
+lookup, no fallback scan), asks libnosql for the window's entry count
+(`Db::countRange(lo, hi)`), which descends by the per-subtree counts every
+branch page keeps: O(log n).
+
+The same counts serve `OFFSET`: for a plain one-table core under `LIMIT ...
+OFFSET`, `runSelect` hands the core the `LimitSink`'s remaining offset, and
+when the source's window decides every row, `skipEntries` moves the cursor
+past that many entries (`Cursor::skip`) and counts them off the sink's offset,
+instead of producing rows for the sink to drop.
 
 ---
 
@@ -1124,11 +1183,35 @@ to NULL.
 Every recursion checks `Database::interrupt()` through the session's atomic
 flag and raises `ErrorCode::Interrupted` when set.
 
+An inner table source whose rows do not depend on the sources before it is
+read once per execution into `cache` and replayed (`markCacheable`). Its
+equality terms `inner = outer` -- inner side reading only this source, outer
+side only earlier ones, both deterministic and free of sub-queries and
+DATETIME operands -- become a hash key (`hashInner`/`hashOuter`): rows are
+bucketed in a `FlatKeySet` as they are cached, keyed by the inner sides after
+the comparison's affinity and under its collation's key encoding, and each
+outer row visits only the bucket of its own key, in cache order. Every join
+term is still evaluated on each visited row, so the hash can only skip rows
+that cannot match. This is SQLite's automatic index.
+
 ### 13.2 Projection and DISTINCT
 
 `project` evaluates visible columns plus hidden sort keys. DISTINCT builds a
 key from visible values using the result expression's collation and stores it
-in a `std::set`.
+in a `FlatKeySet`.
+
+An output that is a bare column of the innermost source, read by no other
+output and with no sub-query among the outputs (`decideSwaps`), takes its
+value by `Value::swap` when it is text or a blob: the slot is reloaded for
+the next row anyway, and the two buffers trade back and forth, so neither the
+bytes nor an allocation are paid per row.
+
+`FlatKeySet` ([`../src/internal/flat_hash.hpp`](../src/internal/flat_hash.hpp))
+is the executor's set of encoded keys: keys packed into one byte buffer, an
+open-addressing table of 64-bit slots holding a member index and the high half
+of its hash, and a fixed-load hash for short keys. Members are numbered in
+insertion order, so it is also a key-to-index map. Clearing keeps the memory;
+`releaseAbove(scratchRetain)` frees it after an unusually large run.
 
 ### 13.3 Aggregation
 
@@ -1138,10 +1221,11 @@ Each group is a `Group` containing:
 - a snapshot of source/aggregate/window frame slots;
 - one `AggSlot` per aggregate.
 
-`GroupTable` keeps reusable group objects and a hash index by `std::string_view`
-into each group's owned key. It resets `used` and clears the index between
-runs. If a run was much smaller than a previous one, it drops excess group
-objects.
+`GroupTable` keeps reusable group objects and a `FlatKeySet` index whose
+member numbers are the groups' positions (the keys live in the set). It
+resets `used` and clears the index between runs. If a run was much smaller
+than a previous one, or the index outgrew `scratchRetain`, it drops excess
+group objects and frees the index.
 
 Aggregate `FILTER` is applied before stepping. Aggregate `DISTINCT` uses an
 encoded argument key. Aggregate `ORDER BY` stores `OrderedStep` records, sorts
@@ -1194,8 +1278,8 @@ An `ORDER BY` over one core collects through `SortCollector`:
   heap, ties going to the earlier run. `PRAGMA temp_store = MEMORY` disables
   spilling.
 
-Afterwards the plan's `sorted` store gives its cells back if it grew past
-65,536 (`releaseAbove`). Compound selects, grouping, `DISTINCT` and window
+Afterwards the plan's `sorted` store gives its cells back if they hold more
+than `scratchRetain` bytes (`releaseAbove`). Compound selects, grouping, `DISTINCT` and window
 partitions stay in memory.
 
 Recursive CTEs use a queue:
@@ -1536,8 +1620,8 @@ writer generation still follows the snapshot. Otherwise it raises `Busy`.
 
 `ConnectionState` in
 [`../src/internal/exec.hpp`](../src/internal/exec.hpp) stores pragma flags,
-`cacheSize`, the atomics `busyTimeout`, `tempStore` and `sortMemory` (read by
-statements on other threads), and atomic counters:
+`cacheSize`, the atomics `busyTimeout`, `tempStore`, `sortMemory` and
+`scratchRetain` (read by statements on other threads), and atomic counters:
 
 - `changes`;
 - `totalChanges`;
@@ -1619,7 +1703,11 @@ Public headers live under [`../include/sql/`](../include/sql/).
 - `cacheReadChecksums`, default on: a read snapshot trusts a page's checksum
   once verified until the page is replaced (writers always re-verify);
 - `busyTimeout`, the initial `PRAGMA busy_timeout`;
-- `sortMemoryLimit`, the bytes an `ORDER BY` holds before spilling (§13.5).
+- `sortMemoryLimit`, the bytes an `ORDER BY` holds before spilling (§13.5);
+- `memoryProfile` (`Compact`, `Balanced`, `Throughput`) setting
+  `statementCacheSize`, `scratchRetain`, `sortMemoryLimit` and
+  `arenaBlockSize` together; each can also be set alone, and an explicit
+  setting wins (README, "Memory").
 
 `Database` supports:
 
@@ -1662,7 +1750,11 @@ A statement is not re-entrant: running it from its own `each` callback raises
 `InvalidArgument` (`"statement is already running"`).
 
 `Result` owns rows and column names. A `Row` holds its values in `Values`, a
-small vector with four values inline. Rows are built in place by
+small vector with four values inline; a wider row's values live in cell chunks
+its `Result` owns (64 values, doubling to 4,096), so a wide result costs a few
+allocations rather than one per row. A `Row` copied out of a `Result`, and a
+copied `Result`, own their values; the `Result`'s moves keep the chunks with
+the rows that point into them. Rows are built in place by
 `ResultBuilder`, sinks move values out of the executor's row (`RowSink::take`),
 and a prepared SELECT reserves room for the row count of its previous run (up
 to 65,536). `Row::at(name)` first searches reported

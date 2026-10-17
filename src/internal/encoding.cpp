@@ -544,6 +544,197 @@ void getValueInto(std::string_view& in, Value& out)
     corrupt("unknown value tag");
 }
 
+// Row records (docs/design.md §6.5):
+//
+//   varint count, varint header bytes, count varint type codes, payloads
+//
+// Type codes: 0 NULL; 1-6 INTEGER in 1, 2, 3, 4, 6 or 8 little-endian bytes;
+// 7 REAL (8 bytes); 8 and 9 the integers 0 and 1 (no payload); 10 DATETIME
+// (8 bytes of microseconds); even N >= 12 a BLOB of (N - 12) / 2 bytes; odd
+// N >= 13 TEXT of (N - 13) / 2 bytes. A reader finds column k by walking the
+// codes alone, and knowing where the payloads start lets it walk codes and
+// payloads together in one pass.
+
+namespace {
+
+constexpr std::uint8_t kIntWidth[7] = {0, 1, 2, 3, 4, 6, 8};
+
+std::uint64_t typeCode(const Value& v) noexcept
+{
+    switch (v.type()) {
+        case Type::Null: return 0;
+        case Type::Integer: {
+            const std::int64_t i = v.integer();
+            if (i == 0)
+                return 8;
+            if (i == 1)
+                return 9;
+            if (i >= -128 && i <= 127)
+                return 1;
+            if (i >= -32768 && i <= 32767)
+                return 2;
+            if (i >= -8388608 && i <= 8388607)
+                return 3;
+            if (i >= INT32_MIN && i <= INT32_MAX)
+                return 4;
+            if (i >= -(std::int64_t(1) << 47) && i < (std::int64_t(1) << 47))
+                return 5;
+            return 6;
+        }
+        case Type::Real: return 7;
+        case Type::Datetime: return 10;
+        case Type::Text: return 13 + 2 * std::uint64_t(v.text().size());
+        case Type::Blob: return 12 + 2 * std::uint64_t(v.blob().size());
+    }
+    return 0;
+}
+
+inline std::size_t payloadSize(std::uint64_t code)
+{
+    if (code >= 12)
+        return std::size_t((code - 12) >> 1);
+    switch (code) {
+        case 0:
+        case 8:
+        case 9: return 0;
+        case 7:
+        case 10: return 8;
+        case 11: corrupt("unknown record type code");
+        default: return kIntWidth[code];
+    }
+}
+
+void putPayload(std::string& out, const Value& v, std::uint64_t code)
+{
+    if (code >= 1 && code <= 6) {
+        const std::uint64_t u = std::uint64_t(v.integer());
+        char b[8];
+        for (int i = 0; i < 8; ++i)
+            b[i] = char(std::uint8_t(u >> (8 * i)));
+        out.append(b, kIntWidth[code]);
+        return;
+    }
+    switch (code) {
+        case 7: {
+            const double d = v.real();
+            char b[8];
+            std::memcpy(b, &d, 8);
+            out.append(b, 8);
+            return;
+        }
+        case 10: {
+            const std::uint64_t u = std::uint64_t(v.datetime().usec);
+            char b[8];
+            for (int i = 0; i < 8; ++i)
+                b[i] = char(std::uint8_t(u >> (8 * i)));
+            out.append(b, 8);
+            return;
+        }
+        default: break;
+    }
+    if (code >= 13 && (code & 1))
+        out.append(v.text());
+    else if (code >= 12)
+        out.append(reinterpret_cast<const char*>(v.blob().data()), v.blob().size());
+}
+
+/// Little-endian, sign-extended from `width` bytes.
+inline std::int64_t readInt(const char* p, unsigned width) noexcept
+{
+    std::uint64_t u = 0;
+    switch (width) {
+        case 1: return std::int8_t(p[0]);
+        case 2: {
+            std::uint16_t x;
+            std::memcpy(&x, p, 2);
+            return std::int16_t(x);
+        }
+        case 4: {
+            std::uint32_t x;
+            std::memcpy(&x, p, 4);
+            return std::int32_t(x);
+        }
+        case 8: std::memcpy(&u, p, 8); return std::int64_t(u);
+        default: break;
+    }
+    for (unsigned i = 0; i < width; ++i)
+        u |= std::uint64_t(static_cast<unsigned char>(p[i])) << (8 * i);
+    const unsigned shift = 64 - 8 * width;
+    return std::int64_t(u << shift) >> shift;
+}
+
+/// Decodes the payload of type `code` at `p` (already bounds-checked).
+inline void decodeCell(std::uint64_t code, const char* p, std::size_t size, Value& out)
+{
+    if (code >= 12) {
+        if (code & 1)
+            out.setText(std::string_view(p, size));
+        else
+            out.setBlob(p, size);
+        return;
+    }
+    switch (code) {
+        case 0: out.setNull(); return;
+        case 7: {
+            double d;
+            std::memcpy(&d, p, 8);
+            out.setReal(d);
+            return;
+        }
+        case 8: out.setInteger(0); return;
+        case 9: out.setInteger(1); return;
+        case 10: out.setDatetime(Datetime{readInt(p, 8)}); return;
+        default: out.setInteger(readInt(p, kIntWidth[code])); return;
+    }
+}
+
+/// Reads a varint from [p, end); fast path for one byte.
+inline std::uint64_t headerVarint(const char*& p, const char* end)
+{
+    if (p < end && !(static_cast<unsigned char>(*p) & 0x80))
+        return static_cast<unsigned char>(*p++);
+    std::string_view in(p, std::size_t(end - p));
+    const std::uint64_t v = getVarint(in);
+    p = in.data();
+    return v;
+}
+
+/// Splits a record into its type codes and its payloads.
+struct RecordCursor
+{
+    const char* code;      ///< next type code
+    const char* codeEnd;
+    const char* body;      ///< next payload
+    const char* bodyEnd;
+    std::size_t count;
+
+    explicit RecordCursor(std::string_view in)
+    {
+        const std::uint64_t n = getVarint(in);
+        const std::uint64_t hdr = getVarint(in);
+        if (hdr > in.size() || n > hdr)
+            corrupt("implausible record header");
+        count = std::size_t(n);
+        code = in.data();
+        codeEnd = code + hdr;
+        body = codeEnd;
+        bodyEnd = in.data() + in.size();
+    }
+    /// The next cell's type code and payload; advances past it.
+    std::uint64_t next(const char*& payload, std::size_t& size)
+    {
+        const std::uint64_t c = headerVarint(code, codeEnd);
+        size = payloadSize(c);
+        if (size > std::size_t(bodyEnd - body))
+            corrupt("truncated record");
+        payload = body;
+        body += size;
+        return c;
+    }
+};
+
+}  // namespace
+
 std::string encodeRow(const std::vector<Value>& values)
 {
     std::string out;
@@ -551,77 +742,60 @@ std::string encodeRow(const std::vector<Value>& values)
     return out;
 }
 
-void encodeRowInto(std::string& out, const Value* values, std::size_t count)
+void encodeRowInto(std::string& out, const Value* values, std::size_t count, const std::uint8_t* asNull)
 {
+    auto code = [&](std::size_t i) { return asNull && asNull[i] ? std::uint64_t(0) : typeCode(values[i]); };
     putVarint(out, count);
+    // Header length first: codes are mostly one byte, so measure them.
+    std::size_t hdr = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        std::uint64_t c = code(i);
+        do {
+            ++hdr;
+            c >>= 7;
+        } while (c);
+    }
+    putVarint(out, hdr);
     for (std::size_t i = 0; i < count; ++i)
-        putValue(out, values[i]);
+        putVarint(out, code(i));
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::uint64_t c = code(i);
+        if (c != 0 && c != 8 && c != 9)
+            putPayload(out, values[i], c);
+    }
 }
 
 std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width)
 {
-    const std::uint64_t count = getVarint(in);
-    if (count > in.size() + 1)
-        corrupt("implausible column count");
-    const std::size_t have = std::size_t(std::min<std::uint64_t>(count, width));
-    for (std::size_t i = 0; i < have; ++i)
-        getValueInto(in, out[i]);
+    RecordCursor r(in);
+    const std::size_t have = std::min(r.count, width);
+    for (std::size_t i = 0; i < have; ++i) {
+        const char* p;
+        std::size_t size;
+        const std::uint64_t c = r.next(p, size);
+        decodeCell(c, p, size, out[i]);
+    }
     for (std::size_t i = have; i < width; ++i)
         out[i].setNull();
     return have;
 }
 
-namespace {
-
-void skipValue(std::string_view& in)
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, const std::uint8_t* used,
+                          bool fillMissing)
 {
-    if (in.empty())
-        corrupt("truncated row");
-    const auto tag = static_cast<unsigned char>(in.front());
-    in.remove_prefix(1);
-    switch (Type(tag)) {
-        case Type::Null: return;
-        case Type::Integer:
-        case Type::Datetime:
-            while (!in.empty() && (static_cast<unsigned char>(in.front()) & 0x80))
-                in.remove_prefix(1);
-            if (in.empty())
-                corrupt("truncated varint");
-            in.remove_prefix(1);
-            return;
-        case Type::Real:
-            if (in.size() < sizeof(double))
-                corrupt("truncated real");
-            in.remove_prefix(sizeof(double));
-            return;
-        case Type::Text:
-        case Type::Blob: {
-            const std::uint64_t n = getVarint(in);
-            if (n > in.size())
-                corrupt("truncated string");
-            in.remove_prefix(std::size_t(n));
-            return;
-        }
-    }
-    corrupt("unknown value tag");
-}
-
-}  // namespace
-
-std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, const std::uint8_t* used)
-{
-    const std::uint64_t count = getVarint(in);
-    if (count > in.size() + 1)
-        corrupt("implausible column count");
-    const std::size_t have = std::size_t(std::min<std::uint64_t>(count, width));
+    RecordCursor r(in);
+    const std::size_t have = std::min(r.count, width);
     for (std::size_t i = 0; i < have; ++i) {
+        const char* p;
+        std::size_t size;
+        const std::uint64_t c = r.next(p, size);
         if (used[i])
-            getValueInto(in, out[i]);
-        else
-            skipValue(in);
+            decodeCell(c, p, size, out[i]);
     }
-    for (std::size_t i = have; i < width; ++i)
-        out[i].setNull();
+    if (fillMissing) {
+        for (std::size_t i = have; i < width; ++i)
+            out[i].setNull();
+    }
     return have;
 }
 
@@ -632,13 +806,14 @@ std::size_t rowColumnCount(std::string_view in)
 
 std::vector<Value> decodeRow(std::string_view in)
 {
-    const std::uint64_t count = getVarint(in);
-    if (count > in.size() + 1)
-        corrupt("implausible column count");
-    std::vector<Value> out;
-    out.reserve(std::size_t(count));
-    for (std::uint64_t i = 0; i < count; ++i)
-        out.push_back(getValue(in));
+    RecordCursor r(in);
+    std::vector<Value> out(r.count);
+    for (std::size_t i = 0; i < r.count; ++i) {
+        const char* p;
+        std::size_t size;
+        const std::uint64_t c = r.next(p, size);
+        decodeCell(c, p, size, out[i]);
+    }
     return out;
 }
 

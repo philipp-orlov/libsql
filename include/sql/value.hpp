@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -137,6 +138,27 @@ public:
     // --- in-place setters: a cell that already holds text or a blob keeps
     // its buffer, so refilling a row of cells allocates nothing once the
     // buffers have grown to fit ---
+    /// Exchanges two values. Two texts or two blobs trade their buffers, so
+    /// neither is copied and both keep their capacity.
+    void swap(Value& other) noexcept
+    {
+        if (auto* s = std::get_if<std::string>(&v_)) {
+            if (auto* o = std::get_if<std::string>(&other.v_)) {
+                s->swap(*o);
+                std::swap(sub_, other.sub_);
+                return;
+            }
+        } else if (auto* b = std::get_if<Blob>(&v_)) {
+            if (auto* o = std::get_if<Blob>(&other.v_)) {
+                b->swap(*o);
+                std::swap(sub_, other.sub_);
+                return;
+            }
+        }
+        v_.swap(other.v_);
+        std::swap(sub_, other.sub_);
+    }
+
     void setNull() noexcept { sub_ = 0; v_.emplace<std::monostate>(); }
     void setInteger(std::int64_t i) noexcept { sub_ = 0; v_.emplace<std::int64_t>(i); }
     void setReal(double d) noexcept { sub_ = 0; v_.emplace<double>(d); }

@@ -445,9 +445,17 @@ void loadRow(SourceNode& s, Ctx& c, std::string_view key, std::string_view paylo
         rowid = readRowidKey(k);
     }
     if (s.decodeWidth > 0) {
-        const std::size_t have = s.used.size() >= s.decodeWidth
-                                     ? decodeRowInto(payload, row, s.decodeWidth, s.used.data())
-                                     : decodeRowInto(payload, row, s.decodeWidth);
+        std::size_t have;
+        if (s.split == 2) {
+            // Two-phase: what this level's filters read now, the rest in
+            // finishRow once the row has passed them.
+            have = decodeRowInto(payload, row, s.decodeWidth, s.firstUsed.data());
+            s.restRecord = payload;
+            s.restPending = true;
+        } else {
+            have = s.used.size() >= s.decodeWidth ? decodeRowInto(payload, row, s.decodeWidth, s.used.data())
+                                                  : decodeRowInto(payload, row, s.decodeWidth);
+        }
         // Columns added by ALTER TABLE after this row was written.
         for (std::size_t i = have; i < s.decodeWidth; ++i) {
             const Column& col = t.columns[i];
@@ -763,6 +771,10 @@ bool advanceEntry(SourceNode& s)
     for (;;) {
         if (s.exhausted)
             return false;
+        if (s.holdEntry) {
+            s.holdEntry = false;
+            return true;
+        }
         if (!s.started) {
             s.started = true;
             if (!seekEntry(s, ap.lo) || !inWindow(ap, s.entryKey)) {
@@ -864,6 +876,7 @@ void openSource(SourceNode& s, Ctx& c)
     s.rowIndex = 0;
     s.keepRowKey = s.join == JoinType::Right || s.join == JoinType::Full;
     s.enforced.clear();
+    s.holdEntry = false;
     switch (s.kind) {
         case SourceNode::Kind::Single:
         case SourceNode::Kind::Pseudo:
@@ -885,7 +898,10 @@ void openSource(SourceNode& s, Ctx& c)
     Catalog& cat = c.session->catalog(s.schemaIndex);
     s.rowsDb = &cat.rows(*s.table);
     const nosql::Db& db = ap.kind == AccessPath::Kind::Index ? cat.entries(*ap.index) : cat.rows(*s.table);
-    s.cursor = db.cursor();
+    // Keep the cursor from the last open when it still reads this database
+    // in this transaction: a join's next probe usually lands near the last.
+    if (!s.cursor.boundTo(db))
+        s.cursor = db.cursor();
     s.probes.clear();
     if (ap.kind == AccessPath::Kind::Scan) {
         ap.lo.clear();
@@ -997,7 +1013,13 @@ bool nextSource(SourceNode& s, Ctx& c)
     AccessPath& ap = s.access;
     const bool fallbackScan = s.rowIndex == std::size_t(-1);
     if (ap.kind == AccessPath::Kind::Scan || fallbackScan) {
-        const bool ok = nextEntry(s, !s.started);
+        bool ok;
+        if (s.holdEntry) {
+            s.holdEntry = false;
+            ok = true;
+        } else {
+            ok = nextEntry(s, !s.started);
+        }
         s.started = true;
         if (!ok) {
             s.exhausted = true;
@@ -1031,29 +1053,68 @@ bool nextSource(SourceNode& s, Ctx& c)
         return true;
     }
     const nosql::Db& data = *s.rowsDb;
+    if (!s.rowCursor.boundTo(data))
+        s.rowCursor = data.cursor();
     for (;;) {
         if (!advanceEntry(s))
             return false;
         std::string_view entry = s.entryKey;
         skipKeys(entry, ap.index->parts.size());
-        const auto payload = data.get(sliceOf(entry));
-        if (!payload)
+        nosql::Slice payload;
+        if (!s.rowCursor.seekExact(sliceOf(entry), payload))
             continue;  // an entry without its row: defensive, see design notes
-        loadRow(s, c, entry, viewOf(*payload));
+        loadRow(s, c, entry, viewOf(payload));
         return true;
     }
 }
 
 void closeSource(SourceNode& s)
 {
-    if (s.kind == SourceNode::Kind::Table)
+    s.restPending = false;
+    if (s.kind == SourceNode::Kind::Table) {
         s.cursor = nosql::Cursor();
+        s.rowCursor = nosql::Cursor();
+    }
 }
 
 void nullSource(SourceNode& s, Ctx& c)
 {
+    s.restPending = false;
     for (std::size_t i = 0; i < s.width; ++i)
         c.slots[s.base + i].setNull();
+}
+
+std::uint64_t skipEntries(SourceNode& s, Ctx& c, std::uint64_t n)
+{
+    if (n == 0 || s.kind != SourceNode::Kind::Table || s.exhausted || s.started || s.point || !s.probes.empty() ||
+        s.skipComponents)
+        return 0;
+    AccessPath& ap = s.access;
+    const bool scan = ap.kind == AccessPath::Kind::Scan || s.rowIndex == std::size_t(-1);
+    Catalog& cat = c.session->catalog(s.schemaIndex);
+    const nosql::Db& db = !scan && ap.kind == AccessPath::Kind::Index ? cat.entries(*ap.index) : cat.rows(*s.table);
+    const std::uint64_t avail = scan ? db.count() : db.countRange(sliceOf(ap.lo), sliceOf(ap.hi));
+    s.started = true;
+    if (n >= avail) {
+        s.exhausted = true;
+        return avail;
+    }
+    if (!(scan ? nextEntry(s, true) : seekEntry(s, ap.lo)) || !s.cursor.skip(n)) {
+        s.exhausted = true;
+        return avail;
+    }
+    s.entryKey = viewOf(s.cursor.key());
+    s.entryValue = viewOf(s.cursor.value());
+    s.holdEntry = true;
+    return n;
+}
+
+void finishRow(SourceNode& s, Ctx& c)
+{
+    if (!s.restPending)
+        return;
+    s.restPending = false;
+    decodeRowInto(s.restRecord, c.slots + s.base, s.decodeWidth, s.restUsed.data(), false);
 }
 
 }  // namespace sql::internal

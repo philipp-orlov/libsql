@@ -60,6 +60,8 @@ struct OpenOptions
     bool durable = true;
     bool cacheReads = true;
     std::chrono::milliseconds revalidate{60000};
+    std::size_t statementCache = 32;
+    std::size_t arenaBlock = 4096;
 };
 
 std::filesystem::path scratchPath()
@@ -138,9 +140,24 @@ struct Batch
     bool needsWrite = false;
     std::size_t parameters = 0;
 
-    explicit Batch(std::string_view sql) : text(sql)
+    std::size_t arenaBlock = 4096;  ///< for the statements' parse arenas
+
+    /// Parses with this batch's arena block size, restoring the thread's.
+    template <class F>
+    auto parsing(F&& f)
     {
-        ParsedBatch parsed = parse(text);
+        struct Restore
+        {
+            std::size_t saved = arenaBlockSize();
+            ~Restore() { setArenaBlockSize(saved); }
+        } restore;
+        setArenaBlockSize(arenaBlock);
+        return f();
+    }
+
+    Batch(std::string_view sql, std::size_t block) : text(sql), arenaBlock(block)
+    {
+        ParsedBatch parsed = parsing([&] { return parse(text); });
         parameterNames = std::move(parsed.parameterNames);
         parameters = parameterNames.size();
         for (StatementNode& node : parsed.statements) {
@@ -167,7 +184,7 @@ struct Batch
     {
         if (fresh[k])
             return std::move(fresh[k]);
-        ParsedBatch again = parse(text);
+        ParsedBatch again = parsing([&] { return parse(text); });
         return std::make_unique<StatementNode>(std::move(again.statements[k]));
     }
 };
@@ -175,25 +192,45 @@ struct Batch
 // ----------------------------------------------------------- connection --
 
 /// A small most-recently-used cache of parsed and planned texts.
+/// Recently run one-off texts, most recent first, so `exec` of the same text
+/// in a loop parses and plans once. Entries are shared: a batch that is
+/// running stays alive when something it runs evicts it or clears the cache
+/// (DETACH).
 struct BatchCache
 {
-    std::list<std::unique_ptr<Batch>> entries;
-    static constexpr std::size_t kSize = 32;
+    using Entry = std::shared_ptr<Batch>;
+    std::list<Entry> entries;
+    std::unordered_map<std::string_view, std::list<Entry>::iterator> index;
+    std::size_t capacity = 32;
+    std::size_t arenaBlock = 4096;
 
-    Batch& get(std::string_view text)
+    Entry get(std::string_view text)
     {
-        for (auto it = entries.begin(); it != entries.end(); ++it) {
-            if ((*it)->text == text) {
-                if (it != entries.begin())
-                    entries.splice(entries.begin(), entries, it);
-                return *entries.front();
-            }
+        if (const auto it = index.find(text); it != index.end()) {
+            if (it->second != entries.begin())
+                entries.splice(entries.begin(), entries, it->second);
+            return entries.front();
         }
-        auto fresh = std::make_unique<Batch>(text);
-        entries.push_front(std::move(fresh));
-        if (entries.size() > kSize)
+        auto fresh = std::make_shared<Batch>(text, arenaBlock);
+        if (capacity == 0)
+            return fresh;
+        entries.push_front(fresh);
+        index.emplace(std::string_view(fresh->text), entries.begin());
+        while (entries.size() > capacity) {
+            index.erase(std::string_view(entries.back()->text));
             entries.pop_back();
-        return *entries.front();
+        }
+        return fresh;
+    }
+    void clear()
+    {
+        index.clear();
+        entries.clear();
+    }
+    void configure(const OpenOptions& o)
+    {
+        capacity = o.statementCache;
+        arenaBlock = o.arenaBlock;
     }
 };
 
@@ -211,7 +248,7 @@ struct DatabaseImpl
     /// Recently run one-off texts, so `exec` in a loop plans once. Used by
     /// Database::exec only; transactions have their own.
     BatchCache cache;
-    Batch& cached(std::string_view text) { return cache.get(text); }
+    std::shared_ptr<Batch> cached(std::string_view text) { return cache.get(text); }
     /// Finished transactions waiting to be reused.
     std::mutex poolMutex;
     std::vector<std::shared_ptr<TxnImpl>> pool;
@@ -593,8 +630,10 @@ std::shared_ptr<TxnImpl> newTxn(const std::shared_ptr<DatabaseImpl>& db, bool re
             db->pool.pop_back();
         }
     }
-    if (!t)
+    if (!t) {
         t = std::make_shared<TxnImpl>();
+        t->cache.configure(db->options);
+    }
     t->db = db;
     t->readOnly = readOnly;
     t->sql = false;
@@ -742,7 +781,7 @@ Result connectionStatement(DatabaseImpl& db, StatementNode& node, const std::vec
         for (std::size_t i = 2; i < db.stores.size(); ++i) {
             if (db.stores[i] && equalsNoCase(db.stores[i]->name, sname)) {
                 db.stores.erase(db.stores.begin() + std::ptrdiff_t(i));
-                db.cache.entries.clear();
+                db.cache.clear();
                 return Result();
             }
         }
@@ -961,10 +1000,12 @@ Values::Values(const Value* first, std::size_t count) : size_(count)
     }
 }
 
-void Values::fill(Value* first, std::size_t count, bool move)
+void Values::fill(Value* first, std::size_t count, bool move, Value* cells)
 {
     release();
+    const bool borrow = count > kInline && cells;
     Value* data = count <= kInline ? reinterpret_cast<Value*>(inline_)
+                  : borrow         ? cells
                                    : static_cast<Value*>(::operator new(count * sizeof(Value)));
     std::size_t built = 0;
     try {
@@ -977,12 +1018,13 @@ void Values::fill(Value* first, std::size_t count, bool move)
     } catch (...) {
         for (std::size_t i = 0; i < built; ++i)
             data[i].~Value();
-        if (count > kInline)
+        if (count > kInline && !borrow)
             ::operator delete(data);
         throw;
     }
     data_ = data;
     size_ = count;
+    borrowed_ = borrow;
 }
 
 Values::Values(std::vector<Value>&& values) : size_(values.size())
@@ -1015,6 +1057,8 @@ Values& Values::operator=(Values&& other) noexcept
 void Values::take(Values& other) noexcept
 {
     size_ = other.size_;
+    borrowed_ = other.borrowed_;
+    other.borrowed_ = false;
     if (other.data_ && !other.inlined()) {
         data_ = other.data_;
     } else {
@@ -1034,10 +1078,79 @@ void Values::release() noexcept
 {
     for (std::size_t i = 0; i < size_; ++i)
         data_[i].~Value();
-    if (data_ && !inlined())
+    if (data_ && !inlined() && !borrowed_)
         ::operator delete(data_);
     data_ = nullptr;
     size_ = 0;
+    borrowed_ = false;
+}
+
+Result::Result(const Result& other)
+    : names_(other.names_), rows_(other.rows_), changes_(other.changes_), lastInsertId_(other.lastInsertId_)
+{
+}
+
+Result& Result::operator=(const Result& other)
+{
+    if (this != &other) {
+        Result copy(other);
+        *this = std::move(copy);
+    }
+    return *this;
+}
+
+Result::Result(Result&& other) noexcept
+    : names_(std::move(other.names_)),
+      chunks_(std::move(other.chunks_)),
+      chunkSize_(other.chunkSize_),
+      chunkFree_(other.chunkFree_),
+      rows_(std::move(other.rows_)),
+      changes_(other.changes_),
+      lastInsertId_(other.lastInsertId_)
+{
+    other.rows_.clear();
+    other.chunks_.clear();
+    other.chunkSize_ = other.chunkFree_ = 0;
+}
+
+Result& Result::operator=(Result&& other) noexcept
+{
+    if (this != &other) {
+        // Rows first: they destroy the values that live in our chunks.
+        rows_.clear();
+        names_ = std::move(other.names_);
+        chunks_ = std::move(other.chunks_);
+        chunkSize_ = other.chunkSize_;
+        chunkFree_ = other.chunkFree_;
+        rows_ = std::move(other.rows_);
+        changes_ = other.changes_;
+        lastInsertId_ = other.lastInsertId_;
+        other.rows_.clear();
+        other.chunks_.clear();
+        other.chunkSize_ = other.chunkFree_ = 0;
+    }
+    return *this;
+}
+
+Result::~Result()
+{
+    // The rows destroy the values in the chunks before the chunks go.
+    rows_.clear();
+}
+
+Value* Result::cells(std::size_t count)
+{
+    if (chunkFree_ < count) {
+        // Chunks double from 64 values up to 4096; a wider row gets its own.
+        const std::size_t next = chunkSize_ == 0 ? 64 : std::min<std::size_t>(chunkSize_ * 2, 4096);
+        const std::size_t n = std::max(next, count);
+        chunks_.emplace_back(new unsigned char[n * sizeof(Value)]);
+        chunkSize_ = n;
+        chunkFree_ = n;
+    }
+    Value* at = reinterpret_cast<Value*>(chunks_.back().get()) + (chunkSize_ - chunkFree_);
+    chunkFree_ -= count;
+    return at;
 }
 
 const Value& RowView::at(std::size_t i) const
@@ -1118,13 +1231,14 @@ Transaction::~Transaction()
 Result Transaction::exec(std::string_view text, const NamedParams& params)
 {
     internal::TxnImpl& t = internal::live(impl_);
-    return exec(text, internal::bindNamed(t.cache.get(text), params));
+    return exec(text, internal::bindNamed(*t.cache.get(text), params));
 }
 
 Result Transaction::exec(std::string_view text, const Params& params)
 {
     internal::TxnImpl& t = internal::live(impl_);
-    internal::Batch& b = t.cache.get(text);
+    const std::shared_ptr<internal::Batch> held = t.cache.get(text);
+    internal::Batch& b = *held;
     internal::checkCount(b, params);
     Result last;
     for (std::size_t k = 0; k < b.meta.size(); ++k) {
@@ -1341,7 +1455,22 @@ Database Database::Options::open(const std::filesystem::path& path) const
     impl->options.cacheReads = cacheReads_;
     impl->options.revalidate = revalidateAfter_;
     impl->conn.busyTimeout = busyTimeout_.count();
-    impl->conn.sortMemory = sortMemory_;
+    struct Preset
+    {
+        std::uint64_t statements, scratch, sort, arena;
+    };
+    static constexpr Preset kPresets[] = {
+        {8, 64ull << 10, 8ull << 20, 1024},      // Compact
+        {32, 2ull << 20, 64ull << 20, 4096},     // Balanced
+        {128, 16ull << 20, 256ull << 20, 16384}, // Throughput
+    };
+    const Preset& preset = kPresets[static_cast<int>(profile_)];
+    auto pick = [](std::uint64_t set, std::uint64_t fallback) { return set == kUnset ? fallback : set; };
+    impl->conn.sortMemory = pick(sortMemory_, preset.sort);
+    impl->conn.scratchRetain = pick(scratchRetain_, preset.scratch);
+    impl->options.statementCache = std::size_t(pick(statementCache_, preset.statements));
+    impl->options.arenaBlock = std::size_t(pick(arenaBlock_, preset.arena));
+    impl->cache.configure(impl->options);
     impl->readOnly = readOnly_;
     impl->stores.push_back(internal::openFile("main", path, impl->options, readOnly_, create_));
     impl->stores.emplace_back();  // temp, opened on first use
@@ -1360,16 +1489,16 @@ const std::filesystem::path& Database::path() const
 Result Database::exec(std::string_view text, const Params& params)
 {
     internal::DatabaseImpl& db = internal::open(impl_);
-    internal::Batch& b = db.cached(text);
-    internal::checkCount(b, params);
-    return internal::execBatch(impl_, b, params);
+    const std::shared_ptr<internal::Batch> b = db.cached(text);
+    internal::checkCount(*b, params);
+    return internal::execBatch(impl_, *b, params);
 }
 
 Result Database::exec(std::string_view text, const NamedParams& params)
 {
     internal::DatabaseImpl& db = internal::open(impl_);
-    internal::Batch& b = db.cached(text);
-    return internal::execBatch(impl_, b, internal::bindNamed(b, params));
+    const std::shared_ptr<internal::Batch> b = db.cached(text);
+    return internal::execBatch(impl_, *b, internal::bindNamed(*b, params));
 }
 
 Statement Database::prepare(std::string_view text)
@@ -1377,7 +1506,7 @@ Statement Database::prepare(std::string_view text)
     internal::DatabaseImpl& db = internal::open(impl_);
     auto stmt = std::make_shared<internal::StatementImpl>();
     stmt->db = impl_;
-    stmt->batch = std::make_unique<internal::Batch>(text);
+    stmt->batch = std::make_unique<internal::Batch>(text, db.options.arenaBlock);
     for (const internal::StatementMeta& m : stmt->batch->meta) {
         if ((m.mutating || m.writesPragma) && db.readOnly)
             throw Error(ErrorCode::ReadOnly, "attempt to write a readonly database");

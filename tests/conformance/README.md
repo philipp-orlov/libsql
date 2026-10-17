@@ -93,8 +93,10 @@ must be the same multiset and equal position by position up to that.
 
 The scripts in `scripts/` are run by the `conformance_scripts` test and cover
 triggers, foreign keys, views, transactions, windows, covering-index reads and
-exact range windows, text holding NUL bytes, ORDER BY with LIMIT, and WITH in
-front of INSERT, UPDATE and DELETE.
+exact range windows, text holding NUL bytes, ORDER BY with LIMIT, WITH in
+front of INSERT, UPDATE and DELETE, rows read in two phases, count(*) and
+OFFSET answered from the store's entry counts, and hash joins over unindexed
+inner tables.
 
 ## Long fuzz runs
 

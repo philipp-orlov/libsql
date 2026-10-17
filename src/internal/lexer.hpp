@@ -60,6 +60,30 @@ struct Token
     {
         return kind == Tok::Identifier && !quoted && equalsNoCase(text, word);
     }
+    /// The same for a literal: its folded spelling is a compile-time
+    /// constant, so most checks are a length and one word compared.
+    template <std::size_t N>
+    bool isKeyword(const char (&word)[N]) const noexcept
+    {
+        constexpr std::size_t n = N - 1;
+        if (kind != Tok::Identifier || quoted || text.size() != n)
+            return false;
+        if (fold != foldWord(word, n < 8 ? n : 8))
+            return false;
+        return n <= 8 || equalsNoCase(std::string_view(text).substr(8), std::string_view(word + 8, n - 8));
+    }
+    /// Up to the first eight characters of `w`, uppercased (ASCII) and packed
+    /// little-endian: what Token::fold holds for an identifier.
+    static constexpr std::uint64_t foldWord(const char* w, std::size_t n) noexcept
+    {
+        std::uint64_t v = 0;
+        for (std::size_t i = 0; i < n && i < 8; ++i) {
+            const char c = w[i] >= 'a' && w[i] <= 'z' ? char(w[i] - 32) : w[i];
+            v |= std::uint64_t(static_cast<unsigned char>(c)) << (8 * i);
+        }
+        return v;
+    }
+    std::uint64_t fold = 0;  ///< identifiers: foldWord of the spelling
     bool isPunct(std::string_view p) const noexcept { return kind == Tok::Punct && text == p; }
     bool reserved = false;  ///< an identifier spelled like a reserved word
     bool joinWord = false;  ///< NATURAL LEFT RIGHT FULL OUTER CROSS INNER

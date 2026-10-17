@@ -468,14 +468,12 @@ bool Writer::writeRow(TablePlan& tp, Ctx& c, const std::string& key, bool unique
     out.clear();
     if (t.payloadRowid())
         putVarint(out, zig(row[t.columns.size()].integer()));
-    putVarint(out, t.columns.size());
-    for (std::size_t i = 0; i < t.columns.size(); ++i) {
-        const Column& col = t.columns[i];
-        if (int(i) == t.rowidAlias || col.generated == 1)
-            putValue(out, Value());
-        else
-            putValue(out, row[i]);
+    if (tp.storedNull.size() != t.columns.size()) {
+        tp.storedNull.assign(t.columns.size(), 0);
+        for (std::size_t i = 0; i < t.columns.size(); ++i)
+            tp.storedNull[i] = int(i) == t.rowidAlias || t.columns[i].generated == 1;
     }
+    encodeRowInto(out, row, t.columns.size(), tp.storedNull.data());
     return c.session->catalog(tp.store).rows(t).put(sliceOf(key), sliceOf(out),
                                                     unique ? nosql::PutMode::InsertUnique
                                                            : nosql::PutMode::Upsert);

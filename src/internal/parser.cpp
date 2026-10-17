@@ -64,11 +64,52 @@ const char* spell(BinaryOp op) noexcept
     return "?";
 }
 
+namespace {
+
+thread_local Arena* tArena = nullptr;
+thread_local std::size_t tArenaBlock = 4096;
+
+}  // namespace
+
+void ExprDelete::operator()(Expr* e) const noexcept
+{
+    if (e->inArena)
+        e->~Expr();
+    else
+        delete e;
+}
+
 ExprPtr makeExpr(ExprKind kind)
 {
-    auto e = std::make_unique<Expr>();
+    Expr* e;
+    if (tArena) {
+        e = new (tArena->allocate(sizeof(Expr), alignof(Expr))) Expr();
+        e->inArena = true;
+    } else {
+        e = new Expr();
+    }
     e->kind = kind;
-    return e;
+    return ExprPtr(e);
+}
+
+ArenaScope::ArenaScope(Arena* a) noexcept : saved_(tArena)
+{
+    tArena = a;
+}
+
+ArenaScope::~ArenaScope()
+{
+    tArena = saved_;
+}
+
+void setArenaBlockSize(std::size_t bytes) noexcept
+{
+    tArenaBlock = bytes;
+}
+
+std::size_t arenaBlockSize() noexcept
+{
+    return tArenaBlock;
 }
 
 std::string Expr::describe() const
@@ -339,6 +380,8 @@ private:
     StatementNode statement()
     {
         StatementNode node;
+        node.arena = std::make_unique<Arena>(tArenaBlock);
+        const ArenaScope scope(node.arena.get());
         node.begin = cur().offset;
         node.body = statementBody();
         node.end = prevEnd();
