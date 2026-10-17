@@ -16,6 +16,11 @@
       <mat-icon>delete</mat-icon>
       Delete
     </button>
+    <span class="spacer"></span>
+    <button mat-button class="export-sql" (click)="exportSql()" matTooltip="Download a script that rebuilds the schema and the rows">
+      <mat-icon>download</mat-icon>
+      Export SQL
+    </button>
   </div>
 
   <div class="tree" role="tree">

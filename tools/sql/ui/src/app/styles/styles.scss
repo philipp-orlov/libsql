@@ -9,7 +9,8 @@ html {
     (
       color: mat.$azure-palette,
       typography: Roboto,
-      density: -2,
+      // Denser than -1 hides the label of a form field.
+      density: -1,
     )
   );
 }

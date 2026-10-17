@@ -43,25 +43,16 @@
   padding: 4px 8px;
 }
 
+// A box of fixed height that the user can drag taller; the editor fills it.
 .sql {
   flex: none;
-  box-sizing: border-box;
   height: 30%;
   min-height: 80px;
   margin: 0 8px;
-  padding: 8px;
+  overflow: hidden;
   resize: vertical;
-  tab-size: 4;
   border: 1px solid var(--mat-sys-outline-variant);
   border-radius: 4px;
-  background: var(--mat-sys-surface);
-  color: inherit;
-  font-size: 13px;
-
-  &:focus {
-    outline: 2px solid var(--mat-sys-primary);
-    outline-offset: -1px;
-  }
 }
 
 .results {

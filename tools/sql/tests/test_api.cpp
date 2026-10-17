@@ -90,6 +90,20 @@ TEST(info_describes_the_database)
     CHECK_EQ(at(reply, "inTransaction"), std::string("false"));
 }
 
+TEST(info_lists_the_functions_the_editor_offers)
+{
+    Fixture f;
+    bool sawLower = false;
+    bool sawCount = false;
+    const Reply reply = f.api.info();
+    for (const Json& name : member(reply.body, "functions").asArray()) {
+        sawLower = sawLower || name.asString() == "lower";
+        sawCount = sawCount || name.asString() == "count";
+    }
+    CHECK(sawLower);
+    CHECK(sawCount);
+}
+
 TEST(schema_lists_tables_views_indexes_and_triggers)
 {
     Fixture f;
@@ -483,6 +497,47 @@ TEST(pragmas_are_listed_with_their_kind_and_value)
     }
     CHECK(sawForeignKeys);
     CHECK(sawPageSize);
+}
+
+TEST(every_pragma_says_where_it_lives_and_what_it_does)
+{
+    Fixture f;
+    const Reply reply = f.api.pragmas();
+    for (const Json& pragma : member(reply.body, "pragmas").asArray()) {
+        const std::string name = member(pragma, "name").asString();
+        CHECK(!member(pragma, "description").asString().empty());
+        const std::string scope = member(pragma, "scope").asString();
+        CHECK(scope == "file" || scope == "session" || scope == "store");
+        if (name == "user_version")
+            CHECK_EQ(scope, std::string("file"));
+        if (name == "foreign_keys")
+            CHECK_EQ(scope, std::string("session"));
+        if (name == "journal_mode") {
+            CHECK_EQ(scope, std::string("store"));
+            CHECK(member(pragma, "readOnly").dump() == "true");
+            CHECK(member(pragma, "description").asString().find("no WAL file") !=
+                  std::string::npos);
+        }
+    }
+}
+
+TEST(the_dump_rebuilds_the_database)
+{
+    Fixture f;
+    f.db.exec("INSERT INTO person(name, age, note) VALUES ('O''Neil', NULL, 'it''s')");
+    const Reply reply = f.api.dump();
+    CHECK_EQ(reply.status, 200);
+
+    tst::Scratch other("web-api-dump");
+    sql::Database copy = other.open();
+    copy.exec(member(reply.body, "sql").asString());
+    CHECK_EQ(tst::flatten(copy.exec("SELECT id, name, age, note FROM person ORDER BY id")),
+             tst::flatten(f.db.exec("SELECT id, name, age, note FROM person ORDER BY id")));
+    CHECK_EQ(tst::flatten(copy.exec("SELECT a, b, c FROM pair ORDER BY b")),
+             std::string("x|1|one;x|2|two"));
+    CHECK_EQ(tst::only(copy.exec(
+                 "SELECT count(*) FROM sqlite_schema WHERE type IN ('index', 'view', 'trigger')")),
+             std::string("3"));
 }
 
 TEST(a_pragma_can_be_set_and_read_back)

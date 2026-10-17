@@ -132,4 +132,10 @@ describe('DatabaseService', () => {
     request.flush({ inTransaction: false });
     await set;
   });
+
+  it('fetches the dump script', async () => {
+    const dump = service.dump();
+    http.expectOne('/api/dump').flush({ inTransaction: false, sql: 'BEGIN TRANSACTION;\nCOMMIT;\n' });
+    expect(await dump).toBe('BEGIN TRANSACTION;\nCOMMIT;\n');
+  });
 });

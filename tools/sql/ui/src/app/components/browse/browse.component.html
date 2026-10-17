@@ -21,9 +21,19 @@
     <button mat-button class="set-null" (click)="setNull()" [disabled]="!editable() || !activeCell()" matTooltip="Set the selected cell to NULL">
       Set as NULL
     </button>
+    <span class="spacer"></span>
+    <button mat-button class="export" (click)="exportCsv()" [disabled]="!page() || exporting()" matTooltip="Save the rows that match the filter as CSV">
+      <mat-icon>download</mat-icon>
+      Export CSV
+    </button>
+    <button mat-button class="toggle-panel" (click)="panelOpen.set(!panelOpen())" [class.on]="panelOpen()" matTooltip="Show the value of the selected cell in full">
+      <mat-icon>edit_note</mat-icon>
+      Edit Cell
+    </button>
   </div>
 
-  <div class="grid-area">
+  <div class="body">
+<div class="grid-area">
     @if (page(); as current) {
       <table mat-table class="grid" [dataSource]="rows()">
         <ng-container matColumnDef="rowno">
@@ -84,6 +94,29 @@
       <p class="hint">Select a table or view to browse its data.</p>
     }
   </div>
+
+  @if (panelOpen()) {
+    <aside class="panel">
+      <h3>Edit Cell</h3>
+      @if (activeColumn(); as column) {
+        <p class="meta">
+          <span class="mono">{{ page()?.table }}.{{ column.name }}</span>
+          <span>{{ cellKind(activeValue()!) }}, {{ cellText(activeValue()!).length }} characters</span>
+        </p>
+        <textarea class="mono panel-text" [value]="panelText()" [readOnly]="!panelEditable()" (input)="panelText.set(panelBox.value)" #panelBox spellcheck="false"></textarea>
+        <div class="panel-actions">
+          <button mat-flat-button class="apply" (click)="applyPanel()" [disabled]="!panelEditable() || !panelChanged()">Apply</button>
+          <button mat-button class="reset" (click)="panelText.set(cellEditText(activeValue()!))" [disabled]="!panelChanged()">Revert</button>
+        </div>
+        @if (!panelEditable()) {
+          <p class="hint">This cell cannot be edited here.</p>
+        }
+      } @else {
+        <p class="hint">Select a cell.</p>
+      }
+    </aside>
+  }
+</div>
 
   <mat-paginator
     class="paginator"

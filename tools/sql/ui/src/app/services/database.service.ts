@@ -8,6 +8,7 @@ import {
   Cell,
   ChangeReply,
   DatabaseInfo,
+  DumpReply,
   Pending,
   PragmasReply,
   Schema,
@@ -54,6 +55,11 @@ export class DatabaseService {
   async loadSchema(): Promise<void> {
     const { tables, views, indexes, triggers } = await this.get<SchemaReply>('/api/schema');
     this.schema.set({ tables, views, indexes, triggers });
+  }
+
+  /** A script that rebuilds the schema and the rows. */
+  async dump(): Promise<string> {
+    return (await this.get<DumpReply>('/api/dump')).sql;
   }
 
   browse(request: BrowseRequest): Promise<BrowseReply> {

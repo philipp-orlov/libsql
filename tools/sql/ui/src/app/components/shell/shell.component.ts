@@ -28,7 +28,7 @@ import { StructureComponent } from '../structure/structure.component';
   ],
   templateUrl: './shell.component.html',
   styleUrl: './shell.component.scss',
-  host: { '(document:keydown)': 'onKeydown($event)' },
+  host: { '(document:keydown)': 'onKeydown($event)', '(window:beforeunload)': 'onUnload($event)' },
 })
 export class ShellComponent implements OnInit {
   protected readonly db = inject(DatabaseService);
@@ -60,6 +60,13 @@ export class ShellComponent implements OnInit {
       this.notice.info('Changes reverted.');
     } catch (failure) {
       this.notice.error(failure);
+    }
+  }
+
+  /** Asks before the page is closed with changes waiting to be written. */
+  protected onUnload(event: BeforeUnloadEvent): void {
+    if (this.db.inTransaction()) {
+      event.preventDefault();
     }
   }
 

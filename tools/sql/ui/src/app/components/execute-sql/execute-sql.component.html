@@ -15,21 +15,30 @@
               <mat-icon>play_arrow</mat-icon>
               Execute
             </button>
+            <button mat-button class="open-file" (click)="file.click()" matTooltip="Load an SQL file into this tab">
+              <mat-icon>folder_open</mat-icon>
+              Open SQL file
+            </button>
+            <input #file type="file" accept=".sql,.txt,text/plain" hidden (change)="openFile(editor, file)" />
+            <button mat-button class="save-file" (click)="saveFile(editor)" [disabled]="editor.sql === ''">
+              <mat-icon>save_alt</mat-icon>
+              Save SQL file
+            </button>
             <button mat-button class="export" (click)="exportCsv(editor)" [disabled]="!editor.result || editor.result.columns.length === 0">
               <mat-icon>download</mat-icon>
               Save as CSV
             </button>
           </div>
 
-          <textarea
+          <app-sql-editor
             #box
-            class="sql mono"
-            spellcheck="false"
-            placeholder="Type SQL here"
+            class="sql"
             [value]="editor.sql"
-            (input)="setSql(editor.id, box.value)"
-            (keydown)="onKeydown($event, editor, box)"
-          ></textarea>
+            (valueChange)="setSql(editor.id, $event)"
+            [schema]="db.schema()"
+            [functions]="db.info()?.functions ?? []"
+            (run)="run(editor, box)"
+          />
 
           <div class="results">
             @if (editor.result; as result) {

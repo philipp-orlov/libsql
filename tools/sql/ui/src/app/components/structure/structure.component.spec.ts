@@ -181,4 +181,44 @@ describe('StructureComponent', () => {
     await settle();
     expect(names(el)).toEqual(['Tables (1)', 'person', 'Indices (1)', 'Views (1)', 'Triggers (1)']);
   });
+
+  describe('Export SQL', () => {
+    function captureDownloads() {
+      const blobs: Blob[] = [];
+      spyOn(URL, 'createObjectURL').and.callFake(blob => {
+        blobs.push(blob as Blob);
+        return 'blob:test';
+      });
+      spyOn(URL, 'revokeObjectURL');
+      const names: string[] = [];
+      spyOn(HTMLAnchorElement.prototype, 'click').and.callFake(function (this: HTMLAnchorElement) {
+        names.push(this.download);
+      });
+      return { blobs, names };
+    }
+
+    it('downloads the script under the name of the database', async () => {
+      const { blobs, names } = captureDownloads();
+      const el = await create();
+      button(el, 'export-sql').click();
+      await settle();
+      expect(db.dump).toHaveBeenCalledTimes(1);
+      expect(names).toEqual(['people.sql']);
+      expect(await blobs[0].text()).toBe('BEGIN TRANSACTION;\nCOMMIT;\n');
+    });
+
+    it('is open to a read-only database', async () => {
+      db.info.set(fakeInfo({ readOnly: true }));
+      const el = await create();
+      expect(button(el, 'export-sql').disabled).toBeFalse();
+    });
+
+    it('reports a script that cannot be made', async () => {
+      db.dump.and.rejectWith(new Error('out of memory'));
+      const el = await create();
+      button(el, 'export-sql').click();
+      await settle();
+      expect(notice.error).toHaveBeenCalledWith(jasmine.objectContaining({ message: 'out of memory' }));
+    });
+  });
 });

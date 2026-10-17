@@ -105,4 +105,26 @@ describe('ShellComponent', () => {
     const { el } = await create();
     expect(query(el, '.status').textContent).toContain('Read-only');
   });
+
+  it('says whether the database can be written', async () => {
+    const { el } = await create();
+    expect(query(el, '.mode').textContent).toBe('read-write');
+    db.info.set(fakeInfo({ readOnly: true }));
+    await settle();
+    expect(query(el, '.mode').textContent).toBe('read-only');
+    expect(query(el, '.mode').classList.contains('read-only')).toBeTrue();
+  });
+
+  it('asks before the page is closed with changes waiting', async () => {
+    const { fixture } = await create();
+    // Karma treats a real beforeunload as a failed run, so the handler is called directly.
+    const close = () => {
+      const event = jasmine.createSpyObj<BeforeUnloadEvent>('event', ['preventDefault']);
+      fixture.componentInstance['onUnload'](event);
+      return event.preventDefault.calls.count() > 0;
+    };
+    expect(close()).toBeFalse();
+    db.inTransaction.set(true);
+    expect(close()).toBeTrue();
+  });
 });

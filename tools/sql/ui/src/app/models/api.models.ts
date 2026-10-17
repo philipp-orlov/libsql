@@ -25,6 +25,8 @@ export interface DatabaseInfo extends Pending {
   path: string;
   version: string;
   readOnly: boolean;
+  /** Function names for the SQL editor to offer. */
+  functions: string[];
 }
 
 export interface ColumnInfo {
@@ -122,9 +124,14 @@ export interface PragmaChoice {
   label: string;
 }
 
+/** Where a pragma lives: in the database file, in the connection of the tool, or only reported by the store. */
+export type PragmaScope = 'file' | 'session' | 'store';
+
 export interface PragmaInfo {
   name: string;
   kind: 'boolean' | 'integer' | 'choice' | 'text';
+  scope: PragmaScope;
+  description: string;
   readOnly: boolean;
   value: Cell;
   choices: PragmaChoice[];
@@ -132,4 +139,8 @@ export interface PragmaInfo {
 
 export interface PragmasReply extends Pending {
   pragmas: PragmaInfo[];
+}
+
+export interface DumpReply extends Pending {
+  sql: string;
 }
