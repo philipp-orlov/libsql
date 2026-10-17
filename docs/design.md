@@ -1807,7 +1807,7 @@ modules and unsupported schema-version writes use `Unsupported`.
 ## 20. The `sql` command-line tool
 
 The command-line front end is
-[`../tools/sql_tool.cpp`](../tools/sql_tool.cpp). It supports:
+[`../tools/sql/src/sql_tool.cpp`](../tools/sql/src/sql_tool.cpp). It supports:
 
 ```text
 sql <database> [options]
@@ -1821,6 +1821,8 @@ Options:
 - `--mode table|csv|list`;
 - `--no-header`;
 - `--readonly`;
+- `--listen PORT`, `--host ADDR` and `--public DIR`, the web interface described in
+  [`../tools/sql/README.md`](../tools/sql/README.md);
 - `-h`/`--help`.
 
 Interactive input uses `sql::complete`, so trigger bodies do not prematurely

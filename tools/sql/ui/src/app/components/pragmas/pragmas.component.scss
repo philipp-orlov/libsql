@@ -1,0 +1,43 @@
+:host {
+  display: block;
+  height: 100%;
+}
+
+.pragmas {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.actions {
+  flex: none;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.pragma {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--mat-sys-surface-container);
+}
+
+.label {
+  flex: none;
+  width: 280px;
+}
+
+.control {
+  flex: 1;
+}
+
+.number {
+  width: 140px;
+}

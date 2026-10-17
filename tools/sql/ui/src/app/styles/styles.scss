@@ -1,0 +1,45 @@
+// https://material.angular.io/guide/theming
+
+@use '@angular/material' as mat;
+@use 'fonts';
+
+html {
+  color-scheme: light;
+  @include mat.theme(
+    (
+      color: mat.$azure-palette,
+      typography: Roboto,
+      density: -2,
+    )
+  );
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: Roboto, 'Helvetica Neue', sans-serif;
+  font-size: 14px;
+  background: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+}
+
+// Raw SQL, cell text and table definitions.
+.mono {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+.notice-error {
+  --mat-snack-bar-button-color: var(--mat-sys-on-error);
+  --mat-snack-bar-container-color: var(--mat-sys-error);
+  --mat-snack-bar-supporting-text-color: var(--mat-sys-on-error);
+}
+
+// The text of a NULL or BLOB cell, which is not data.
+.placeholder {
+  color: var(--mat-sys-outline);
+  font-style: italic;
+}

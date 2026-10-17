@@ -1,0 +1,126 @@
+:host {
+  display: block;
+  height: 100%;
+}
+
+.browse {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+}
+
+.table-select {
+  width: 220px;
+}
+
+.divider {
+  width: 1px;
+  height: 24px;
+  margin: 0 8px;
+  background: var(--mat-sys-outline-variant);
+}
+
+.grid-area {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.hint {
+  padding: 16px;
+  color: var(--mat-sys-outline);
+}
+
+.grid {
+  min-width: 100%;
+  width: max-content;
+
+  th,
+  td {
+    max-width: 360px;
+    padding: 0 8px;
+    border-right: 1px solid var(--mat-sys-surface-container-high);
+    white-space: nowrap;
+  }
+
+  th {
+    background: var(--mat-sys-surface-container);
+  }
+
+  .sortable {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .sort {
+    width: 16px;
+    height: 16px;
+    font-size: 16px;
+    vertical-align: middle;
+  }
+
+  .rowno {
+    width: 48px;
+    min-width: 48px;
+    text-align: right;
+    color: var(--mat-sys-outline);
+    background: var(--mat-sys-surface-container);
+    cursor: default;
+  }
+
+  td {
+    cursor: cell;
+  }
+
+  td.active {
+    outline: 2px solid var(--mat-sys-primary);
+    outline-offset: -2px;
+  }
+
+  .selected td {
+    background: var(--mat-sys-secondary-container);
+  }
+
+  .value {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.filter,
+.cell-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 80px;
+  font: inherit;
+}
+
+.filter {
+  padding: 2px 4px;
+  border: 1px solid var(--mat-sys-outline-variant);
+  border-radius: 4px;
+  background: var(--mat-sys-surface);
+  color: inherit;
+}
+
+.cell-input {
+  padding: 2px 4px;
+  border: 1px solid var(--mat-sys-primary);
+  background: var(--mat-sys-surface);
+  color: inherit;
+}
+
+.paginator {
+  flex: none;
+  border-top: 1px solid var(--mat-sys-outline-variant);
+}

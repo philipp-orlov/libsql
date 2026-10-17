@@ -1,0 +1,69 @@
+<h2 mat-dialog-title>Modify Table</h2>
+<mat-dialog-content class="content">
+  <mat-form-field>
+    <mat-label>Table name</mat-label>
+    <input matInput class="table-name" #tableName [value]="name()" (input)="name.set(tableName.value)" />
+  </mat-form-field>
+
+  <table class="columns">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Type</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (column of existing(); track column.original; let i = $index) {
+        <tr [class.removed]="column.removed">
+          <td>
+            <mat-form-field subscriptSizing="dynamic">
+              <input
+                matInput
+                class="existing-name"
+                #columnName
+                [value]="column.name"
+                [disabled]="column.removed"
+                (input)="updateExisting(i, { name: columnName.value })"
+              />
+            </mat-form-field>
+          </td>
+          <td class="type mono">{{ column.type }}</td>
+          <td>
+            <button mat-icon-button class="drop" (click)="updateExisting(i, { removed: !column.removed })" [attr.aria-label]="column.removed ? 'Keep column' : 'Drop column'">
+              <mat-icon>{{ column.removed ? 'undo' : 'delete' }}</mat-icon>
+            </button>
+          </td>
+        </tr>
+      }
+      @for (column of added(); track $index; let i = $index) {
+        <tr>
+          <td>
+            <mat-form-field subscriptSizing="dynamic">
+              <input matInput class="added-name" #addedName [value]="column.name" (input)="updateAdded(i, { name: addedName.value })" />
+            </mat-form-field>
+          </td>
+          <td class="type">
+            <mat-form-field subscriptSizing="dynamic">
+              <mat-select [value]="column.type" (selectionChange)="updateAdded(i, { type: $event.value })">
+                @for (type of types; track type) {
+                  <mat-option [value]="type">{{ type }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+          </td>
+          <td>
+            <button mat-icon-button class="remove-added" (click)="removeAdded(i)" aria-label="Remove new column"><mat-icon>close</mat-icon></button>
+          </td>
+        </tr>
+      }
+    </tbody>
+  </table>
+  <button mat-button class="add" (click)="add()"><mat-icon>add</mat-icon> Add column</button>
+
+  <pre class="preview mono">{{ statements().join('\n') }}</pre>
+</mat-dialog-content>
+<mat-dialog-actions align="end">
+  <button mat-button mat-dialog-close>Cancel</button>
+  <button mat-flat-button class="ok" [mat-dialog-close]="statements().join('\n')" [disabled]="!valid()">OK</button>
+</mat-dialog-actions>

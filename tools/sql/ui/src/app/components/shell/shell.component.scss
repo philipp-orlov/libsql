@@ -1,0 +1,56 @@
+:host {
+  display: block;
+  height: 100%;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.toolbar {
+  flex: none;
+  gap: 4px;
+  min-height: 48px;
+  height: 48px;
+  background: var(--mat-sys-surface-container);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.path {
+  font-size: 12px;
+  color: var(--mat-sys-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabs {
+  flex: 1;
+  min-height: 0;
+
+  // The tab bodies fill the window, and each tab scrolls its own content.
+  ::ng-deep .mat-mdc-tab-body-wrapper {
+    flex: 1;
+    min-height: 0;
+  }
+}
+
+.status {
+  flex: none;
+  display: flex;
+  gap: 16px;
+  padding: 2px 12px;
+  font-size: 12px;
+  background: var(--mat-sys-surface-container);
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.pending {
+  color: var(--mat-sys-error);
+  font-weight: 500;
+}
