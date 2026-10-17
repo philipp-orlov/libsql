@@ -79,6 +79,8 @@ public:
             return false;
         return true;
     }
+    /// Rows still to drop; a source that skips entries counts them off.
+    std::int64_t* offsetLeft() noexcept { return &offset_; }
 
 private:
     RowSink& next_;
@@ -139,6 +141,130 @@ inline bool enforced(const SourceNode& s, const Expr* f) noexcept
     throw Error(ErrorCode::Interrupted, "interrupted");
 }
 
+/// The hash key of `exprs` under the comparison's affinities and
+/// collations; false when a part is NULL (`=` matches nothing then).
+bool joinKey(const std::vector<const Expr*>& exprs, const std::vector<Affinity>& affinity,
+             const std::vector<Collation>& collation, Ctx& c, std::string& out)
+{
+    out.clear();
+    for (std::size_t i = 0; i < exprs.size(); ++i) {
+        const Value& v = eval(*exprs[i], c);
+        if (v.isNull())
+            return false;
+        // As compareOperands: affinity only changes text into a number or a
+        // number into text, so copy only when that is about to happen.
+        const Affinity a = affinity[i];
+        const bool converts = a != Affinity::Blob &&
+                              (a == Affinity::Text ? v.type() == Type::Integer || v.type() == Type::Real
+                                                   : v.type() == Type::Text);
+        if (converts) {
+            Value x = v;
+            applyComparisonAffinity(x, a);
+            appendKey(out, x, collation[i]);
+        } else {
+            appendKey(out, v, collation[i]);
+        }
+    }
+    return true;
+}
+
+/// Marks in `mask` the columns of `s` that `e` reads. False when `e` might
+/// read the row some other way (a sub-query may read any column).
+bool columnsRead(const Expr* e, const SourceNode& s, std::vector<std::uint8_t>& mask)
+{
+    if (!e)
+        return true;
+    switch (e->kind) {
+        case ExprKind::Subquery:
+        case ExprKind::Exists:
+        case ExprKind::InSelect:
+        case ExprKind::Aggregate:
+        case ExprKind::Window:
+        case ExprKind::Raise: return false;
+        case ExprKind::Column:
+        case ExprKind::Slot:
+            if (e->slot >= 0 && std::size_t(e->slot) >= s.base && std::size_t(e->slot) < s.base + s.width) {
+                const std::size_t col = std::size_t(e->slot) - s.base;
+                if (col < mask.size())
+                    mask[col] = 1;
+            }
+            return true;
+        default: break;
+    }
+    if (e->sub || e->select)
+        return false;
+    if (!columnsRead(e->lhs.get(), s, mask) || !columnsRead(e->rhs.get(), s, mask) ||
+        !columnsRead(e->extra.get(), s, mask) || !columnsRead(e->filter.get(), s, mask))
+        return false;
+    for (const ExprPtr& x : e->list) {
+        if (!columnsRead(x.get(), s, mask))
+            return false;
+    }
+    return true;
+}
+
+/// Decides whether source `d` reads its rows in two phases: first the
+/// columns its level's filters (and, for the innermost source of a core whose
+/// sort keys project checks first, those keys) read, then the rest of the
+/// used columns for rows that pass. Worth it when filters or a LIMIT reject
+/// rows, harmless otherwise.
+void decideSplit(CorePlan& p, std::size_t d)
+{
+    SourceNode& s = p.sources[d];
+    s.split = 1;
+    if (d + 1 == p.sources.size())
+        p.keysFirst = false;
+    if (s.kind != SourceNode::Kind::Table || s.coverState != 1 || !s.generated.empty() || s.decodeWidth == 0 ||
+        s.used.size() < s.decodeWidth)
+        return;
+    std::vector<std::uint8_t> first(s.decodeWidth, 0);
+    // Equality terms the access path pins are normally enforced by the window
+    // and reject nothing per row, so alone they are no reason to split. Their
+    // columns still go first: a path that falls back to a scan evaluates them.
+    auto pinned = [&](const Expr* e) {
+        return std::find(s.access.equalTerms.begin(), s.access.equalTerms.end(), e) != s.access.equalTerms.end();
+    };
+    bool filtered = false;
+    auto take = [&](const std::vector<Expr*>& v) {
+        for (const Expr* e : v) {
+            filtered = filtered || !pinned(e);
+            if (!columnsRead(e, s, first))
+                return false;
+        }
+        return true;
+    };
+    if (!take(p.levelFilters[d]) || !take(s.onTerms) || !take(s.localFilters))
+        return;
+    bool keys = false;
+    if (d + 1 == p.sources.size() && p.deferToProject) {
+        keys = true;
+        for (const std::size_t k : p.sortKeys) {
+            if (k >= p.outputs.size() || !columnsRead(p.outputs[k], s, first)) {
+                keys = false;
+                break;
+            }
+        }
+        if (!keys)
+            return;
+    }
+    // Nothing at this level can reject a row before it is complete.
+    if (!filtered && !keys)
+        return;
+    std::vector<std::uint8_t> rest(s.decodeWidth, 0);
+    bool any = false;
+    for (std::size_t i = 0; i < s.decodeWidth; ++i) {
+        // The rowid alias is stored as NULL; loadRow fills it from the key.
+        rest[i] = s.used[i] && !first[i] && int(i) != s.table->rowidAlias;
+        any = any || rest[i];
+    }
+    if (!any)
+        return;
+    s.firstUsed = std::move(first);
+    s.restUsed = std::move(rest);
+    s.split = 2;
+    p.keysFirst = keys;
+}
+
 template <class Emit>
 bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
 {
@@ -158,7 +284,17 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
             s.cachedRun = c.run;
             s.cache.reset(s.width);
             s.replaying = true;
+            const bool hashing = !s.hashInner.empty();
+            if (hashing) {
+                s.hashKeys.releaseAbove(scratchRetain(c));
+                s.hashKeys.clear();
+                s.hashFirst.clear();
+                s.hashLast.clear();
+                s.hashNext.clear();
+            }
             openSource(s, c);
+            if (s.split == 0)
+                decideSplit(p, d);
             while (nextSource(s, c)) {
                 bool ok = true;
                 for (Expr* f : s.localFilters) {
@@ -169,12 +305,28 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
                 }
                 if (!ok)
                     continue;
+                finishRow(s, c);
                 if (s.cache.size() >= kSourceCacheRows) {
                     // Too big to keep: scan it each time from now on.
                     s.replaying = false;
                     break;
                 }
                 s.cache.appendRow(c.slots + s.base);
+                if (hashing) {
+                    const std::uint32_t row = std::uint32_t(s.cache.size() - 1);
+                    s.hashNext.push_back(FlatKeySet::npos);
+                    if (joinKey(s.hashInner, s.hashInnerAffinity, s.hashCollation, c, s.hashKey)) {
+                        bool added = false;
+                        const std::uint32_t id = s.hashKeys.insert(s.hashKey, added);
+                        if (added) {
+                            s.hashFirst.push_back(row);
+                            s.hashLast.push_back(row);
+                        } else {
+                            s.hashNext[s.hashLast[id]] = row;
+                            s.hashLast[id] = row;
+                        }
+                    }
+                }
             }
             closeSource(s);
             if (!s.replaying) {
@@ -184,23 +336,41 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
                 return nest(p, c, d, emit);
             }
         }
-        for (std::size_t r = 0; r < s.cache.size(); ++r) {
+        auto visit = [&](std::size_t r) {
             const Value* row = s.cache.row(r);
             for (std::size_t i = 0; i < s.width; ++i)
                 c.slots[s.base + i] = row[i];
-            bool ok = true;
             for (Expr* f : s.joinFilters) {
-                if (!holds(f, c)) {
-                    ok = false;
-                    break;
-                }
+                if (!holds(f, c))
+                    return true;
             }
-            if (ok && !nest(p, c, d + 1, emit))
+            return nest(p, c, d + 1, emit);
+        };
+        if (!s.hashInner.empty()) {
+            // Only the bucket of this outer row's key can match.
+            if (!joinKey(s.hashOuter, s.hashOuterAffinity, s.hashCollation, c, s.hashKey))
+                return true;
+            const std::uint32_t id = s.hashKeys.find(s.hashKey);
+            if (id == FlatKeySet::npos)
+                return true;
+            for (std::uint32_t r = s.hashFirst[id]; r != FlatKeySet::npos; r = s.hashNext[r]) {
+                if (!visit(r))
+                    return false;
+            }
+            return true;
+        }
+        for (std::size_t r = 0; r < s.cache.size(); ++r) {
+            if (!visit(r))
                 return false;
         }
         return true;
     }
     openSource(s, c);
+    if (s.split == 0)
+        decideSplit(p, d);
+    // The innermost source of a core whose sort keys project checks first
+    // leaves the rest of its row to project.
+    const bool finishHere = !(p.deferToProject && p.keysFirst && d + 1 == p.sources.size());
     // Terms the window guarantees are not evaluated per row.
     const std::vector<Expr*>* levelPtr = &p.levelFilters[d];
     const std::vector<Expr*>* onPtr = &s.onTerms;
@@ -219,6 +389,11 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
         onPtr = &s.liveOn;
     }
     const std::vector<Expr*>& onTerms = *onPtr;
+    // OFFSET over a lone source whose window decides every row: pass over
+    // the offset in the store instead of producing rows to drop.
+    if (p.offsetLeft && *p.offsetLeft > 0 && p.sources.size() == 1 && levelPtr->empty() && onTerms.empty() &&
+        p.finalFilters.empty())
+        *p.offsetLeft -= std::int64_t(skipEntries(s, c, std::uint64_t(*p.offsetLeft)));
     bool matched = false;
     const bool outer = s.join == JoinType::Left || s.join == JoinType::Full;
     const bool trackRight = s.join == JoinType::Right || s.join == JoinType::Full;
@@ -243,6 +418,8 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
         }
         if (!ok)
             continue;
+        if (finishHere)
+            finishRow(s, c);
         if (!nest(p, c, d + 1, emit))
             return false;
     }
@@ -273,6 +450,7 @@ bool rightRemainder(CorePlan& p, Ctx& c, Emit& emit)
         while (nextSource(s, c)) {
             if (s.matchedKeys.count(s.rowKey))
                 continue;
+            finishRow(s, c);
             if (!nest(p, c, d + 1, emit))
                 return false;
         }
@@ -294,19 +472,134 @@ bool runJoins(CorePlan& p, Ctx& c, Emit& emit)
 
 // ---------------------------------------------------------- projection ---
 
+/// Counts the reads of each frame slot in `e`; false when `e` holds a
+/// sub-query (which may read any slot).
+bool countSlotReads(const Expr* e, std::vector<std::uint16_t>& reads, std::size_t base)
+{
+    if (!e)
+        return true;
+    if (e->sub || e->select || e->kind == ExprKind::Subquery || e->kind == ExprKind::Exists ||
+        e->kind == ExprKind::InSelect)
+        return false;
+    if ((e->kind == ExprKind::Column || e->kind == ExprKind::Slot) && e->slot >= 0 &&
+        std::size_t(e->slot) >= base && std::size_t(e->slot) - base < reads.size())
+        ++reads[std::size_t(e->slot) - base];
+    if (!countSlotReads(e->lhs.get(), reads, base) || !countSlotReads(e->rhs.get(), reads, base) ||
+        !countSlotReads(e->extra.get(), reads, base) || !countSlotReads(e->filter.get(), reads, base))
+        return false;
+    for (const ExprPtr& x : e->list) {
+        if (!countSlotReads(x.get(), reads, base))
+            return false;
+    }
+    return true;
+}
+
+/// Settles CorePlan::swapFrom: plain cores only, outputs that are a bare
+/// column of the innermost source, which is reloaded for every row project
+/// sees, read by no other output.
+void decideSwaps(CorePlan& p)
+{
+    p.swapDecided = true;
+    p.swapFrom.assign(p.outputs.size(), -1);
+    if (p.aggregate || !p.windows.empty() || p.sources.empty() || !p.values.empty())
+        return;
+    const SourceNode& s = p.sources.back();
+    if (s.kind != SourceNode::Kind::Table && s.kind != SourceNode::Kind::Rows &&
+        s.kind != SourceNode::Kind::Function)
+        return;
+    std::vector<std::uint16_t> reads(s.width, 0);
+    for (const Expr* e : p.outputs) {
+        if (!countSlotReads(e, reads, s.base))
+            return;
+    }
+    for (std::size_t i = 0; i < p.outputs.size(); ++i) {
+        const Expr* e = p.outputs[i];
+        if (e->kind == ExprKind::Column && e->slot >= 0 && std::size_t(e->slot) >= s.base &&
+            std::size_t(e->slot) < s.base + s.width && reads[std::size_t(e->slot) - s.base] == 1)
+            p.swapFrom[i] = e->slot;
+    }
+}
+
+/// Output `i` of the current row: swapped out of its slot when allowed.
+inline void produce(CorePlan& p, Ctx& c, std::size_t i)
+{
+    const int from = p.swapFrom[i];
+    if (from >= 0) {
+        Value& v = c.slots[from];
+        // Only text and blobs are worth trading; a scalar copies cheaper.
+        if (v.type() == Type::Text || v.type() == Type::Blob)
+            p.outRow[i].swap(v);
+        else
+            p.outRow[i] = v;
+    } else {
+        p.outRow[i] = eval(*p.outputs[i], c);
+    }
+}
+
+/// CorePlan::countWindow: counts the source's window in the store when it
+/// enforces every term; false (nothing counted) when rows must be read.
+bool countByWindow(CorePlan& p, Ctx& c, std::int64_t& counted)
+{
+    SourceNode& s = p.sources[0];
+    openSource(s, c);
+    if (s.exhausted) {
+        // No key can match a pinned value (or an empty IN list): no rows.
+        counted = 0;
+        return true;
+    }
+    if (s.point || !s.probes.empty() || s.rowIndex == std::size_t(-1) || s.skipComponents ||
+        s.access.kind == AccessPath::Kind::Scan)
+        return false;
+    for (const Expr* f : p.levelFilters[0]) {
+        if (!enforced(s, f))
+            return false;
+    }
+    const AccessPath& ap = s.access;
+    Catalog& cat = c.session->catalog(s.schemaIndex);
+    const nosql::Db& db = ap.kind == AccessPath::Kind::Index ? cat.entries(*ap.index) : cat.rows(*s.table);
+    counted = std::int64_t(db.countRange(sliceOf(ap.lo), sliceOf(ap.hi)));
+    return true;
+}
+
+void finishSources(CorePlan& p, Ctx& c)
+{
+    for (SourceNode& s : p.sources)
+        finishRow(s, c);
+}
+
 bool project(CorePlan& p, Ctx& c, RowSink& sink)
 {
     const std::size_t n = p.outputs.size();
     if (p.outRow.size() < n)
         p.outRow.resize(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        p.outRow[i] = eval(*p.outputs[i], c);
+    if (!p.swapDecided)
+        decideSwaps(p);
+    if (p.deferToProject) {
+        // ORDER BY ... LIMIT: the sort keys first; a row that cannot make the
+        // cut is dropped before the rest of it is decoded or copied.
+        if (const std::vector<std::size_t>* keys = sink.rejectKeys()) {
+            if (!p.keysFirst)
+                finishSources(p, c);
+            for (const std::size_t k : *keys)
+                p.outRow[k] = eval(*p.outputs[k], c);
+            if (sink.rejects(p.outRow.data()))
+                return true;
+            finishSources(p, c);
+            for (std::size_t i = 0; i < n; ++i) {
+                if (std::find(keys->begin(), keys->end(), i) == keys->end())
+                    produce(p, c, i);
+            }
+            return sink.take(c, p.outRow.data(), n);
+        }
+        finishSources(p, c);
     }
+    for (std::size_t i = 0; i < n; ++i)
+        produce(p, c, i);
     if (p.distinct) {
         p.key.clear();
         for (std::size_t i = 0; i < p.visible; ++i)
             appendKey(p.key, p.outRow[i], p.outputs[i]->collationStrength ? p.outputs[i]->collation : Collation::Binary);
-        if (!p.seen.insert(p.key).second)
+        if (!p.seen.insert(p.key))
             return true;
     }
     return sink.take(c, p.outRow.data(), n);
@@ -339,10 +632,12 @@ void initGroup(CorePlan& p, Group& g)
         else
             a.state = p.aggs[i].def->aggregate();
         if (p.aggs[i].call->distinct) {
-            if (a.distinct)
+            if (a.distinct) {
+                a.distinct->releaseAbove(std::size_t(64) << 10);
                 a.distinct->clear();
+            }
             else
-                a.distinct = std::make_unique<std::set<std::string>>();
+                a.distinct = std::make_unique<FlatKeySet>();
         }
         a.ordered.clear();
     }
@@ -352,18 +647,13 @@ void initGroup(CorePlan& p, Group& g)
 Group& findGroup(CorePlan& p, std::string_view key, bool& fresh)
 {
     GroupTable& gt = p.groupTable;
-    const auto it = gt.index.find(key);
-    if (it != gt.index.end()) {
-        fresh = false;
-        return *gt.groups[it->second];
-    }
-    fresh = true;
+    const std::uint32_t at = gt.index.insert(key, fresh);
+    if (!fresh)
+        return *gt.groups[at];
     if (gt.used == gt.groups.size())
         gt.groups.push_back(std::make_unique<Group>());
     Group& g = *gt.groups[gt.used];
-    g.key.assign(key.data(), key.size());
     initGroup(p, g);
-    gt.index.emplace(std::string_view(g.key), gt.used);
     ++gt.used;
     return g;
 }
@@ -409,7 +699,7 @@ void stepAggregates(CorePlan& p, Ctx& c, Group& g, bool& extremeChanged)
             if (slot.distinct) {
                 c.fctx->buf2.clear();
                 appendKey(c.fctx->buf2, st.args[0], call.collation);
-                if (st.args[0].isNull() || !slot.distinct->insert(c.fctx->buf2).second)
+                if (st.args[0].isNull() || !slot.distinct->insert(c.fctx->buf2))
                     continue;
             }
             slot.ordered.push_back(std::move(st));
@@ -423,7 +713,7 @@ void stepAggregates(CorePlan& p, Ctx& c, Group& g, bool& extremeChanged)
                 continue;
             c.fctx->buf2.clear();
             appendKey(c.fctx->buf2, *argv[0], call.collation);
-            if (!slot.distinct->insert(c.fctx->buf2).second)
+            if (!slot.distinct->insert(c.fctx->buf2))
                 continue;
         }
         c.fctx->collation = call.collation;
@@ -853,6 +1143,7 @@ private:
 /// Runs one core, delivering rows of `p.outputs.size()` values.
 bool runCore(CorePlan& p, Ctx& c, RowSink& sink)
 {
+    p.seen.releaseAbove(scratchRetain(c));
     p.seen.clear();
     if (!p.values.empty()) {
         if (p.outRow.size() < p.visible)
@@ -903,9 +1194,12 @@ bool runCore(CorePlan& p, Ctx& c, RowSink& sink)
         return true;
     };
     std::int64_t counted = 0;
+    bool counting = p.countRows;
     if (p.countRows) {
         const SourceNode& s = p.sources[0];
         counted = std::int64_t(c.session->catalog(s.schemaIndex).rows(*s.table).count());
+    } else if (p.countWindow && countByWindow(p, c, counted)) {
+        counting = true;
     } else {
         runJoins(p, c, emit);
     }
@@ -921,14 +1215,14 @@ bool runCore(CorePlan& p, Ctx& c, RowSink& sink)
     for (std::size_t i = 0; i < gt.used; ++i)
         gt.order[i] = std::uint32_t(i);
     std::sort(gt.order.begin(), gt.order.end(),
-              [&](std::uint32_t a, std::uint32_t b) { return gt.groups[a]->key < gt.groups[b]->key; });
+              [&](std::uint32_t a, std::uint32_t b) { return gt.index.key(a) < gt.index.key(b); });
     WindowRunner wr(p, c);
     bool more = true;
     for (const std::uint32_t gi : gt.order) {
         Group& g = *gt.groups[gi];
         restore(p, c, g.sample);
         finishAggregates(p, c, g);
-        if (p.countRows) {
+        if (counting) {
             for (const AggInfo& a : p.aggs)
                 c.slots[a.call->slot].setInteger(counted);
         }
@@ -944,9 +1238,9 @@ bool runCore(CorePlan& p, Ctx& c, RowSink& sink)
         }
     }
     // One unusually large result should not pin its groups for ever.
-    if (gt.groups.size() > 4 * gt.used + 64) {
-        gt.groups.resize(gt.used);
-        gt.index = std::unordered_map<std::string_view, std::size_t>();
+    if (gt.groups.size() > 4 * gt.used + 64 || gt.index.memory() > scratchRetain(c)) {
+        gt.groups.resize(std::min(gt.groups.size(), std::size_t(64)));
+        gt.index.releaseAbove(0);
     }
     if (!more)
         return false;
@@ -992,10 +1286,6 @@ void sortRows(SelectPlan& sp, std::size_t limit)
         std::sort(idx.begin(), idx.end(), less);
 }
 
-/// Cells a plan's sort buffer may keep between runs (about 3 MiB of Values);
-/// a larger run gives its memory back when it is done.
-constexpr std::size_t kKeepSortCells = 1u << 16;
-
 /// A temporary file that is gone when closed, holding sorted runs.
 struct TempFile
 {
@@ -1039,6 +1329,10 @@ public:
         if (keep_ >= 0)
             pruneAt_ = std::max<std::size_t>(std::size_t(keep_) * 2, 1024);
     }
+
+    const std::vector<std::size_t>* rejectKeys() const override { return keep_ > 0 ? keys_ : nullptr; }
+    bool rejects(const Value* v) const override { return cannotPlace(v); }
+    void keys(const std::vector<std::size_t>* k) { keys_ = k; }
 
     bool row(Ctx&, const Value* v, std::size_t n) override
     {
@@ -1278,6 +1572,7 @@ private:
     RowStore& rows_;
     RowStore scratch_;
     std::int64_t keep_;
+    const std::vector<std::size_t>* keys_ = nullptr;
     std::size_t pruneAt_ = 0;
     bool pruned_ = false;
     bool spill_ = false;
@@ -1348,7 +1643,12 @@ void runRows(SelectPlan& sp, Ctx& c, RowSink& sink)
             return;
         }
         LimitSink lim(trim, limit, offset);
-        runCore(sp.cores[0], c, lim);
+        CorePlan& core = sp.cores[0];
+        const bool plain = !core.aggregate && core.windows.empty() && !core.distinct && core.values.empty() &&
+                           core.sources.size() == 1 && !core.hasRightJoin;
+        core.offsetLeft = plain && offset > 0 ? lim.offsetLeft() : nullptr;
+        runCore(core, c, lim);
+        core.offsetLeft = nullptr;
         return;
     }
 
@@ -1357,9 +1657,19 @@ void runRows(SelectPlan& sp, Ctx& c, RowSink& sink)
         const std::int64_t keep =
             limit < 0 || limit > std::numeric_limits<std::int64_t>::max() - offset ? -1 : limit + offset;
         SortCollector collect(sp, c, keep);
-        runCore(sp.cores[0], c, collect);
+        CorePlan& core = sp.cores[0];
+        if (core.sortKeys.size() != sp.order.size()) {
+            core.sortKeys.clear();
+            for (const SelectPlan::SortKey& k : sp.order)
+                core.sortKeys.push_back(k.column);
+        }
+        core.deferToProject = keep > 0 && !core.aggregate && core.windows.empty() && !core.distinct &&
+                              core.finalFilters.empty() && !core.hasRightJoin && core.values.empty();
+        collect.keys(&core.sortKeys);
+        runCore(core, c, collect);
+        core.deferToProject = false;
         collect.emit(c, sink, std::size_t(offset), limit, columns);
-        sp.sorted.releaseAbove(kKeepSortCells);
+        sp.sorted.releaseAbove(scratchRetain(c) / sizeof(Value));
         return;
     }
     RowStore& rows = sp.sorted;
@@ -1436,7 +1746,7 @@ void runRows(SelectPlan& sp, Ctx& c, RowSink& sink)
         if (!sink.take(c, rows.row(sp.orderIndex[i]), columns))
             break;
     }
-    rows.releaseAbove(kKeepSortCells);
+    rows.releaseAbove(scratchRetain(c) / sizeof(Value));
 }
 
 }  // namespace
@@ -1578,6 +1888,7 @@ void runSubquery(SubqueryPlan& s, Ctx& c)
             return;
         }
         case SubqueryPlan::Kind::In: {
+            s.keys.releaseAbove(scratchRetain(c));
             s.keys.clear();
             s.hasNull = false;
             KeySink sink(s);

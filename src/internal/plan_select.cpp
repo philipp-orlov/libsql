@@ -1367,6 +1367,65 @@ void markCacheable(CorePlan& core)
             (local ? s.localFilters : s.joinFilters).push_back(t);
         }
         s.cacheable = true;
+        // Equality terms between this source and earlier ones key a hash
+        // over the cache. Both sides deterministic and free of sub-queries,
+        // so evaluating each once per row it belongs to changes nothing.
+        s.hashInner.clear();
+        s.hashOuter.clear();
+        s.hashInnerAffinity.clear();
+        s.hashOuterAffinity.clear();
+        s.hashCollation.clear();
+        auto plainSide = [&](const Expr* x) {
+            bool plain = true;
+            std::function<void(const Expr*)> walk = [&](const Expr* y) {
+                if (!y || !plain)
+                    return;
+                if (y->sub || y->select || y->kind == ExprKind::Raise || y->kind == ExprKind::RowValue ||
+                    (y->kind == ExprKind::Function && (!y->fn || !(y->fn->flags & kDeterministic))) ||
+                    ((y->kind == ExprKind::Column || y->kind == ExprKind::Slot) && std::size_t(y->slot) < core.slotBegin))
+                    plain = false;
+                walk(y->lhs.get());
+                walk(y->rhs.get());
+                walk(y->extra.get());
+                for (const ExprPtr& z : y->list)
+                    walk(z.get());
+            };
+            walk(x);
+            return plain && !x->strictDatetime;
+        };
+        auto readsOnly = [&](const Expr* x, bool self) {
+            std::vector<bool> r(n, false);
+            bool all = false;
+            sourcesRead(core, x, r, all);
+            if (all)
+                return false;
+            bool any = false;
+            for (std::size_t o = 0; o < n; ++o) {
+                if (!r[o])
+                    continue;
+                if (self ? o != d : o >= d)
+                    return false;
+                any = true;
+            }
+            return any;
+        };
+        for (const Expr* t : s.joinFilters) {
+            if (t->kind != ExprKind::Binary || BinaryOp(t->op) != BinaryOp::Eq)
+                continue;
+            const Expr* a = t->lhs.get();
+            const Expr* b = t->rhs.get();
+            if (!plainSide(a) || !plainSide(b))
+                continue;
+            if (readsOnly(b, true) && readsOnly(a, false))
+                std::swap(a, b);
+            else if (!(readsOnly(a, true) && readsOnly(b, false)))
+                continue;
+            s.hashInner.push_back(a);
+            s.hashOuter.push_back(b);
+            s.hashInnerAffinity.push_back(comparisonAffinity(*a, *b));
+            s.hashOuterAffinity.push_back(comparisonAffinity(*b, *a));
+            s.hashCollation.push_back(t->collation);
+        }
     }
 }
 
@@ -1796,6 +1855,37 @@ void Planner::planCore(SelectCore& core, CorePlan& plan, Scope& scope, SelectPla
         for (const std::uint8_t u : s.used)
             onlyCount = onlyCount && !u;
         plan.countRows = onlyCount;
+    }
+    if (plan.aggregate && plan.groupBy.empty() && plan.windows.empty() && core.where && !plan.countRows &&
+        plan.sources.size() == 1 && plan.sources[0].kind == SourceNode::Kind::Table &&
+        plan.sources[0].onTerms.empty() && plan.finalFilters.empty() && plan.sources[0].generated.empty()) {
+        bool onlyCount = true;
+        for (const AggInfo& a : plan.aggs)
+            onlyCount = onlyCount && a.countStar && !a.call->filter && !a.call->distinct && a.call->orderBy.empty();
+        // Nothing but the filters may read the row: no bare column beside
+        // count(*), none in HAVING.
+        const SourceNode& s = plan.sources[0];
+        std::function<bool(const Expr*)> readsRow = [&](const Expr* e) {
+            if (!e)
+                return false;
+            if (e->sub || e->select)
+                return true;
+            if ((e->kind == ExprKind::Column || e->kind == ExprKind::Slot) && e->slot >= 0 &&
+                std::size_t(e->slot) >= s.base && std::size_t(e->slot) < s.base + s.width)
+                return true;
+            if (readsRow(e->lhs.get()) || readsRow(e->rhs.get()) || readsRow(e->extra.get()) ||
+                readsRow(e->filter.get()))
+                return true;
+            for (const ExprPtr& x : e->list) {
+                if (readsRow(x.get()))
+                    return true;
+            }
+            return false;
+        };
+        for (const Expr* o : plan.outputs)
+            onlyCount = onlyCount && !readsRow(o);
+        onlyCount = onlyCount && !readsRow(plan.having);
+        plan.countWindow = onlyCount;
     }
     plan.frameEnd = prog_.frameSize;
 }

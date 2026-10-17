@@ -540,6 +540,80 @@ TEST(substrOfAnEmptyBlobIsNull)
     CHECK_EQ(tst::only(db.exec("SELECT typeof(substr('', 1, 2))")), std::string("text"));
 }
 
+TEST(memoryProfilesAndCacheSizesAllWork)
+{
+    tst::Scratch s("sqlite");
+    const MemoryProfile profiles[] = {MemoryProfile::Compact, MemoryProfile::Balanced, MemoryProfile::Throughput};
+    int n = 0;
+    for (const MemoryProfile p : profiles) {
+        for (const std::size_t cache : {std::size_t(0), std::size_t(1), std::size_t(3)}) {
+            const std::string name = "m" + std::to_string(n++) + ".db";
+            Database db = Database::configure()
+                              .memoryProfile(p)
+                              .statementCacheSize(cache)
+                              .arenaBlockSize(cache * 300)
+                              .scratchRetain(cache * 1000)
+                              .open(s.file(name.c_str()));
+            db.exec("CREATE TABLE t (a INTEGER, b TEXT)");
+            for (int i = 0; i < 300; ++i)
+                db.exec("INSERT INTO t VALUES (?, ?)", {Value(i % 7), Value("v" + std::to_string(i))});
+            // More distinct texts than the cache holds, repeated: evicted and
+            // replanned without changing results.
+            for (int round = 0; round < 3; ++round) {
+                for (int k = 0; k < 6; ++k) {
+                    const std::string q = "SELECT count(*) FROM t WHERE a = " + std::to_string(k);
+                    CHECK_EQ(tst::only(db.exec(q)), std::string("43"));
+                }
+            }
+            CHECK_EQ(tst::flatten(db.exec("SELECT a, count(DISTINCT b) FROM t GROUP BY a ORDER BY a LIMIT 2")),
+                     std::string("0|43;1|43"));
+        }
+    }
+}
+
+TEST(wideResultsSurviveCopiesAndMoves)
+{
+    tst::Scratch s("sqlite");
+    Database db = s.open();
+    db.exec("CREATE TABLE w (a, b, c, d, e, f, g)");
+    for (int i = 0; i < 500; ++i)
+        db.exec("INSERT INTO w VALUES (?, ?, 'text value ' || ?, ?, ?, ?, ?)",
+                {Value(i), Value(i * 2.5), Value(i), Value(std::string(40, char('a' + i % 26))), Value(i % 3),
+                 Value(), Value::blob("xyz", 3)});
+    Row kept;
+    Result copy;
+    {
+        Result r = db.exec("SELECT * FROM w ORDER BY a");
+        CHECK_EQ(r.size(), std::size_t(500));
+        kept = r[123];                // a row copied out owns its values
+        copy = r;                     // so does a copied result
+        Result moved = std::move(r);  // a move keeps the cells it points into
+        Result assigned = db.exec("SELECT * FROM w WHERE a < 3");
+        assigned = std::move(moved);  // replacing wide rows with wide rows
+        CHECK_EQ(assigned.size(), std::size_t(500));
+        CHECK_EQ(assigned[499]["c"].text(), std::string("text value 499"));
+        assigned = db.exec("SELECT 1");
+        CHECK_EQ(assigned.size(), std::size_t(1));
+    }
+    CHECK_EQ(kept["a"].integer(), std::int64_t(123));
+    CHECK_EQ(kept["d"].text(), std::string(40, char('a' + 123 % 26)));
+    CHECK_EQ(copy[7]["c"].text(), std::string("text value 7"));
+    CHECK_EQ(copy[300]["g"].blob().size(), std::size_t(3));
+}
+
+TEST(aBatchThatDetachesKeepsRunning)
+{
+    tst::Scratch s("sqlite");
+    Database db = Database::configure().statementCacheSize(1).open(s.file());
+    const std::string other = s.file("other.db").string();
+    db.exec("ATTACH ? AS aux", {Value(other)});
+    db.exec("CREATE TABLE aux.t (v)");
+    // DETACH clears the statement cache while this batch, which is in it,
+    // still has statements to run.
+    CHECK_EQ(tst::only(db.exec("SELECT 1; DETACH aux; SELECT 2 + 3")), std::string("5"));
+    CHECK_THROWS(db.exec("SELECT v FROM aux.t"), ErrorCode::NoSuchTable);
+}
+
 int main()
 {
     return tst::runAll("sqlite");

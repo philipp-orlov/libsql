@@ -120,8 +120,11 @@ public:
 
 private:
     friend struct internal::ResultBuilder;
-    /// Builds the values in place from `first`, moving them when `move`.
-    void fill(Value* first, std::size_t count, bool move);
+    friend class Result;
+    /// Builds the values in place from `first`, moving them when `move`. A
+    /// row wider than the inline space goes into `cells` when given (memory
+    /// its Result owns) instead of a heap block of its own.
+    void fill(Value* first, std::size_t count, bool move, Value* cells = nullptr);
 
     static constexpr std::size_t kInline = 4;
     bool inlined() const noexcept { return data_ == reinterpret_cast<const Value*>(inline_); }
@@ -130,6 +133,7 @@ private:
 
     Value* data_ = nullptr;
     std::size_t size_ = 0;
+    bool borrowed_ = false;  ///< data_ is in a Result's cell chunk, not ours to free
     alignas(Value) unsigned char inline_[kInline * sizeof(Value)];
 };
 
@@ -200,6 +204,12 @@ class Result
 {
 public:
     Result() = default;
+    Result(Result&& other) noexcept;
+    Result& operator=(Result&& other) noexcept;
+    /// Copies own their values.
+    Result(const Result& other);
+    Result& operator=(const Result& other);
+    ~Result();
 
     const std::vector<std::string>& columns() const;
     /// Per column, `alias.column` when it is a plain column reference, else
@@ -220,7 +230,16 @@ public:
 
 private:
     friend struct internal::ResultBuilder;
+    /// Room for `count` values in the result's cell chunks.
+    Value* cells(std::size_t count);
+
     std::shared_ptr<const ColumnNames> names_;
+    /// Raw memory for the values of rows wider than Values' inline space: a
+    /// few chunks per result instead of one heap block per row. Declared
+    /// before rows_, which destroy the values in them.
+    std::vector<std::unique_ptr<unsigned char[]>> chunks_;
+    std::size_t chunkSize_ = 0;  ///< values the last chunk holds
+    std::size_t chunkFree_ = 0;  ///< of which still unused
     std::vector<Row> rows_;
     std::uint64_t changes_ = 0;
     std::int64_t lastInsertId_ = 0;
@@ -349,6 +368,22 @@ private:
 
 // ------------------------------------------------------------ database ----
 
+/// How much memory a Database keeps between statements so that the next
+/// statement need not allocate it again. Every figure can also be set on its
+/// own (Database::Options); an explicit setting wins over the profile's.
+///
+/// | profile    | statement cache | scratch kept | sort memory | arena block |
+/// |------------|-----------------|--------------|-------------|-------------|
+/// | Compact    | 8               | 64 KiB       | 8 MiB       | 1 KiB       |
+/// | Balanced   | 32              | 2 MiB        | 64 MiB      | 4 KiB       |
+/// | Throughput | 128             | 16 MiB       | 256 MiB     | 16 KiB      |
+enum class MemoryProfile : std::uint8_t
+{
+    Compact,     ///< many databases per process, small devices
+    Balanced,    ///< the default
+    Throughput,  ///< one busy database that may use memory freely
+};
+
 /// The database: one libnosql store holding the catalog, the table data and
 /// the indexes.
 class Database
@@ -420,10 +455,45 @@ public:
             return *this;
         }
 
+        /// Sets the memory figures below (and sortMemoryLimit) from a
+        /// profile; any of them set explicitly keeps its explicit value.
+        Options& memoryProfile(MemoryProfile profile)
+        {
+            profile_ = profile;
+            return *this;
+        }
+        /// One-off statement texts kept planned, per Database and per
+        /// transaction, so `exec` of the same text in a loop parses and plans
+        /// once. 0 turns the cache off.
+        Options& statementCacheSize(std::size_t statements)
+        {
+            statementCache_ = statements;
+            return *this;
+        }
+        /// Bytes of per-run working memory (group tables, DISTINCT and IN key
+        /// sets, sort buffers) a statement keeps for its next run. A run that
+        /// needed more frees the excess when it ends.
+        Options& scratchRetain(std::uint64_t bytes)
+        {
+            scratchRetain_ = bytes;
+            return *this;
+        }
+        /// Block size of the arenas that hold each parsed statement's tree.
+        Options& arenaBlockSize(std::size_t bytes)
+        {
+            arenaBlock_ = bytes;
+            return *this;
+        }
+
         Database open(const std::filesystem::path& path) const;
 
     private:
-        std::uint64_t sortMemory_ = 64ull << 20;
+        static constexpr std::uint64_t kUnset = ~std::uint64_t(0);
+        MemoryProfile profile_ = MemoryProfile::Balanced;
+        std::uint64_t statementCache_ = kUnset;
+        std::uint64_t scratchRetain_ = kUnset;
+        std::uint64_t arenaBlock_ = kUnset;
+        std::uint64_t sortMemory_ = kUnset;
         std::chrono::milliseconds busyTimeout_{0};
         std::uint64_t maxSize_ = 64ull << 30;
         bool readOnly_ = false;

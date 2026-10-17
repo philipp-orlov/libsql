@@ -27,6 +27,7 @@
 
 #include "internal/ast.hpp"
 #include "internal/catalog.hpp"
+#include "internal/flat_hash.hpp"
 #include "internal/func.hpp"
 #include "sql/json.hpp"
 
@@ -120,6 +121,11 @@ public:
     virtual bool row(Ctx& c, const Value* values, std::size_t count) = 0;
     /// The same for values the caller no longer needs: a sink may move them.
     virtual bool take(Ctx& c, Value* values, std::size_t count) { return row(c, values, count); }
+    /// An ORDER BY ... LIMIT collector: the produced-row columns that decide
+    /// whether a row can still make the cut, or null when the sink keeps
+    /// every row. A producer may fill just these and ask `rejects` first.
+    virtual const std::vector<std::size_t>* rejectKeys() const { return nullptr; }
+    virtual bool rejects(const Value*) const { return false; }
 };
 
 // ------------------------------------------------------- expressions ----
@@ -169,7 +175,7 @@ struct SubqueryPlan
     Value scalar;
     bool exists = false;
     // In
-    std::set<std::string> keys;
+    FlatKeySet keys;
     bool hasNull = false;
     std::vector<Affinity> keyAffinity;  ///< applied to the left-hand values
     std::vector<Affinity> rowAffinity;  ///< applied to the sub-query's values
@@ -275,6 +281,14 @@ struct SourceNode
     std::size_t skipComponents = 0;  ///< entry components a skip steps over
     std::string skipKey;             ///< scratch: the next prefix to seek to
     std::vector<ExprPtr> generated;  ///< virtual generated columns, by column position
+    /// Two-phase rows (run_select.cpp, decideSplit): 0 undecided, 1 whole
+    /// rows, 2 the columns in `firstUsed` first and the rest of `used` once
+    /// the row has passed this level's filters (finishRow).
+    std::uint8_t split = 0;
+    std::vector<std::uint8_t> firstUsed, restUsed;
+    bool restPending = false;      ///< the current row still lacks restUsed
+    bool holdEntry = false;        ///< skipEntries left the cursor on the next row to read
+    std::string_view restRecord;   ///< its record, valid while the cursor stays
     std::string indexedBy;
     bool notIndexed = false;
     // Rows
@@ -288,6 +302,9 @@ struct SourceNode
 
     // ---- scan state ----
     nosql::Cursor cursor;
+    /// Index reads fetch rows through this one, kept across rows and opens,
+    /// so rows stored near the last one are found within its leaf.
+    nosql::Cursor rowCursor;
     bool started = false;
     bool exhausted = false;
     bool point = false;       ///< a single exact lookup
@@ -320,6 +337,19 @@ struct SourceNode
     std::uint64_t cachedRun = 0;
     std::size_t cachePos = 0;
     bool replaying = false;
+    /// Hash join over the cache (SQLite's automatic index): join terms
+    /// `inner = outer` whose inner side reads only this source and whose
+    /// outer side reads only sources placed before it. Cached rows are
+    /// bucketed by the inner sides' key when filled, so each outer row visits
+    /// only its bucket instead of every cached row. Keys are built as the
+    /// comparison would compare: affinity applied, then the collation's key
+    /// encoding; every join term is still checked on each visited row.
+    std::vector<const Expr*> hashInner, hashOuter;
+    std::vector<Affinity> hashInnerAffinity, hashOuterAffinity;
+    std::vector<Collation> hashCollation;
+    FlatKeySet hashKeys;
+    std::vector<std::uint32_t> hashFirst, hashLast, hashNext;
+    std::string hashKey;
 };
 
 /// Marks column `col` of a table source as read by the statement.
@@ -374,15 +404,15 @@ struct OrderedStep
 struct AggSlot
 {
     std::unique_ptr<AggregateState> state;
-    std::unique_ptr<std::set<std::string>> distinct;
+    std::unique_ptr<FlatKeySet> distinct;
     std::vector<OrderedStep> ordered;
 };
 
 /// One group of an aggregate query: the first row seen (or the row of the
-/// min/max), and the aggregates' running states.
+/// min/max), and the aggregates' running states. Its key is the matching
+/// member of GroupTable::index.
 struct Group
 {
-    std::string key;
     std::vector<Value> sample;
     std::vector<AggSlot> aggs;
 };
@@ -393,7 +423,7 @@ struct GroupTable
 {
     std::vector<std::unique_ptr<Group>> groups;
     std::size_t used = 0;
-    std::unordered_map<std::string_view, std::size_t> index;
+    FlatKeySet index;  ///< group key -> position in `groups`
     std::vector<std::uint32_t> order;
 };
 
@@ -423,6 +453,13 @@ struct CorePlan
     /// `SELECT count(*) FROM t` and nothing else: the store's entry count
     /// answers it without reading a row.
     bool countRows = false;
+    /// `SELECT count(*) FROM t WHERE ...` and nothing else: when the access
+    /// window enforces every term, the store counts the window's entries
+    /// (nosql::Db::countRange) without reading them.
+    bool countWindow = false;
+    /// Set by runSelect for a plain one-table core under OFFSET: the offset
+    /// still to drop, which the source may satisfy by skipping entries.
+    std::int64_t* offsetLeft = nullptr;
     std::vector<std::vector<Expr*>> values;  ///< VALUES rows
     /// End of the frame range planned for this core (sources, aggregate and
     /// window slots); snapshots for grouping and windows copy
@@ -431,7 +468,18 @@ struct CorePlan
     // scratch
     std::string key;
     std::vector<Value> outRow;
-    std::set<std::string> seen;
+    /// Plain core feeding ORDER BY ... LIMIT: the innermost source's row may
+    /// be completed in project, after the sort keys showed it can place.
+    bool deferToProject = false;
+    std::vector<std::size_t> sortKeys;  ///< output columns the ORDER BY reads
+    bool keysFirst = false;  ///< the innermost source's first phase covers sortKeys
+    /// Per output: the innermost source's slot it may take by swapping
+    /// rather than copying (it reads nothing else, and nothing else reads
+    /// that slot before the next row replaces it), or -1. Empty until the
+    /// first projection decides.
+    std::vector<int> swapFrom;
+    bool swapDecided = false;
+    FlatKeySet seen;
     std::vector<const Value*> argv;
     GroupTable groupTable;
 };
@@ -487,6 +535,12 @@ void openSource(SourceNode& s, Ctx& c);
 void decideCovering(SourceNode& s);
 bool nextSource(SourceNode& s, Ctx& c);
 void closeSource(SourceNode& s);
+/// Decodes the columns a two-phase row deferred (no-op when none are).
+void finishRow(SourceNode& s, Ctx& c);
+/// Before the first row of an open table source: passes over up to `n`
+/// entries of its window without reading them (O(log n), by the store's
+/// entry counts). Returns how many it passed over.
+std::uint64_t skipEntries(SourceNode& s, Ctx& c, std::uint64_t n);
 /// Sets the source's slots to NULL (outer join padding).
 void nullSource(SourceNode& s, Ctx& c);
 /// Which frame slots hold values when a source is opened: everything below
@@ -534,6 +588,9 @@ struct ConnectionState
     std::atomic<int> tempStore{0};
     /// Bytes a sort may hold before it spills sorted runs to a temp file.
     std::atomic<std::uint64_t> sortMemory{64ull << 20};
+    /// Bytes of per-run scratch (group tables, DISTINCT and IN key sets) a
+    /// statement keeps for its next run; larger ones are freed after the run.
+    std::atomic<std::uint64_t> scratchRetain{1ull << 20};
     // Transactions of one Database may run on different threads, so the
     // counters they all update are atomic.
     std::atomic<std::int64_t> changes{0};
@@ -581,5 +638,12 @@ struct Session
             beginAtomic();
     }
 };
+
+/// The connection's scratchRetain, or its default outside a session.
+inline std::size_t scratchRetain(const Ctx& c) noexcept
+{
+    return c.session && c.session->conn ? std::size_t(c.session->conn->scratchRetain.load(std::memory_order_relaxed))
+                                        : std::size_t(1) << 20;
+}
 
 }  // namespace sql::internal

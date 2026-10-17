@@ -56,7 +56,7 @@ private:
         }
         Row& r = result.rows_.emplace_back();
         r.names_ = result.names_;
-        r.values_.fill(values, count, move);
+        r.values_.fill(values, count, move, count > 4 ? result.cells(count) : nullptr);
     }
 };
 

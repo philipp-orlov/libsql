@@ -79,8 +79,10 @@ void successorInto(std::string& out, std::string_view prefix);
 // ----------------------------------------------------------------- rows ---
 
 std::string encodeRow(const std::vector<Value>& values);
-/// Appends the encoding of `count` cells to `out`.
-void encodeRowInto(std::string& out, const Value* values, std::size_t count);
+/// Appends the encoding of `count` cells to `out`; cells whose `asNull` byte
+/// is nonzero are stored as NULL whatever they hold.
+void encodeRowInto(std::string& out, const Value* values, std::size_t count,
+                   const std::uint8_t* asNull = nullptr);
 std::vector<Value> decodeRow(std::string_view in);
 /// Decodes into `width` cells that keep their buffers; columns the record
 /// does not carry become NULL. Returns how many the record carried (at most
@@ -88,7 +90,8 @@ std::vector<Value> decodeRow(std::string_view in);
 std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width);
 /// The same, decoding only the cells whose `used` byte is nonzero; the others
 /// are stepped over and left as they were.
-std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, const std::uint8_t* used);
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, const std::uint8_t* used,
+                          bool fillMissing = true);
 /// How many cells a record holds.
 std::size_t rowColumnCount(std::string_view in);
 

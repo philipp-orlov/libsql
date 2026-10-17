@@ -21,6 +21,10 @@ constexpr char kSequence = 'a';
 constexpr char kPragma = 'p';
 constexpr char kVersion = 'v';
 constexpr char kNextId = 'n';
+constexpr char kFormat = 'f';
+/// Row record format (docs/design.md §6.5). 2: a header of type codes, then
+/// the payloads. Stores of an older format are refused rather than misread.
+constexpr std::int64_t kRowFormat = 2;
 constexpr std::uint64_t kRecordFormat = 1;
 
 std::string objectKey(char prefix, std::string_view name)
@@ -119,6 +123,10 @@ std::shared_ptr<const Schema> loadSchema(nosql::Txn& txn)
         }
     }
     s->version = std::uint64_t(readInt(db, std::string_view(&kVersion, 1), 0));
+    const std::int64_t format = readInt(db, std::string_view(&kFormat, 1), 0);
+    if (format != kRowFormat && s->version != 0)
+        throw Error(ErrorCode::Internal, "this store was written by an earlier libsql development build (record format " +
+                                             std::to_string(format) + "), which is not supported");
     s->userVersion = readInt(db, std::string(1, kPragma) + "user_version", 0);
     s->applicationId = readInt(db, std::string(1, kPragma) + "application_id", 0);
 
@@ -274,6 +282,7 @@ Schema& Catalog::edit()
 void Catalog::storeVersion()
 {
     writeInt(meta(true), std::string_view(&kVersion, 1), std::int64_t(edited_->version));
+    writeInt(meta(true), std::string_view(&kFormat, 1), kRowFormat);
 }
 
 void Catalog::resetCaches()

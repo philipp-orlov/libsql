@@ -284,8 +284,9 @@ and the transaction live. The sub-database names `sql_catalog`, `t#*` and
 
 The catalog stores each object's `CREATE` statement, exactly as
 `sqlite_schema.sql` shows it, and re-reads the schema from that text. This
-release changed the format of keys and of the catalog: a store written by
-libsql 0.1 is refused with `Internal` rather than misread.
+release changed the format of keys, rows and the catalog, and runs on
+libnosql's format 7: a store written by libsql 0.1, or by an earlier 0.2
+development build, is refused rather than misread.
 
 libnosql verifies a page's checksum when it reads it. libsql turns on its
 read cache: a page whose checksum this process has verified since it was last
@@ -354,82 +355,92 @@ its fastest honest setup: libsql with `durable(false)`; SQLite in WAL mode with
 `synchronous=OFF`, a 256 MiB page cache, a 1 GiB mmap and `THREADSAFE=0`. Both
 read every column of every row in place -- `sqlite3_column_*` on one side,
 `Statement::each` on the other (`--materialize` makes libsql build a `Result`
-instead). On a Xeon Gold 5420+ (GCC 13.3, Release, one pinned core):
+instead). On a Xeon Gold 5420+ VM (GCC 13.3, one pinned core), with libsql
+built plain Release and with profile-guided optimization (`tools/pgo-build.sh`,
+see Building):
 
-| workload | libsql | SQLite | |
-|---|---:|---:|---:|
-| `INSERT`, 2 indexes, prepared, batches of 1,000 | 3.9 µs | 4.7 µs | 0.82x |
-| the same, one transaction per row | 10.7 µs | 11.9 µs | 0.90x |
-| `INSERT` prepared and run once each | 10.8 µs | 14.1 µs | 0.77x |
-| `SELECT ... WHERE id = ?`, prepared, own transaction | 1.78 µs | 1.89 µs | 0.94x |
-| the same inside one read transaction | 0.87 µs | 0.74 µs | 1.18x |
-| `SELECT ... WHERE id = ?` prepared and run once each | 1.84 µs | 4.17 µs | 0.44x |
-| `SELECT id FROM item WHERE name = ?` | 1.84 µs | 1.99 µs | 0.93x |
-| index equality returning ~200 rows | 68 µs | 74 µs | 0.91x |
-| rowid range of 100 rows | 10.1 µs | 8.9 µs | 1.13x |
-| index equality, `ORDER BY name LIMIT 10` | 75 µs | 81 µs | 0.92x |
-| `count(*)` of ~200 rows through an index | 10.7 µs | 6.5 µs | 1.65x |
-| `count(*)` of the whole table | constant | 0.1 ns/row | |
-| full scan with a predicate, per row | 63 ns | 35 ns | 1.83x |
-| `GROUP BY` over a full scan, per row | 176 ns | 368 ns | 0.48x |
-| `ORDER BY price LIMIT 100` over a full scan, per row | 89 ns | 52 ns | 1.71x |
-| covering index scan returning 100,000 names, per row | 32 ns | 21 ns | 1.56x |
-| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 3.4 ns | 2.0 ns | 1.73x |
-| full sort of 200,000 rows, per row | 625 ns | 660 ns | 0.95x |
-| join through an index, ~400 output rows | 401 µs | 372 µs | 1.08x |
-| join with `GROUP BY` over 1,000 items | 1.39 ms | 1.23 ms | 1.12x |
-| `UPDATE ... WHERE id = ?`, batches of 1,000 | 3.0 µs | 4.3 µs | 0.69x |
-| `UPDATE` of an indexed column, batches of 1,000 | 6.5 µs | 10.4 µs | 0.63x |
-| `UPDATE ... WHERE id = ?`, one transaction each | 13.1 µs | 7.5 µs | 1.74x |
-| `DELETE` + re-`INSERT` by key, batches of 1,000 | 13.8 µs | 23.5 µs | 0.58x |
-| `prepare` and discard a `SELECT` | 3.7 µs | 2.5 µs | 1.51x |
-| `prepare` and discard a join | 5.0 µs | 5.0 µs | 0.99x |
-| a trivial statement run once | 1.8 µs | 3.2 µs | 0.57x |
+| workload | libsql | libsql PGO | SQLite | PGO / SQLite |
+|---|---:|---:|---:|---:|
+| `INSERT`, 2 indexes, prepared, batches of 1,000 | 3.96 µs | 3.76 µs | 4.85 µs | 0.77x |
+| the same, one transaction per row | 9.1 µs | 8.7 µs | 11.9 µs | 0.73x |
+| `INSERT` prepared and run once each | 9.2 µs | 8.9 µs | 14.2 µs | 0.62x |
+| `SELECT ... WHERE id = ?`, prepared, own transaction | 1.73 µs | 1.58 µs | 1.81 µs | 0.87x |
+| the same inside one read transaction | 0.83 µs | 0.76 µs | 0.74 µs | 1.02x |
+| `SELECT ... WHERE id = ?` prepared and run once each | 1.81 µs | 1.63 µs | 4.10 µs | 0.40x |
+| `SELECT id FROM item WHERE name = ?` | 1.85 µs | 1.65 µs | 1.94 µs | 0.85x |
+| index equality returning ~200 rows | 74 µs | 67 µs | 72 µs | 0.93x |
+| rowid range of 100 rows | 12.1 µs | 9.5 µs | 9.0 µs | 1.05x |
+| index equality, `ORDER BY name LIMIT 10` | 81 µs | 77 µs | 80 µs | 0.96x |
+| `count(*)` of ~200 rows through an index | 1.88 µs | 1.65 µs | 6.5 µs | 0.25x |
+| `count(*)` of the whole table | constant | constant | 0.1 ns/row | |
+| full scan with a predicate, per row | 40 ns | 35 ns | 35 ns | 1.00x |
+| `GROUP BY` over a full scan, per row | 145 ns | 129 ns | 358 ns | 0.36x |
+| `ORDER BY price LIMIT 100` over a full scan, per row | 54 ns | 49 ns | 52 ns | 0.93x |
+| covering index scan returning 100,000 names, per row | 32 ns | 25 ns | 21 ns | 1.17x |
+| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 1.9 ns | 1.9 ns | 1.8 ns | 1.06x |
+| full sort of 200,000 rows, per row | 590 ns | 564 ns | 685 ns | 0.82x |
+| join through an index, ~400 output rows | 429 µs | 420 µs | 364 µs | 1.12x |
+| join with `GROUP BY` over 1,000 items | 1.22 ms | 1.01 ms | 1.26 ms | 0.80x |
+| `UPDATE ... WHERE id = ?`, batches of 1,000 | 2.9 µs | 2.7 µs | 3.8 µs | 0.71x |
+| `UPDATE` of an indexed column, batches of 1,000 | 6.2 µs | 6.0 µs | 9.3 µs | 0.64x |
+| `UPDATE ... WHERE id = ?`, one transaction each | 7.5 µs | 6.9 µs | 7.2 µs | 0.96x |
+| `DELETE` + re-`INSERT` by key, batches of 1,000 | 13.1 µs | 12.7 µs | 20.6 µs | 0.62x |
+| `prepare` and discard a `SELECT` | 3.1 µs | 1.8 µs | 2.5 µs | 0.73x |
+| `prepare` and discard a join | 4.0 µs | 2.5 µs | 5.1 µs | 0.48x |
+| a trivial statement run once | 1.50 µs | 1.25 µs | 3.15 µs | 0.40x |
 
-libsql is ahead on writes in batches, on one-off statements (a per-connection
-cache of parsed batches; SQLite parses every call), on index lookups, grouping
-and sorting. SQLite is ahead on tight scans and on small transactions:
+The SQLite column is from the PGO run; the plain run's differs by noise. A
+plain build is ahead on 16 of the 27, a PGO build on 22. Of the rest, the
+join and the covering scan are the ones that still show: a probe through an
+index costs a B-tree descent in libnosql's copy-on-write pages where SQLite
+finds the row in its page cache, and a scan of index entries decodes each
+key's components rather than reading a column in place.
 
-- A scan costs SQLite one cursor step and a lazy column read per row; libsql
-  spends 30-60 ns more in its general join loop. Narrow scans are bounded by
-  that, not by the store (a libnosql cursor step is about 5 ns).
-- A small commit is a copy-on-write commit: libnosql rewrites and checksums
-  the leaf, its path to the root, the catalog entry that holds the tree's root
-  and the free list -- about ten pages -- where SQLite's WAL appends one. That
-  is the price of readers that never block and a file that is always
-  consistent; batch writes and it disappears (0.69x).
-- `prepare` parses SQLite's full grammar into an AST; libsql plans at the
-  first run instead, so a prepared statement pays it once.
-
-What the read path does to get there:
+What the engine does to get there:
 
 - **Checksums verified once.** libnosql checksums every page; libsql turns on
   its read cache by default, so a page verified since it was last written is
   not re-hashed on every read (every remembered check expires after a minute,
   and writes always verify). `cacheReadChecksums(false)` restores
   verify-every-read.
-- **Index-only scans.** When an index holds every column a query reads, the
-  table is never touched (`SCAN t USING COVERING INDEX i`), and a plain scan
-  switches to the narrowest such index. Index entries carry a small flag set
-  so a covered REAL that is a whole number reads back as REAL.
-- **Exact windows.** Equality on key and index parts, and ranges on the rowid
-  and on ascending BINARY parts, are turned into exact key windows, so those
-  conditions are not evaluated again per row.
-- **Only the columns read are decoded**, and a `count(*)` with no `WHERE` uses
-  the store's entry count. `SELECT DISTINCT` over an index's leading columns
-  seeks past each distinct value instead of reading every entry.
-- **Top-N.** `ORDER BY ... LIMIT n` keeps only rows that can still make the cut
-  and drops the rest after one comparison.
+- **Rows decode in two phases.** A row record starts with a header of type
+  codes, so a column is found without parsing the ones before it. A scan
+  decodes first only the columns its filters (or an `ORDER BY ... LIMIT`'s
+  sort keys) read, and the rest only for rows that pass; columns nothing reads
+  are never decoded.
+- **Comparisons without the interpreter.** `column <op> constant` and
+  `column <op> column` compare the two values directly when affinity cannot
+  change either, instead of evaluating three expression nodes.
+- **Index-only scans and exact windows.** When an index holds every column a
+  query reads, the table is never touched; equality and ranges on key and
+  index parts become exact key windows that are not re-checked per row.
+- **The store counts.** Every branch page in libnosql records how many entries
+  lie under each child, so `count(*)` over an exact window, and an `OFFSET`
+  over one, take O(log n) instead of visiting the entries (an `OFFSET` of
+  150,000: 2.2 µs).
+- **Top-N.** `ORDER BY ... LIMIT n` keeps only rows that can still make the
+  cut; a row that cannot is dropped after its sort keys are computed, before
+  the rest of it is decoded or copied.
+- **Hash joins.** An equality join with no usable index on the inner table
+  reads that table once and buckets it by the join key -- SQLite's automatic
+  index -- instead of re-reading it for every outer row.
+- **Flat hash tables.** `GROUP BY`, `DISTINCT`, `count(DISTINCT ...)` and
+  `IN (SELECT ...)` key sets are open-addressing tables over one byte buffer,
+  reused from run to run.
+- **Nearby seeks stay in the leaf.** A source keeps its cursor between opens,
+  and a seek that lands in the cursor's current leaf skips the descent from
+  the root.
+- **Cheap commits.** A small commit records the pages it frees, and the roots
+  of up to six recently written tables, in the meta page it writes anyway,
+  so it rewrites neither a free-list page nor the catalog: an autocommit
+  `UPDATE` went from 13.1 µs to 7.5 µs.
+- **Cheap prepare.** Statement trees live in a per-statement arena, keywords
+  are recognized through one small static table, and a per-connection cache of
+  parsed batches means `exec` of a repeated text plans once.
 - **No copies on the way out.** Result rows hold up to four values inline and
-  take their values from the scratch row instead of copying them;
+  wider rows share a few chunks of their `Result`; an output that is a plain
+  column takes its value from the row by swapping buffers instead of copying;
   `Statement::each` skips building a `Result` altogether.
-
-Against libsql 0.1 on the same machine, everything but two batched write
-paths got faster: one-off statements by 70%, point and range reads by 20-70%,
-joins by 55-64%, `UPDATE` by 36-60%. Batched `INSERT` is 8% and batched
-`DELETE` + re-`INSERT` 14% slower, the cost of doing more per row (triggers,
-foreign keys, `CHECK`, conflict clauses and statement-level rollback are all
-checked for, and skipped when a table has none).
 
 ## Long runs
 
@@ -484,11 +495,40 @@ the life of the process, which is why running the same query a million times
 leaves the plan and the buffers where they were.
 
 Scratch that outlives a statement is bounded so that one unusual query cannot
-pin memory for the life of the process: a plan's sort buffer is given back once
-it exceeds 65,536 cells, a result is pre-sized from the previous run only up to
-65,536 rows, the parser's per-thread token buffers are kept only up to 4,096
-tokens and four at a time, and an `ORDER BY` larger than the sort memory goes
-to a temporary file rather than the heap.
+pin memory for the life of the process: a plan's sort buffer, group table and
+DISTINCT/IN key sets are given back after a run that made them larger than the
+connection's `scratchRetain` (see Memory below), a result is pre-sized from the
+previous run only up to 65,536 rows, the parser's per-thread token buffers are
+kept only up to 4,096 tokens and four at a time, and an `ORDER BY` larger than
+the sort memory goes to a temporary file rather than the heap. A statement's
+parse tree lives in a few arena blocks of its own, freed together, so dropping
+statements leaves no small holes behind.
+
+### Memory
+
+What a `Database` keeps between statements so as not to allocate it again is
+set by a profile, and each figure can be set on its own as well (an explicit
+setting wins whatever order it is given in):
+
+```cpp
+sql::Database db = sql::Database::configure()
+                       .memoryProfile(sql::MemoryProfile::Compact)
+                       .statementCacheSize(16)
+                       .open(path);
+```
+
+| profile | `statementCacheSize` | `scratchRetain` | `sortMemoryLimit` | `arenaBlockSize` |
+|---|---:|---:|---:|---:|
+| `Compact` | 8 | 64 KiB | 8 MiB | 1 KiB |
+| `Balanced` (default) | 32 | 2 MiB | 64 MiB | 4 KiB |
+| `Throughput` | 128 | 16 MiB | 256 MiB | 16 KiB |
+
+- `statementCacheSize`: one-off statement texts kept parsed and planned, per
+  `Database` and per transaction; 0 turns the cache off.
+- `scratchRetain`: per-run working memory a statement keeps for its next run.
+- `sortMemoryLimit`: what an `ORDER BY` holds before it spills to a temporary
+  file.
+- `arenaBlockSize`: the block size of each parsed statement's arena.
 
 The soak also re-checks, at every sample point, that each index returns exactly
 what a full scan finds. A stale index entry is the failure mode that a long run
@@ -555,11 +595,19 @@ ctest --test-dir build --output-on-failure
 Options: `SQL_BUILD_TESTS`, `SQL_BUILD_EXAMPLES`, `SQL_BUILD_TOOLS`,
 `SQL_BUILD_BENCHMARKS`, `SQL_BUILD_PYTHON`, `SQL_BUILD_CONFORMANCE` (the
 SQLite differential harness; downloads the SQLite 3.45.1 amalgamation as a
-test-only oracle), `SQL_ENABLE_ASAN`. Benchmarks and
+test-only oracle), `SQL_ENABLE_ASAN`, `SQL_LTO` (link-time optimization; off,
+since it measured slower on scans here), `SQL_PGO` (`GENERATE` or `USE`, with
+`SQL_PGO_DIR` for the profiles). Benchmarks and
 the Python binding are off by default; the binding is experimental and has not
 been through the robustness review the C++ library has. When libsql builds its
 sibling libnosql it compiles only the pieces it needs (`NOSQL_WITH_BLOB` for
 the tests and the binding; `NOSQL_WITH_MQ` and `NOSQL_WITH_REPLICATION` off).
+A profile-guided build is 5-40% faster than a plain one (see Performance);
+`tools/pgo-build.sh <builddir> [cmake args]` configures with
+`SQL_PGO=GENERATE`, trains on `bench_sql` and rebuilds the same tree with
+`SQL_PGO=USE`. Train and ship from the same build tree: the profiles are keyed
+by object paths.
+
 C++17, 64-bit,
 Linux and Windows, no third-party dependencies beyond libnosql itself. GCC 9.4
 with CMake 3.16 -- NVIDIA JetPack 5.1.2's Ubuntu 20.04 -- is the oldest
