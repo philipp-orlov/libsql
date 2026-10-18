@@ -814,6 +814,29 @@ std::size_t rowColumnCount(std::string_view in)
     return std::size_t(getVarint(in));
 }
 
+int storedNumber(std::string_view in, std::size_t i, std::int64_t& n, double& r)
+{
+    RecordCursor rec(in);
+    if (i >= rec.count)
+        return -1;
+    const char* p;
+    std::size_t size;
+    for (std::size_t k = 0; k < i; ++k)
+        rec.next(p, size);
+    const std::uint64_t c = rec.next(p, size);
+    switch (c) {
+        case 0: return 0;
+        case 7: std::memcpy(&r, p, 8); return 2;
+        case 8: n = 0; return 1;
+        case 9: n = 1; return 1;
+        default:
+            if (c > 6)
+                return -1;
+            n = readInt(p, kIntWidth[c]);
+            return 1;
+    }
+}
+
 std::vector<Value> decodeRow(std::string_view in)
 {
     RecordCursor r(in);

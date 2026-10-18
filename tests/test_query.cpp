@@ -161,6 +161,42 @@ TEST(commentsAreIgnored)
     CHECK_EQ(tst::only(r), std::string("ada"));
 }
 
+TEST(numericFiltersTestStoredRowsLikeDecodedOnes)
+{
+    tst::Scratch s("query");
+    Database db = s.open();
+    db.exec(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, a, p REAL, tag TEXT);"
+        "INSERT INTO t VALUES (1, 1, 1.5, 'x'), (2, 2.5, 2, 'y'), (3, NULL, 3, 'z'),"
+        " (4, 'abc', NULL, 'w'), (5, 7, 0.5, 'v');"
+        "CREATE INDEX t_tag ON t (tag)");
+    auto ids = [&](const std::string& where, const Params& params = {}) {
+        return tst::flatten(db.exec("SELECT id FROM t WHERE " + where + " ORDER BY id", params));
+    };
+    CHECK_EQ(ids("a < 3"), std::string("1;2"));
+    // Text sorts above every number, so the text row passes from the other side.
+    CHECK_EQ(ids("2 <= a"), std::string("2;4;5"));
+    CHECK_EQ(ids("a = 2.5"), std::string("2"));
+    CHECK_EQ(ids("a <> 1"), std::string("2;4;5"));
+    CHECK_EQ(ids("p > ?", Params{Value(1)}), std::string("1;2;3"));
+    CHECK_EQ(ids("p > ?", Params{Value("2")}), std::string("3"));
+    CHECK_EQ(ids("a >= 1 AND p < 2"), std::string("1;5"));
+    CHECK_EQ(ids("tag >= 'v' AND p < 1"), std::string("5"));
+    CHECK_EQ(ids("id = 5 AND a > 10"), std::string(""));
+    CHECK_EQ(ids("id = 5 AND a > 6"), std::string("5"));
+    CHECK_EQ(
+        tst::flatten(db.exec("SELECT u.id, v.id FROM t u LEFT JOIN t v ON v.a > 5 AND v.id = u.id"
+                             " WHERE u.id <= 2 ORDER BY u.id")),
+        std::string("1|NULL;2|NULL"));
+    // Rows written before ADD COLUMN read its default.
+    db.exec("ALTER TABLE t ADD COLUMN q INTEGER DEFAULT 9; INSERT INTO t VALUES (6, 0, 0, 'u', 1)");
+    CHECK_EQ(ids("q > 5"), std::string("1;2;3;4;5"));
+    db.exec(
+        "CREATE TABLE w (k TEXT PRIMARY KEY, n INTEGER) WITHOUT ROWID;"
+        "INSERT INTO w VALUES ('a', 1), ('b', 5), ('c', NULL)");
+    CHECK_EQ(tst::flatten(db.exec("SELECT k FROM w WHERE n > 2")), std::string("b"));
+}
+
 int main()
 {
     return tst::runAll("query");

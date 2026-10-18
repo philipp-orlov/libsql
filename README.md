@@ -384,7 +384,7 @@ see Building):
 | index equality, `ORDER BY name LIMIT 10` | 69 µs | 54 µs | 83 µs | 0.64x |
 | `count(*)` of ~200 rows through an index | 1.76 µs | 1.56 µs | 6.5 µs | 0.24x |
 | `count(*)` of the whole table | constant | constant | 0.1 ns/row | |
-| full scan with a predicate, per row | 41.5 ns | 38.4 ns | 35.8 ns | 1.07x |
+| full scan with a predicate, per row | 24.1 ns | 24.7 ns | 34.7 ns | 0.71x |
 | `GROUP BY` over a full scan, per row | 140 ns | 121 ns | 376 ns | 0.32x |
 | `ORDER BY price LIMIT 100` over a full scan, per row | 53 ns | 51 ns | 54 ns | 0.95x |
 | covering index scan returning 100,000 names, per row | 21.1 ns | 18.8 ns | 19.4 ns | 0.97x |
@@ -403,10 +403,7 @@ see Building):
 The SQLite column is from the plain build's tree, which compiles the
 amalgamation with LTO; the PGO tree compiles it with `-fprofile-use`, no
 profile and no LTO, which makes it 10-20% slower, so its own SQLite figures
-are not used. A plain build is ahead on 22 of the 27, a PGO build on 26. The
-one left, the predicate scan, rejects 199 of every 200 rows: its time goes
-into stepping the cursor and decoding and comparing one column, which both
-engines do, and libsql still spends a few nanoseconds more per row on it.
+are not used. A plain build is ahead on 23 of the 27, a PGO build on all 27.
 
 What the engine does to get there:
 
@@ -420,6 +417,11 @@ What the engine does to get there:
   decodes first only the columns its filters (or an `ORDER BY ... LIMIT`'s
   sort keys) read, and the rest only for rows that pass; columns nothing reads
   are never decoded.
+- **Filters test the stored row.** A comparison of a column with a numeric
+  constant is tested on the row's record before the row is decoded: the scan
+  walks the type codes to that column and compares the stored integer or real
+  where it lies, so a row the filter rejects is never decoded. The predicate
+  scan, which rejects 199 of every 200 rows, went from 41.5 ns to 24 ns a row.
 - **Comparisons without the interpreter.** `column <op> constant` and
   `column <op> column` compare the two values directly when affinity cannot
   change either, instead of evaluating three expression nodes.

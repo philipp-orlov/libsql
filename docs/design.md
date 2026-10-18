@@ -945,6 +945,19 @@ compare as they are. `holds` and `eval` then compare such values directly
 (`directCompare`) without evaluating the operand nodes; anything else --
 mixed classes, DATETIME operands, collations -- takes the general path.
 
+A table source goes one step further for its leading level filters of the form
+`column <op> constant` where the constant is a number and the comparison
+compares two numbers as they are (`decideRecordTests`, `armRecordTests` in
+`access.cpp`). `nextSource` tests these on the stored record before it decodes
+the row: `storedNumber` walks the type codes to the column and reads the
+integer or real in place, and a row that fails is skipped without `loadRow`.
+NULL fails, as it would. Text, blobs, DATETIME and a record shorter than the
+column (a later `ADD COLUMN`) decide nothing, and the row is decoded and
+filtered as usual. Only a leading run of the filters is tested, so a row is
+never dropped before a filter that comes first could raise an error, and
+outer-joined sources and sources with ON terms are left alone, because their
+filters decide whether a NULL row is produced.
+
 TEXT may hold NUL bytes. Functions follow SQLite on where the text "ends":
 `length`, `substr`, `hex`, `quote`, `instr` and `trim`'s subject use the full
 bytes, while `LIKE`/`GLOB` (operators and functions), `trim`'s character set

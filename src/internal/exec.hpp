@@ -148,6 +148,8 @@ enum LazyFn : std::uint8_t
 const Value& eval(const Expr& e, Ctx& c);
 /// 1 true, 0 false, -1 NULL, 2 not decided here (use the general path).
 int directCompare(const Expr& e, const Ctx& c) noexcept;
+/// A comparison directCompare settles for two numbers as they are.
+bool comparesNumbersDirectly(const Expr& e) noexcept;
 /// holds() past its fast path.
 bool holdsEval(const Expr& e, Ctx& c);
 /// `!e` is true; otherwise the expression's SQL truth (NULL is false).
@@ -308,6 +310,22 @@ struct SourceNode
     bool restPending = false;      ///< the current row still lacks restUsed
     bool holdEntry = false;        ///< skipEntries left the cursor on the next row to read
     std::string_view restRecord;   ///< its record, valid while the cursor stays
+    /// Level filters `column op constant` over numbers that nextSource tests
+    /// on the stored record, so a row they reject is never decoded
+    /// (run_select.cpp, decideRecordTests). `recordLive` holds those that
+    /// apply to this open, with their constants.
+    struct RecordTest
+    {
+        const Expr* filter = nullptr;
+        const Expr* constant = nullptr;  ///< a literal or a parameter
+        std::size_t column = 0;
+        BinaryOp op = BinaryOp::Eq;  ///< with the column on the left
+        bool real = false;
+        std::int64_t n = 0;
+        double r = 0;
+    };
+    bool recordTestsDecided = false;
+    std::vector<RecordTest> recordTests, recordLive;
     std::string indexedBy;
     bool notIndexed = false;
     // Rows
@@ -558,6 +576,12 @@ void openSource(SourceNode& s, Ctx& c);
 /// Settles whether the source can be read from an index alone (and, for a
 /// plain scan, switches it to the narrowest covering index). Idempotent.
 void decideCovering(SourceNode& s);
+/// Settles SourceNode::recordTests from the source's level filters, once,
+/// after the first open.
+void decideRecordTests(SourceNode& s, const std::vector<Expr*>& filters);
+/// After an open: arms the record tests for `filters`, the filters this open
+/// evaluates per row, in order.
+void armRecordTests(SourceNode& s, const Ctx& c, const std::vector<Expr*>& filters);
 bool nextSource(SourceNode& s, Ctx& c);
 void closeSource(SourceNode& s);
 /// Decodes the columns a two-phase row deferred (no-op when none are).

@@ -389,6 +389,10 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
         onPtr = &s.liveOn;
     }
     const std::vector<Expr*>& onTerms = *onPtr;
+    if (!s.recordTestsDecided)
+        decideRecordTests(s, p.levelFilters[d]);
+    if (!s.recordTests.empty() && onTerms.empty())
+        armRecordTests(s, c, *levelPtr);
     // OFFSET over a lone source whose window decides every row: pass over
     // the offset in the store instead of producing rows to drop.
     if (p.offsetLeft && *p.offsetLeft > 0 && p.sources.size() == 1 && levelPtr->empty() && onTerms.empty() &&
