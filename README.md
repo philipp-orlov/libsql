@@ -368,40 +368,42 @@ see Building):
 
 | workload | libsql | libsql PGO | SQLite | PGO / SQLite |
 |---|---:|---:|---:|---:|
-| `INSERT`, 2 indexes, prepared, batches of 1,000 | 3.96 µs | 3.76 µs | 4.85 µs | 0.77x |
-| the same, one transaction per row | 9.1 µs | 8.7 µs | 11.9 µs | 0.73x |
-| `INSERT` prepared and run once each | 9.2 µs | 8.9 µs | 14.2 µs | 0.62x |
-| `SELECT ... WHERE id = ?`, prepared, own transaction | 1.73 µs | 1.58 µs | 1.81 µs | 0.87x |
-| the same inside one read transaction | 0.83 µs | 0.76 µs | 0.74 µs | 1.02x |
-| `SELECT ... WHERE id = ?` prepared and run once each | 1.81 µs | 1.63 µs | 4.10 µs | 0.40x |
-| `SELECT id FROM item WHERE name = ?` | 1.85 µs | 1.65 µs | 1.94 µs | 0.85x |
-| index equality returning ~200 rows | 74 µs | 67 µs | 72 µs | 0.93x |
-| rowid range of 100 rows | 12.1 µs | 9.5 µs | 9.0 µs | 1.05x |
-| index equality, `ORDER BY name LIMIT 10` | 81 µs | 77 µs | 80 µs | 0.96x |
-| `count(*)` of ~200 rows through an index | 1.88 µs | 1.65 µs | 6.5 µs | 0.25x |
+| `INSERT`, 2 indexes, prepared, batches of 1,000 | 4.36 µs | 3.93 µs | 5.27 µs | 0.75x |
+| the same, one transaction per row | 9.4 µs | 8.9 µs | 12.5 µs | 0.72x |
+| `INSERT` prepared and run once each | 9.6 µs | 9.1 µs | 14.7 µs | 0.62x |
+| `SELECT ... WHERE id = ?`, prepared, own transaction | 1.59 µs | 1.42 µs | 1.98 µs | 0.72x |
+| the same inside one read transaction | 0.66 µs | 0.66 µs | 0.79 µs | 0.83x |
+| `SELECT ... WHERE id = ?` prepared and run once each | 1.97 µs | 1.38 µs | 4.58 µs | 0.30x |
+| `SELECT id FROM item WHERE name = ?` | 2.04 µs | 1.69 µs | 2.23 µs | 0.76x |
+| index equality returning ~200 rows | 67 µs | 48 µs | 73 µs | 0.65x |
+| rowid range of 100 rows | 13.7 µs | 9.3 µs | 8.3 µs | 1.12x |
+| index equality, `ORDER BY name LIMIT 10` | 76 µs | 66 µs | 85 µs | 0.78x |
+| `count(*)` of ~200 rows through an index | 1.77 µs | 1.60 µs | 6.3 µs | 0.25x |
 | `count(*)` of the whole table | constant | constant | 0.1 ns/row | |
-| full scan with a predicate, per row | 40 ns | 35 ns | 35 ns | 1.00x |
-| `GROUP BY` over a full scan, per row | 145 ns | 129 ns | 358 ns | 0.36x |
-| `ORDER BY price LIMIT 100` over a full scan, per row | 54 ns | 49 ns | 52 ns | 0.93x |
-| covering index scan returning 100,000 names, per row | 32 ns | 25 ns | 21 ns | 1.17x |
-| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 1.9 ns | 1.9 ns | 1.8 ns | 1.06x |
-| full sort of 200,000 rows, per row | 590 ns | 564 ns | 685 ns | 0.82x |
-| join through an index, ~400 output rows | 429 µs | 420 µs | 364 µs | 1.12x |
-| join with `GROUP BY` over 1,000 items | 1.22 ms | 1.01 ms | 1.26 ms | 0.80x |
-| `UPDATE ... WHERE id = ?`, batches of 1,000 | 2.9 µs | 2.7 µs | 3.8 µs | 0.71x |
-| `UPDATE` of an indexed column, batches of 1,000 | 6.2 µs | 6.0 µs | 9.3 µs | 0.64x |
-| `UPDATE ... WHERE id = ?`, one transaction each | 7.5 µs | 6.9 µs | 7.2 µs | 0.96x |
-| `DELETE` + re-`INSERT` by key, batches of 1,000 | 13.1 µs | 12.7 µs | 20.6 µs | 0.62x |
-| `prepare` and discard a `SELECT` | 3.1 µs | 1.8 µs | 2.5 µs | 0.73x |
-| `prepare` and discard a join | 4.0 µs | 2.5 µs | 5.1 µs | 0.48x |
-| a trivial statement run once | 1.50 µs | 1.25 µs | 3.15 µs | 0.40x |
+| full scan with a predicate, per row | 45 ns | 36 ns | 32 ns | 1.12x |
+| `GROUP BY` over a full scan, per row | 152 ns | 133 ns | 380 ns | 0.35x |
+| `ORDER BY price LIMIT 100` over a full scan, per row | 63 ns | 50 ns | 51 ns | 0.98x |
+| covering index scan returning 100,000 names, per row | 24.8 ns | 20.9 ns | 18.9 ns | 1.11x |
+| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 2.1 ns | 1.8 ns | 1.9 ns | 0.95x |
+| full sort of 200,000 rows, per row | 629 ns | 604 ns | 689 ns | 0.88x |
+| join through an index, ~400 output rows | 277 µs | 252 µs | 378 µs | 0.67x |
+| join with `GROUP BY` over 1,000 items | 1.25 ms | 0.91 ms | 1.33 ms | 0.69x |
+| `UPDATE ... WHERE id = ?`, batches of 1,000 | 2.9 µs | 2.6 µs | 4.8 µs | 0.55x |
+| `UPDATE` of an indexed column, batches of 1,000 | 6.9 µs | 6.2 µs | 11.6 µs | 0.54x |
+| `UPDATE ... WHERE id = ?`, one transaction each | 7.5 µs | 7.0 µs | 8.6 µs | 0.82x |
+| `DELETE` + re-`INSERT` by key, batches of 1,000 | 14.1 µs | 14.5 µs | 26.9 µs | 0.54x |
+| `prepare` and discard a `SELECT` | 2.9 µs | 2.0 µs | 2.5 µs | 0.77x |
+| `prepare` and discard a join | 3.9 µs | 2.7 µs | 5.2 µs | 0.51x |
+| a trivial statement run once | 1.48 µs | 1.24 µs | 3.35 µs | 0.37x |
 
-The SQLite column is from the PGO run; the plain run's differs by noise. A
-plain build is ahead on 16 of the 27, a PGO build on 22. Of the rest, the
-join and the covering scan are the ones that still show: a probe through an
-index costs a B-tree descent in libnosql's copy-on-write pages where SQLite
-finds the row in its page cache, and a scan of index entries decodes each
-key's components rather than reading a column in place.
+The SQLite column is from the plain build's tree, which compiles the
+amalgamation with LTO; the PGO tree compiles it with `-fprofile-use`, no
+profile and no LTO, which makes it 10-20% slower, so its own SQLite figures
+are not used. A plain build is ahead on 21 of the 27, a PGO build on 24. The
+three left -- the rowid range, the predicate scan and the covering scan -- are
+per-row costs: each row is decoded into `Value`s and passed through the sink
+chain to the callback, where SQLite's VDBE reads a column in place in the
+page.
 
 What the engine does to get there:
 
@@ -437,6 +439,12 @@ What the engine does to get there:
 - **Nearby seeks stay in the leaf.** A source keeps its cursor between opens,
   and a seek that lands in the cursor's current leaf skips the descent from
   the root.
+- **Page searches guess first.** A descent knows the separators either side
+  of the page it enters, so it guesses the target's slot from them and
+  gallops out from the guess. Rowid keys and most index keys land within one
+  or two probes, where a binary search takes six or seven dependent cache
+  misses; keys compare eight bytes at a time, inline. A join through an index
+  went from 420 µs to 252 µs.
 - **Cheap commits.** A small commit records the pages it frees, and the roots
   of up to six recently written tables, in the meta page it writes anyway,
   so it rewrites neither a free-list page nor the catalog: an autocommit
@@ -446,8 +454,9 @@ What the engine does to get there:
   parsed batches means `exec` of a repeated text plans once.
 - **No copies on the way out.** Result rows hold up to four values inline and
   wider rows share a few chunks of their `Result`; an output that is a plain
-  column takes its value from the row by swapping buffers instead of copying;
-  `Statement::each` skips building a `Result` altogether.
+  column takes its value from the row by swapping buffers instead of copying,
+  and outputs that are a consecutive run of one table's columns go out as the
+  row itself; `Statement::each` skips building a `Result` altogether.
 
 ## Long runs
 
