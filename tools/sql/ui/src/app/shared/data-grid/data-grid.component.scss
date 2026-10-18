@@ -11,7 +11,9 @@
 .grid-group-panel {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 8px;
   min-height: 48px;
   padding: 0 12px;
   border-bottom: 1px solid var(--mat-sys-outline-variant);
@@ -25,32 +27,125 @@
   }
 }
 
+// The look of a Material 3 input chip.
 .grid-group-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--mat-sys-outline-variant);
+  border-radius: var(--mat-sys-corner-small);
+  color: var(--mat-sys-on-surface-variant);
+  font: var(--mat-sys-label-large);
   cursor: grab;
   user-select: none;
   touch-action: none;
+
+  &:hover {
+    background: color-mix(in srgb, var(--mat-sys-on-surface-variant) 8%, transparent);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--mat-sys-primary);
+  }
+
+  mat-icon {
+    width: 18px;
+    height: 18px;
+    font-size: 18px;
+  }
+
+  .grid-chip-icon {
+    color: var(--mat-sys-primary);
+  }
+}
+
+.grid-chip-remove,
+.grid-icon-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+
+  &:hover {
+    background: color-mix(in srgb, currentColor 8%, transparent);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--mat-sys-primary);
+  }
+}
+
+.grid-chip-remove {
+  width: 24px;
+  height: 24px;
+}
+
+.grid-icon-button {
+  width: 32px;
+  height: 32px;
+
+  mat-icon {
+    width: 20px;
+    height: 20px;
+    font-size: 20px;
+  }
 }
 
 .grid-scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  // Scrolling lays out and repaints nothing outside the rows.
+  contain: content;
 }
 
+// Fixed layout: the columns keep their widths as rows scroll by, and the browser lays out no cell to find them.
 .grid-table {
-  min-width: 100%;
-  width: max-content;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+  font: var(--mat-sys-body-medium);
 
   th,
   td {
-    max-width: 360px;
+    box-sizing: border-box;
     padding: 0 12px;
+    overflow: hidden;
+    border-bottom: 1px solid var(--mat-sys-outline-variant);
+    text-align: left;
     white-space: nowrap;
   }
 
-  th {
-    background: var(--mat-table-background-color, var(--mat-sys-surface));
+  td {
+    height: var(--grid-row-height);
   }
+}
+
+thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+
+  th {
+    height: 48px;
+    background: var(--mat-sys-surface);
+    font: var(--mat-sys-title-small);
+  }
+}
+
+.grid-spacer td {
+  padding: 0;
+  border: 0;
 }
 
 .grid-header {
@@ -99,20 +194,6 @@
   font: var(--mat-sys-label-small);
 }
 
-.grid-menu-button,
-.grid-group-toggle {
-  flex: none;
-  width: 32px;
-  height: 32px;
-  padding: 4px;
-
-  mat-icon {
-    font-size: 20px;
-    width: 20px;
-    height: 20px;
-  }
-}
-
 .grid-menu-button {
   margin-left: auto;
   opacity: 0;
@@ -147,16 +228,11 @@
 }
 
 .grid-indent {
-  width: 32px;
-  min-width: 32px;
-  max-width: 32px;
   padding: 0 !important;
 }
 
 .rowno {
-  width: 48px;
-  min-width: 48px;
-  text-align: right;
+  text-align: right !important;
   color: var(--mat-sys-outline);
 }
 
@@ -229,6 +305,11 @@
 .grid-empty td {
   padding: 16px;
   color: var(--mat-sys-outline);
+}
+
+.grid-menu-divider {
+  margin: 8px 0;
+  border-top: 1px solid var(--mat-sys-outline-variant);
 }
 
 .grid-pager {

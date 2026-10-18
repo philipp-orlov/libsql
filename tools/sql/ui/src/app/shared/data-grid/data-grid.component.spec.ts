@@ -1,5 +1,6 @@
 import { Component, provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { MatIconModule } from '@angular/material/icon';
 
 import { settle } from '../../testing/test-helpers';
 import { DataGridComponent } from './data-grid.component';
@@ -31,6 +32,7 @@ const PEOPLE: Person[] = [
       [total]="data().length"
       [filterable]="true"
       [rowNumbers]="true"
+      [pageable]="pageable()"
       selectable="multiple"
       [(sort)]="sort"
       [(group)]="group"
@@ -52,12 +54,62 @@ class HostComponent {
     { field: 'score', title: 'Score' },
   ]);
   readonly mode = signal<'client' | 'server'>('client');
+  readonly pageable = signal(true);
   readonly custom = signal(false);
   readonly sort = signal<SortDescriptor[]>([]);
   readonly group = signal<GroupDescriptor[]>([]);
   readonly pageSize = signal(100);
   readonly selection = signal<ReadonlySet<number>>(new Set());
   readonly states: GridState[] = [];
+}
+
+interface Contact {
+  id: number;
+  name: string;
+  avatar: string;
+  online: boolean;
+}
+
+const avatar = (hue: number) =>
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><circle cx="16" cy="16" r="16" fill="hsl(${hue},60%,60%)"/></svg>`,
+  );
+
+/** Many rows, with an image and an icon in cells. */
+@Component({
+  imports: [DataGridComponent, GridCellDirective, MatIconModule],
+  template: `
+    <app-data-grid style="display: flex; width: 700px; height: 400px" [data]="contacts" [columns]="columns" [rowHeight]="48">
+      <ng-template gridCell let-value let-row="row" let-column="column" let-text="text">
+        @switch (column.field) {
+          @case ('name') {
+            <img class="avatar" [src]="row.avatar" alt="" width="32" height="32" decoding="async" />
+            {{ text }}
+          }
+          @case ('online') {
+            <mat-icon class="presence">{{ value ? 'check_circle' : 'do_not_disturb_on' }}</mat-icon>
+          }
+          @default {
+            {{ text }}
+          }
+        }
+      </ng-template>
+    </app-data-grid>
+  `,
+})
+class ContactsHostComponent {
+  readonly contacts: Contact[] = Array.from({ length: 10000 }, (_, i) => ({
+    id: i + 1,
+    name: `Contact ${i + 1}`,
+    avatar: avatar((i * 37) % 360),
+    online: i % 3 === 0,
+  }));
+  readonly columns: GridColumn<Contact>[] = [
+    { field: 'id', title: 'ID', width: 80 },
+    { field: 'name', title: 'Name', width: 240 },
+    { field: 'online', title: 'Online', width: 96, text: value => (value ? 'online' : 'offline') },
+  ];
 }
 
 describe('DataGridComponent', () => {
@@ -81,7 +133,7 @@ describe('DataGridComponent', () => {
   const column = (el: HTMLElement, title: string) => {
     const at = titles(el).indexOf(title);
     return Array.from(el.querySelectorAll('tr.grid-row')).map(row =>
-      Array.from(row.querySelectorAll('td:not(.grid-indent):not(.rowno)'))[at].textContent!.trim(),
+      Array.from(row.querySelectorAll('td.grid-cell'))[at].textContent!.trim(),
     );
   };
   const groupRows = (el: HTMLElement) =>
@@ -232,7 +284,7 @@ describe('DataGridComponent', () => {
           { field: 'score', dir: 'asc' },
         ]),
       );
-      el.querySelector<HTMLElement>('.grid-group-chip [matChipRemove]')!.click();
+      el.querySelector<HTMLElement>('.grid-group-chip .grid-chip-remove')!.click();
       await settle();
       expect(host.group()).toEqual([{ field: 'score', dir: 'asc' }]);
       const rows = el.querySelector('.grid-scroll')!.getBoundingClientRect();
@@ -366,5 +418,64 @@ describe('DataGridComponent', () => {
     });
     // Runs of equal values, as the page came.
     expect(groupRows(el)).toEqual(['Team: red (1)', 'Team: blue (1)', 'Team: red (1)', 'Team: blue (1)', 'Team: green (1)']);
+  });
+
+  it('fits a column to its content', async () => {
+    const { el } = await create();
+    header(el, 'Name')
+      .querySelector<HTMLElement>('.grid-resize')!
+      .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await settle();
+    const width = header(el, 'Name').getBoundingClientRect().width;
+    expect(width).toBeLessThan(160);
+    expect(width).toBeGreaterThan(48);
+  });
+
+  describe('virtual scrolling', () => {
+    async function createContacts() {
+      const fixture = TestBed.createComponent(ContactsHostComponent);
+      document.body.appendChild(fixture.nativeElement);
+      await fixture.whenStable();
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      await settle();
+      return fixture.nativeElement as HTMLElement;
+    }
+
+    const shown = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLElement>('tr.grid-row'));
+
+    it('renders only the rows in view, at the row height', async () => {
+      const el = await createContacts();
+      const rows = shown(el);
+      expect(rows.length).toBeGreaterThan(5);
+      expect(rows.length).toBeLessThan(40);
+      expect(rows.every(row => row.offsetHeight === 48)).toBeTrue();
+      const scroller = el.querySelector<HTMLElement>('.grid-scroll')!;
+      expect(scroller.scrollHeight).toBeGreaterThan(10000 * 48);
+    });
+
+    it('follows the scroll', async () => {
+      const el = await createContacts();
+      const scroller = el.querySelector<HTMLElement>('.grid-scroll')!;
+      scroller.scrollTop = 5000 * 48;
+      scroller.dispatchEvent(new Event('scroll'));
+      await settle();
+      const ids = shown(el).map(row => Number(row.querySelector('td.grid-cell')!.textContent));
+      expect(ids).toContain(5001);
+      expect(ids.length).toBeLessThan(40);
+      // What is shown lies where the scroll put it.
+      const row = shown(el).find(r => r.querySelector('td.grid-cell')!.textContent!.trim() === '5003')!;
+      const offset = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      expect(offset).toBeGreaterThan(0);
+      expect(offset).toBeLessThan(400);
+    });
+
+    it('shows images and icons in cells', async () => {
+      const el = await createContacts();
+      const first = shown(el)[0];
+      expect(first.querySelector<HTMLImageElement>('img.avatar')!.src).toContain('data:image/svg+xml');
+      expect(first.querySelector('.presence')!.textContent).toBe('check_circle');
+      expect(shown(el)[1].querySelector('.presence')!.textContent).toBe('do_not_disturb_on');
+      expect(el.querySelectorAll('img.avatar').length).toBe(shown(el).length);
+    });
   });
 });

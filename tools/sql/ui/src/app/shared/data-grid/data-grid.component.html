@@ -1,182 +1,205 @@
 @if (groupable()) {
-  <div class="grid-group-panel" [class.grid-drop-active]="drag()?.target === 'group' && drag()?.valid">
-    @if (validGroup().length === 0) {
+  <div
+    class="grid-group-panel"
+    role="toolbar"
+    aria-label="Grouped by"
+    [class.grid-drop-active]="drag()?.target === 'group' && drag()?.valid"
+  >
+    @for (g of validGroup(); track g.field) {
+      <div
+        class="grid-group-chip"
+        role="button"
+        tabindex="0"
+        [attr.data-field]="g.field"
+        [attr.aria-label]="'Grouped by ' + titleOf(g.field) + ', ' + (g.dir === 'asc' ? 'ascending' : 'descending')"
+        (pointerdown)="chipPointerDown($event, g.field)"
+        (click)="chipClick($event, g.field)"
+        (keydown.enter)="chipClick($event, g.field)"
+      >
+        <mat-icon class="grid-chip-icon">{{ g.dir === 'asc' ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
+        <span>{{ titleOf(g.field) }}</span>
+        <button
+          type="button"
+          class="grid-chip-remove"
+          (click)="$event.stopPropagation(); removeGroup(g.field)"
+          (pointerdown)="$event.stopPropagation()"
+          [attr.aria-label]="'Ungroup ' + titleOf(g.field)"
+        >
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+    } @empty {
       <span class="grid-group-hint">Drag a column header and drop it here to group by that column</span>
-    } @else {
-      <mat-chip-set aria-label="Grouped by">
-        @for (g of validGroup(); track g.field) {
-          <mat-chip
-            class="grid-group-chip"
-            [attr.data-field]="g.field"
-            [disableRipple]="true"
-            tabindex="0"
-            [attr.aria-label]="'Grouped by ' + titleOf(g.field) + ', ' + (g.dir === 'asc' ? 'ascending' : 'descending')"
-            (pointerdown)="chipPointerDown($event, g.field)"
-            (click)="chipClick($event, g.field)"
-            (keydown.enter)="chipClick($event, g.field)"
-            (removed)="removeGroup(g.field)"
-          >
-            <mat-icon matChipAvatar>{{ g.dir === 'asc' ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
-            {{ titleOf(g.field) }}
-            <button
-              matChipRemove
-              (click)="$event.stopPropagation()"
-              (pointerdown)="$event.stopPropagation()"
-              [attr.aria-label]="'Ungroup ' + titleOf(g.field)"
-            >
-              <mat-icon>cancel</mat-icon>
-            </button>
-          </mat-chip>
-        }
-      </mat-chip-set>
     }
   </div>
 }
 
-<div class="grid-scroll">
-  <table mat-table class="grid-table" [dataSource]="viewRows()" [trackBy]="trackRow">
-    @for (level of groupLevels(); track level) {
-      <ng-container [matColumnDef]="'__g' + level">
-        <th mat-header-cell *matHeaderCellDef class="grid-indent"></th>
-        <td mat-cell *matCellDef="let r" class="grid-indent"></td>
-      </ng-container>
-      <ng-container [matColumnDef]="'__fg' + level">
-        <th mat-header-cell *matHeaderCellDef class="grid-indent"></th>
-      </ng-container>
-    }
+<div class="grid-scroll" #scroller>
+  <table class="grid-table" [style.width]="'max(100%, ' + tableWidth() + 'px)'" [style.--grid-row-height]="rowHeight() + 'px'">
+    <colgroup>
+      @for (level of groupLevels(); track level) {
+        <col [style.width.px]="indentWidth" />
+      }
+      @if (rowNumbers()) {
+        <col [style.width.px]="rowNumberWidth" />
+      }
+      @for (column of visibleColumns(); track column.field) {
+        <col [style.width.px]="widthOf(column)" />
+      }
+      <col />
+    </colgroup>
 
-    <ng-container matColumnDef="__rowno">
-      <th mat-header-cell *matHeaderCellDef class="rowno"></th>
-      <td mat-cell *matCellDef="let r" class="rowno" (click)="selectRow(r.index, $event)">{{ r.position + 1 }}</td>
-    </ng-container>
-    <ng-container matColumnDef="__frowno">
-      <th mat-header-cell *matHeaderCellDef class="rowno"></th>
-    </ng-container>
-
-    <ng-container matColumnDef="__group">
-      <td mat-cell *matCellDef="let g" class="grid-group-cell" [attr.colspan]="headerIds().length">
-        <div class="grid-group-line" [style.padding-left.px]="g.level * indentWidth">
-          <button
-            mat-icon-button
-            class="grid-group-toggle"
-            (click)="toggleCollapsed(g.key)"
-            [attr.aria-expanded]="!g.collapsed"
-            [attr.aria-label]="(g.collapsed ? 'Expand ' : 'Collapse ') + g.title + ' ' + g.text"
+    <thead>
+      <tr class="grid-header-row">
+        @for (level of groupLevels(); track level) {
+          <th class="grid-indent"></th>
+        }
+        @if (rowNumbers()) {
+          <th class="rowno"></th>
+        }
+        @for (column of visibleColumns(); track column.field) {
+          <th
+            #header
+            class="grid-header"
+            [class.sortable]="canSort(column)"
+            [class.grid-draggable]="canReorder(column) || canGroup(column)"
+            [attr.data-field]="column.field"
+            [attr.aria-sort]="ariaSort(column.field)"
+            [attr.tabindex]="canSort(column) ? 0 : null"
+            (pointerdown)="headerPointerDown($event, column)"
+            (click)="headerClick($event, column)"
+            (keydown.enter)="headerClick($event, column)"
           >
-            <mat-icon>{{ g.collapsed ? 'chevron_right' : 'expand_more' }}</mat-icon>
-          </button>
-          @if (groupHeaderTemplate(); as custom) {
-            <ng-container *ngTemplateOutlet="custom.template; context: { $implicit: g }" />
-          } @else {
-            <span class="grid-group-title">{{ g.title }}:</span>
-            <span class="grid-group-value">{{ g.text }}</span>
-            <span class="grid-group-count">({{ g.count }})</span>
-          }
-        </div>
-      </td>
-    </ng-container>
-
-    @for (column of columns(); track column.field) {
-      <ng-container [matColumnDef]="'c-' + column.field">
-        <th
-          mat-header-cell
-          *matHeaderCellDef
-          #header
-          class="grid-header"
-          [class.sortable]="canSort(column)"
-          [class.grid-draggable]="canReorder(column) || canGroup(column)"
-          [attr.data-field]="column.field"
-          [attr.aria-sort]="ariaSort(column.field)"
-          [attr.tabindex]="canSort(column) ? 0 : null"
-          [style.width.px]="widthOf(column.field)"
-          [style.min-width.px]="widthOf(column.field)"
-          [style.max-width.px]="widthOf(column.field)"
-          (pointerdown)="headerPointerDown($event, column)"
-          (click)="headerClick($event, column)"
-          (keydown.enter)="headerClick($event, column)"
-        >
-          <div class="grid-header-inner">
-            <span class="title">{{ titleOf(column.field) }}</span>
-            @if (sortOf(column.field); as s) {
-              <mat-icon class="sort">{{ s.dir === 'asc' ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
-              @if (s.order > 0) {
-                <span class="sort-order">{{ s.order }}</span>
+            <div class="grid-header-inner">
+              <span class="title">{{ titleOf(column.field) }}</span>
+              @if (sortOf(column.field); as s) {
+                <mat-icon class="sort">{{ s.dir === 'asc' ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
+                @if (s.order > 0) {
+                  <span class="sort-order">{{ s.order }}</span>
+                }
               }
-            }
-            @if (columnMenu()) {
-              <button
-                mat-icon-button
-                class="grid-menu-button"
-                [matMenuTriggerFor]="menu"
-                [matMenuTriggerData]="{ $implicit: column }"
+              @if (columnMenu()) {
+                <button
+                  type="button"
+                  class="grid-icon-button grid-menu-button"
+                  [matMenuTriggerFor]="menu"
+                  [matMenuTriggerData]="{ $implicit: column }"
+                  (click)="$event.stopPropagation()"
+                  (pointerdown)="$event.stopPropagation()"
+                  [attr.aria-label]="'Column menu of ' + titleOf(column.field)"
+                >
+                  <mat-icon>more_vert</mat-icon>
+                </button>
+              }
+            </div>
+            @if (canResize(column)) {
+              <span
+                class="grid-resize"
+                (pointerdown)="resizeStart($event, column.field, header)"
                 (click)="$event.stopPropagation()"
-                (pointerdown)="$event.stopPropagation()"
-                [attr.aria-label]="'Column menu of ' + titleOf(column.field)"
-              >
-                <mat-icon>more_vert</mat-icon>
-              </button>
+                (dblclick)="autoSize(column.field)"
+              ></span>
             }
-          </div>
-          @if (canResize(column)) {
-            <span
-              class="grid-resize"
-              (pointerdown)="resizeStart($event, column.field, header)"
-              (click)="$event.stopPropagation()"
-              (dblclick)="autoSize(column.field)"
-            ></span>
+          </th>
+        }
+        <th class="grid-filler"></th>
+      </tr>
+      @if (filterable()) {
+        <tr class="grid-filter-row">
+          @for (level of groupLevels(); track level) {
+            <th class="grid-indent"></th>
           }
-        </th>
-        <td
-          mat-cell
-          *matCellDef="let r"
-          [class.active]="isActive(r.index, column.field)"
-          [style.width.px]="widthOf(column.field)"
-          [style.min-width.px]="widthOf(column.field)"
-          [style.max-width.px]="widthOf(column.field)"
-          (click)="cellClicked($event, r, column)"
-          (dblclick)="cellDblClicked($event, r, column)"
-        >
-          @let value = valueOf(column, r.row);
-          @if (cellTemplate(); as custom) {
-            <ng-container
-              *ngTemplateOutlet="
-                custom.template;
-                context: { $implicit: value, row: r.row, index: r.index, column: column, text: textOf(column, value) }
-              "
-            />
-          } @else {
-            <span class="value" [title]="textOf(column, value)">{{ textOf(column, value) }}</span>
+          @if (rowNumbers()) {
+            <th class="rowno"></th>
           }
-        </td>
-      </ng-container>
-      <ng-container [matColumnDef]="'f-' + column.field">
-        <th mat-header-cell *matHeaderCellDef class="grid-filter-cell">
-          @if (canFilter(column)) {
-            <input
-              #box
-              class="filter"
-              placeholder="Filter"
-              [attr.aria-label]="'Filter ' + titleOf(column.field)"
-              [value]="filter()[column.field] ?? ''"
-              (input)="setFilter(column.field, box.value)"
-            />
+          @for (column of visibleColumns(); track column.field) {
+            <th class="grid-filter-cell">
+              @if (canFilter(column)) {
+                <input
+                  #box
+                  class="filter"
+                  placeholder="Filter"
+                  [attr.aria-label]="'Filter ' + titleOf(column.field)"
+                  [value]="filter()[column.field] ?? ''"
+                  (input)="setFilter(column.field, box.value)"
+                />
+              }
+            </th>
           }
-        </th>
-      </ng-container>
-    }
+          <th class="grid-filler"></th>
+        </tr>
+      }
+    </thead>
 
-    <tr mat-header-row *matHeaderRowDef="headerIds(); sticky: true" class="grid-header-row"></tr>
-    @if (filterable()) {
-      <tr mat-header-row *matHeaderRowDef="filterIds(); sticky: true" class="grid-filter-row"></tr>
-    }
-    <tr mat-row *matRowDef="let g; columns: groupIds; when: isGroupRow" class="grid-group-row"></tr>
-    <tr mat-row *matRowDef="let r; columns: headerIds()" class="grid-row" [class.selected]="selection().has(r.index)"></tr>
-    <tr class="mat-mdc-row grid-empty" *matNoDataRow>
-      <td class="mat-mdc-cell" [attr.colspan]="headerIds().length">{{ emptyText() }}</td>
-    </tr>
+    <tbody (click)="bodyClick($event)" (dblclick)="bodyDblClick($event)">
+      @if (padTop() > 0) {
+        <tr class="grid-spacer" aria-hidden="true">
+          <td [attr.colspan]="colCount()" [style.height.px]="padTop()"></td>
+        </tr>
+      }
+      @for (r of rendered(); track r.key; let at = $index) {
+        @if (r.kind === 'group') {
+          <tr class="grid-group-row" [attr.data-at]="at">
+            <td class="grid-group-cell" [attr.colspan]="colCount()">
+              <div class="grid-group-line" [style.padding-left.px]="r.level * indentWidth">
+                <button
+                  type="button"
+                  class="grid-icon-button grid-group-toggle"
+                  (click)="toggleCollapsed(r.key)"
+                  [attr.aria-expanded]="!r.collapsed"
+                  [attr.aria-label]="(r.collapsed ? 'Expand ' : 'Collapse ') + r.title + ' ' + r.text"
+                >
+                  <mat-icon>{{ r.collapsed ? 'chevron_right' : 'expand_more' }}</mat-icon>
+                </button>
+                @if (groupHeaderTemplate(); as custom) {
+                  <ng-container *ngTemplateOutlet="custom.template; context: { $implicit: r }" />
+                } @else {
+                  <span class="grid-group-title">{{ r.title }}:</span>
+                  <span class="grid-group-value">{{ r.text }}</span>
+                  <span class="grid-group-count">({{ r.count }})</span>
+                }
+              </div>
+            </td>
+          </tr>
+        } @else {
+          <tr class="grid-row" [attr.data-at]="at" [class.selected]="selection().has(r.index)">
+            @for (level of groupLevels(); track level) {
+              <td class="grid-indent"></td>
+            }
+            @if (rowNumbers()) {
+              <td class="rowno">{{ r.position + 1 }}</td>
+            }
+            @for (column of visibleColumns(); track column.field; let c = $index) {
+              <td class="grid-cell" [attr.data-field]="column.field" [class.active]="isActive(r.index, column.field)">
+                @if (cellTemplate(); as custom) {
+                  <ng-container
+                    *ngTemplateOutlet="
+                      custom.template;
+                      context: { $implicit: r.cells[c].value, row: r.row, index: r.index, column: column, text: r.cells[c].text }
+                    "
+                  />
+                } @else {
+                  <span class="value" [title]="r.cells[c].text">{{ r.cells[c].text }}</span>
+                }
+              </td>
+            }
+            <td class="grid-filler"></td>
+          </tr>
+        }
+      }
+      @if (viewRows().length === 0) {
+        <tr class="grid-empty">
+          <td [attr.colspan]="colCount()">{{ emptyText() }}</td>
+        </tr>
+      }
+      @if (padBottom() > 0) {
+        <tr class="grid-spacer" aria-hidden="true">
+          <td [attr.colspan]="colCount()" [style.height.px]="padBottom()"></td>
+        </tr>
+      }
+    </tbody>
   </table>
 </div>
-
 @if (pageable()) {
   <mat-paginator
     class="grid-pager"
@@ -201,7 +224,7 @@
       @if (sortOf(column.field) && !isGrouped(column.field)) {
         <button mat-menu-item class="grid-sort-clear" (click)="clearSort(column.field)"><mat-icon>clear</mat-icon>Clear sorting</button>
       }
-      <mat-divider />
+      <div class="grid-menu-divider" role="separator"></div>
     }
     @if (canGroup(column)) {
       @if (isGrouped(column.field)) {
@@ -212,7 +235,7 @@
         </button>
       }
     }
-    @if (widthOf(column.field) !== null) {
+    @if (canResize(column)) {
       <button mat-menu-item class="grid-autosize" (click)="autoSize(column.field)"><mat-icon>fit_width</mat-icon>Fit to content</button>
     }
     <button mat-menu-item class="grid-columns" [matMenuTriggerFor]="columnsMenu"><mat-icon>view_column</mat-icon>Columns</button>
