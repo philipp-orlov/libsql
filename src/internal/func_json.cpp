@@ -599,7 +599,7 @@ std::string toJson(const Node& n)
     return out;
 }
 
-void jsonResult(Value& out, const std::string& text)
+void jsonResult(Value& out, std::string_view text)
 {
     out.setText(text);
     out.setSubtype(kJsonSubtype);
@@ -861,7 +861,7 @@ std::string textValue(const Value& value, std::string& scratch)
 Node parseJsonArg(FuncContext& ctx, const Value& value)
 {
     if (value.type() == Type::Blob) {
-        const Blob& blob = value.blob();
+        const BlobView blob = value.blob();
         const std::string_view bytes(reinterpret_cast<const char*>(blob.data()), blob.size());
         return JsonbParser(ctx, bytes).parse();
     }
@@ -903,7 +903,7 @@ std::string valueSignature(const Value& value)
             out += value.text();
             break;
         case Type::Blob: {
-            const Blob& blob = value.blob();
+            const BlobView blob = value.blob();
             out.append(reinterpret_cast<const char*>(blob.data()), blob.size());
             break;
         }
@@ -985,7 +985,7 @@ Node valueToJson(FuncContext& ctx, const Value& value)
             }
             return n;
         case Type::Blob: {
-            const Blob& blob = value.blob();
+            const BlobView blob = value.blob();
             const std::string_view bytes(reinterpret_cast<const char*>(blob.data()), blob.size());
             if (isValidJsonb(bytes))
                 return JsonbParser(ctx, bytes).parse();
@@ -1345,7 +1345,7 @@ void fnJsonValid(FuncContext& ctx, int argc, Args argv, Value& out)
         ctx.error("FLAGS parameter to json_valid() must be between 1 and 15");
     bool valid = false;
     if (argv[0]->type() == Type::Blob) {
-        const Blob& blob = argv[0]->blob();
+        const BlobView blob = argv[0]->blob();
         const std::string_view bytes(reinterpret_cast<const char*>(blob.data()), blob.size());
         valid = ((flags & 0x04) != 0 && isValidJsonb(bytes)) ||
                 ((flags & 0x08) != 0 && JsonbParser(ctx, bytes).valid());
@@ -1375,7 +1375,7 @@ void fnJsonValid(FuncContext& ctx, int argc, Args argv, Value& out)
 void fnJsonErrorPosition(FuncContext& ctx, int, Args argv, Value& out)
 {
     if (argv[0]->type() == Type::Blob) {
-        const Blob& blob = argv[0]->blob();
+        const BlobView blob = argv[0]->blob();
         const std::string_view bytes(reinterpret_cast<const char*>(blob.data()), blob.size());
         out.setInteger(JsonbParser(ctx, bytes).valid() ? 0 : 1);
         return;

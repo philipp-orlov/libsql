@@ -134,7 +134,7 @@ void putDatetime(Out& o, Datetime when)
     o.put('"');
 }
 
-void putBase64(Out& o, const Blob& bytes)
+void putBase64(Out& o, BlobView bytes)
 {
     static const char kAlphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

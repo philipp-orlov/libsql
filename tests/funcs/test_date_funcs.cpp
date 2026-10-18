@@ -94,7 +94,7 @@ std::string comparableValue(const Value& v)
             sql::internal::sqlitePrintf(ctx, format.text(), 1, args, out);
             return out;
         }
-        case Type::Text: return fromHex("") + [&] { return v.text(); }();
+        case Type::Text: return fromHex("") + std::string(v.text());
         case Type::Datetime: return std::to_string(v.datetime().usec);
         case Type::Blob: return "";
     }

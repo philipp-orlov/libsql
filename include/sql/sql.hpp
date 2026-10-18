@@ -169,7 +169,9 @@ private:
     Values values_;
 };
 
-/// A row as it streams past Statement::each: valid only during the call.
+/// A row as it streams past Statement::each: valid only during the call. Its
+/// text and blob cells may borrow bytes from the database file (see
+/// Value::borrowed); a copied Value, or row(), owns its bytes.
 class RowView
 {
 public:

@@ -56,6 +56,65 @@ TEST(orderingRanksTheStorageClasses)
     CHECK_EQ(compare(Value("abc"), Value("abc")), 0);
 }
 
+TEST(cellsOwnOrBorrowTheirBytes)
+{
+    const std::string longText(100, 'x');
+    std::string source = "borrowed text";
+    // A borrowing cell points at the caller's bytes.
+    Value ref = Value::textRef(source);
+    CHECK(ref.borrowed());
+    CHECK_EQ(static_cast<const void*>(ref.text().data()), static_cast<const void*>(source.data()));
+    // A copy owns its bytes; the original keeps borrowing.
+    Value copy = ref;
+    CHECK(!copy.borrowed());
+    CHECK(copy.text().data() != source.data());
+    CHECK(copy == ref);
+    // A move and a swap carry the borrow along.
+    Value moved = std::move(ref);
+    CHECK(moved.borrowed());
+    Value other(longText);
+    other.swap(moved);
+    CHECK(other.borrowed());
+    CHECK(!moved.borrowed());
+    CHECK_EQ(moved.text(), std::string_view(longText));
+    // own() copies; the source may then change.
+    other.own();
+    source[0] = 'B';
+    CHECK(!other.borrowed());
+    CHECK_EQ(other.text(), std::string_view("borrowed text"));
+    // The subtype survives own().
+    Value json = Value::textRef("[1]");
+    json.setSubtype(kJsonSubtype);
+    json.own();
+    CHECK_EQ(json.subtype(), kJsonSubtype);
+
+    // Short and long texts, refilled in place, including from their own bytes.
+    Value v("short");
+    v.setText(longText);
+    CHECK_EQ(v.text(), std::string_view(longText));
+    v.setText(v.text().substr(10, 50));
+    CHECK_EQ(v.text(), std::string_view(longText).substr(10, 50));
+    v.setText("tiny");
+    CHECK_EQ(v.text(), std::string_view("tiny"));
+    v.setText(v.text().substr(1));
+    CHECK_EQ(v.text(), std::string_view("iny"));
+    v.setInteger(5);
+    CHECK_EQ(v.integer(), std::int64_t(5));
+    CHECK_THROWS(v.text(), ErrorCode::TypeMismatch);
+
+    // Blobs borrow and own the same way, and compare by their bytes.
+    const unsigned char raw[] = {0, 1, 2, 0, 255};
+    const Value blobRef = Value::blobRef(raw, sizeof raw);
+    CHECK(blobRef.borrowed());
+    const Value blobCopy = blobRef;
+    CHECK(!blobCopy.borrowed());
+    CHECK(blobCopy.blob() == blobRef.blob());
+    CHECK_EQ(blobCopy.blob().size(), sizeof raw);
+    CHECK(blobCopy.blob().toBlob() == Blob(blobCopy.blob().begin(), blobCopy.blob().end()));
+    CHECK_EQ(compare(blobCopy, Value::blob(raw, 4)), 1);
+    CHECK_THROWS(blobCopy.text(), ErrorCode::TypeMismatch);
+}
+
 TEST(storesEveryTypeAndReadsItBack)
 {
     tst::Scratch s("types");

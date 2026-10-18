@@ -474,6 +474,85 @@ TEST(eachStreamsRowsWithoutAResult)
     CHECK_EQ(sel.exec(t).size(), expected.size());
 }
 
+TEST(streamedCellsBorrowAndKeptCellsOwn)
+{
+    tst::Scratch s("sqlite");
+    Database db = s.open();
+    db.exec("CREATE TABLE a (id INTEGER PRIMARY KEY, name TEXT, tag BLOB)");
+    db.exec("CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER, note TEXT)");
+    db.exec("CREATE INDEX a_by_name ON a (name)");
+    {
+        // Short names fit inside a cell; every third one needs a buffer.
+        Transaction t = db.begin();
+        for (int i = 1; i <= 300; ++i) {
+            const std::string name = "name-" + std::to_string(i) + std::string(i % 3 ? 0 : 40, 'z');
+            const std::string tag(std::size_t(i % 50), char(i));
+            t.exec("INSERT INTO a (id, name, tag) VALUES (?, ?, ?)",
+                   {Value(i), Value(name), Value::blob(tag.data(), tag.size())});
+            for (int k = 0; k < 2; ++k)
+                t.exec("INSERT INTO b (a_id, note) VALUES (?, ?)",
+                       {Value(i), Value("note " + std::to_string(k))});
+        }
+        t.commit();
+    }
+    const std::string join =
+        "SELECT a.id, a.name, a.tag, b.note FROM a JOIN b ON b.a_id = a.id WHERE a.id <= 120";
+    const Result expected = db.exec(join);
+    CHECK_EQ(expected.size(), std::size_t(240));
+    // A Result owns every cell, sorted or not.
+    for (const Result& r : {expected, db.exec("SELECT name, tag FROM a ORDER BY name")}) {
+        for (const Row& row : r) {
+            for (const Value& v : row)
+                CHECK(!v.borrowed());
+        }
+    }
+
+    // Read-only streaming hands out cells that point into the store; copies
+    // made in the callback own their bytes and outlive the transaction.
+    Statement sel = db.prepare(join);
+    std::vector<std::vector<Value>> kept;
+    bool sawBorrowed = false;
+    sel.each([&](const RowView& r) {
+        for (const Value& v : r)
+            sawBorrowed = sawBorrowed || v.borrowed();
+        kept.emplace_back(r.begin(), r.end());
+        return true;
+    });
+    CHECK(sawBorrowed);
+    bool coveringBorrowed = true;
+    db.prepare("SELECT name FROM a WHERE name > 'name-5'").each([&](const RowView& r) {
+        coveringBorrowed = coveringBorrowed && r[0].borrowed();
+        return true;
+    });
+    CHECK(coveringBorrowed);
+    db.exec("UPDATE a SET name = upper(name), tag = x'00'");
+    db.exec("DELETE FROM b WHERE id % 2 = 0");
+    CHECK_EQ(kept.size(), expected.size());
+    for (std::size_t i = 0; i < kept.size(); ++i) {
+        for (std::size_t c = 0; c < kept[i].size(); ++c) {
+            CHECK(!kept[i][c].borrowed());
+            CHECK(kept[i][c] == expected[i][c]);
+        }
+    }
+
+    // A callback may write through the transaction it reads in, rewriting the
+    // very pages the scan stands on: the cells it sees stay what they were.
+    Transaction t = db.begin();
+    t.exec("UPDATE a SET name = lower(name)");
+    const Result before = sel.exec(t);
+    std::size_t n = 0;
+    sel.each(t, [&](const RowView& r) {
+        t.exec("UPDATE a SET name = upper(name), tag = x'ffff' WHERE id = ?",
+               {Value(r[0].integer())});
+        for (std::size_t c = 0; c < r.size(); ++c)
+            CHECK(r[c] == before[n][c]);
+        ++n;
+        return true;
+    });
+    CHECK_EQ(n, before.size());
+    t.rollback();
+}
+
 TEST(largeSortsSpillAndMergeInOrder)
 {
     tst::Scratch s("sqlite");

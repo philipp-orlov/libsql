@@ -75,7 +75,7 @@ int main()
                             {sql::Value("logo.png")});
     // A Result owns its values, so the bytes outlive the statement that read
     // them and there is nothing to copy out of before the next query.
-    const sql::Blob& stored = r[0]["bytes"].blob();
+    const sql::BlobView stored = r[0]["bytes"].blob();
     std::printf("logo.png  id=%lld  %s  %zu bytes  added %s  round trip: %s\n\n",
                 (long long)r[0]["id"].integer(), r[0]["type"].toText().c_str(), stored.size(),
                 r[0]["added"].toText().c_str(), stored == file ? "identical" : "CORRUPT");

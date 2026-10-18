@@ -267,12 +267,34 @@ The public `sql::Value` type is defined in
 
 | `Type` | Stored payload | Notes |
 | --- | --- | --- |
-| `Null` (`0`) | `std::monostate` | SQL NULL |
+| `Null` (`0`) | nothing | SQL NULL |
 | `Integer` (`1`) | signed 64-bit integer | SQLite INTEGER |
 | `Real` (`2`) | `double` | SQLite REAL |
 | `Datetime` (`3`) | `Datetime{usec}` | libsql extension; microseconds since Unix epoch UTC |
-| `Text` (`4`) | `std::string` | byte string treated as UTF-8 where SQL requires characters |
-| `Blob` (`5`) | `std::vector<std::byte>` | opaque bytes |
+| `Text` (`4`) | bytes, read as `std::string_view` | byte string treated as UTF-8 where SQL requires characters |
+| `Blob` (`5`) | bytes, read as `BlobView` | opaque bytes |
+
+A `Value` is 32 bytes: a tagged union, not a `std::variant`. Text and blob
+bytes live in one of three places:
+
+- inside the cell, up to 24 bytes;
+- in a heap buffer the cell owns, which setters reuse when the new bytes fit;
+- elsewhere, borrowed (`borrowed()`): the cell points at bytes it does not own.
+
+Copying a cell always yields one that owns its bytes. Moving and `swap` carry a
+borrow along; `own()` turns a borrowing cell into an owning one, and
+`borrow(other)` makes a cell borrow another cell's bytes.
+
+Only SELECT statements borrow, and only from the pages of the
+transaction they read in: table and index reads leave text and blobs where the
+store keeps them. A SELECT whose rows go to a `Statement::each` callback in a
+writing transaction does not borrow, because the callback may write through
+that transaction and a write may change a page in place. Every place where a
+value leaves the row owns it: a `Result` (`Values::fill`), a sort, a cached
+source, a sub-query, a group. When the statement ends, `runProgram` clears the
+borrows left in the frame, so no later copy reads a page of a transaction that
+has ended. A `RowView` and a function's arguments may therefore hold borrowing
+cells; they are valid for the call.
 
 The enum order is also the row-value tag order. SQL sort order is defined by
 `compareValues` in [`../src/internal/types.cpp`](../src/internal/types.cpp):
@@ -1203,8 +1225,11 @@ in a `FlatKeySet`.
 An output that is a bare column of the innermost source, read by no other
 output and with no sub-query among the outputs (`decideSwaps`), takes its
 value by `Value::swap` when it is text or a blob: the slot is reloaded for
-the next row anyway, and the two buffers trade back and forth, so neither the
-bytes nor an allocation are paid per row.
+the next row anyway, so neither the bytes nor an allocation are paid per row.
+Any other bare-column output borrows its slot's bytes (`Value::borrow`): the
+slot stays as it is until the sink has taken the row, and a sink that keeps
+the row owns what it keeps. When the outputs are consecutive slots, the row
+goes to the sink straight from the frame.
 
 `FlatKeySet` ([`../src/internal/flat_hash.hpp`](../src/internal/flat_hash.hpp))
 is the executor's set of encoded keys: keys packed into one byte buffer, an
@@ -1745,6 +1770,8 @@ nested transaction.
 - `exec` standalone or inside a `Transaction`;
 - `each(fn)` / `each(txn, fn)`, which streams rows to a callback as a
   `RowView` -- valid only during the call -- without building a `Result`.
+  Its text and blob cells may borrow bytes from the database pages (§4);
+  copy a cell, or call `RowView::row()`, to keep it.
 
 A statement is not re-entrant: running it from its own `each` callback raises
 `InvalidArgument` (`"statement is already running"`).

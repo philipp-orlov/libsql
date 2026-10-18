@@ -501,6 +501,7 @@ void decideSwaps(CorePlan& p)
 {
     p.swapDecided = true;
     p.swapFrom.assign(p.outputs.size(), -1);
+    p.borrowFrom.assign(p.outputs.size(), -1);
     if (p.aggregate || !p.windows.empty() || p.sources.empty() || !p.values.empty())
         return;
     const SourceNode& s = p.sources.back();
@@ -517,6 +518,8 @@ void decideSwaps(CorePlan& p)
         if (e->kind == ExprKind::Column && e->slot >= 0 && std::size_t(e->slot) >= s.base &&
             std::size_t(e->slot) < s.base + s.width && reads[std::size_t(e->slot) - s.base] == 1)
             p.swapFrom[i] = e->slot;
+        else if (e->kind == ExprKind::Column && e->slot >= 0)
+            p.borrowFrom[i] = e->slot;
     }
     p.directFrom = p.swapFrom.empty() ? -1 : p.swapFrom[0];
     for (std::size_t i = 0; i < p.swapFrom.size() && p.directFrom >= 0; ++i) {
@@ -525,7 +528,8 @@ void decideSwaps(CorePlan& p)
     }
 }
 
-/// Output `i` of the current row: swapped out of its slot when allowed.
+/// Output `i` of the current row: swapped out of its slot or borrowed from it
+/// when allowed.
 inline void produce(CorePlan& p, Ctx& c, std::size_t i)
 {
     const int from = p.swapFrom[i];
@@ -536,6 +540,8 @@ inline void produce(CorePlan& p, Ctx& c, std::size_t i)
             p.outRow[i].swap(v);
         else
             p.outRow[i] = v;
+    } else if (p.borrowFrom[i] >= 0) {
+        p.outRow[i].borrow(c.slots[p.borrowFrom[i]]);
     } else {
         p.outRow[i] = eval(*p.outputs[i], c);
     }
@@ -1356,8 +1362,10 @@ public:
         if (cannotPlace(v))
             return true;
         Value* out = rows_.append();
-        for (std::size_t i = 0; i < n && i < rows_.width(); ++i)
+        for (std::size_t i = 0; i < n && i < rows_.width(); ++i) {
+            v[i].own();
             out[i] = std::move(v[i]);
+        }
         added(out);
         return true;
     }

@@ -23,7 +23,7 @@ namespace {
 
 void show(const char* label, const sql::Result& r)
 {
-    std::printf("%-28s %s\n", label, r[0][0].text().c_str());
+    std::printf("%-28s %s\n", label, std::string(r[0][0].text()).c_str());
 }
 
 }  // namespace

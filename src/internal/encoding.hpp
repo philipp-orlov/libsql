@@ -45,6 +45,20 @@ void appendKey(std::string& out, const Value& v, Collation c = Collation::Binary
 void appendRowidKey(std::string& out, std::int64_t rowid);
 [[noreturn]] void throwTruncatedKey();
 
+/// The eight bytes at `p` as a big-endian number, so that numbers compare as
+/// the bytes do under memcmp.
+inline std::uint64_t loadBigEndian64(const char* p) noexcept
+{
+    std::uint64_t v;
+    std::memcpy(&v, p, 8);
+#if defined(_MSC_VER)
+    v = _byteswap_uint64(v);
+#elif __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    v = __builtin_bswap64(v);
+#endif
+    return v;
+}
+
 /// Reads the 8-byte big-endian, sign-flipped rowid at the front of `in`.
 inline std::int64_t readRowidKey(std::string_view& in)
 {
@@ -65,8 +79,9 @@ std::string encodeKey(const std::vector<Value>& values);
 
 /// Decodes one value off the front of `in` and consumes it.
 Value decodeKey(std::string_view& in);
-/// The same, into a cell that keeps its buffer.
-void decodeKeyInto(std::string_view& in, Value& out);
+/// The same, into a cell that keeps its buffer. With `borrow`, text and blobs
+/// stored without escapes point into `in` instead of being copied.
+void decodeKeyInto(std::string_view& in, Value& out, bool borrow = false);
 /// Consumes `count` encoded values without materialising them.
 void skipKeys(std::string_view& in, std::size_t count);
 
@@ -86,12 +101,13 @@ void encodeRowInto(std::string& out, const Value* values, std::size_t count,
 std::vector<Value> decodeRow(std::string_view in);
 /// Decodes into `width` cells that keep their buffers; columns the record
 /// does not carry become NULL. Returns how many the record carried (at most
-/// `width`), so a caller can supply defaults for columns added later.
-std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width);
+/// `width`), so a caller can supply defaults for columns added later. With
+/// `borrow`, text and blobs point into `in` instead of being copied.
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, bool borrow = false);
 /// The same, decoding only the cells whose `used` byte is nonzero; the others
 /// are stepped over and left as they were.
-std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, const std::uint8_t* used,
-                          bool fillMissing = true);
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width,
+                          const std::uint8_t* used, bool fillMissing = true, bool borrow = false);
 /// How many cells a record holds.
 std::size_t rowColumnCount(std::string_view in);
 
