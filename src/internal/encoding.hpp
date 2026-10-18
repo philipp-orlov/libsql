@@ -110,6 +110,9 @@ std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width,
                           const std::uint8_t* used, bool fillMissing = true, bool borrow = false);
 /// How many cells a record holds.
 std::size_t rowColumnCount(std::string_view in);
+/// Cell `i` of a record without decoding the rest: 1 an integer (in `n`), 2 a
+/// real (in `r`), 0 NULL, -1 anything else or a record that ends before it.
+int storedNumber(std::string_view in, std::size_t i, std::int64_t& n, double& r);
 
 // ------------------------------------------------------------ primitives --
 

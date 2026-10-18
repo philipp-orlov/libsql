@@ -363,6 +363,40 @@ namespace {
     throw Error(ErrorCode::Internal, "malformed record");
 }
 
+/// A record test rejects the row stored in `payload`. Undecided (text, a
+/// short record) counts as passing: the filters run on the decoded row.
+bool recordRejects(const SourceNode& s, std::string_view payload)
+{
+    if (s.table->payloadRowid())
+        getVarint(payload);
+    for (const SourceNode::RecordTest& t : s.recordLive) {
+        std::int64_t n = 0;
+        double r = 0;
+        const int kind = storedNumber(payload, t.column, n, r);
+        if (kind < 0)
+            return false;
+        if (kind == 0)
+            return true;
+        int cmp;
+        if (kind == 1)
+            cmp = t.real ? compareIntReal(n, t.r) : n < t.n ? -1 : n > t.n;
+        else
+            cmp = t.real ? (r < t.r ? -1 : r > t.r) : -compareIntReal(t.n, r);
+        bool pass;
+        switch (t.op) {
+            case BinaryOp::Eq: pass = cmp == 0; break;
+            case BinaryOp::Ne: pass = cmp != 0; break;
+            case BinaryOp::Lt: pass = cmp < 0; break;
+            case BinaryOp::Le: pass = cmp <= 0; break;
+            case BinaryOp::Gt: pass = cmp > 0; break;
+            default: pass = cmp >= 0; break;
+        }
+        if (!pass)
+            return true;
+    }
+    return false;
+}
+
 /// Encodes one bound value for a key part. Returns false when the value
 /// cannot select anything through this part (NULL, or a non-integer for a
 /// rowid) -- `noMatch` then says whether that means "no rows at all".
@@ -822,6 +856,66 @@ bool advanceEntry(SourceNode& s)
 
 }  // namespace
 
+void decideRecordTests(SourceNode& s, const std::vector<Expr*>& filters)
+{
+    s.recordTestsDecided = true;
+    if (s.kind != SourceNode::Kind::Table || s.coverState != 1 || !s.generated.empty() ||
+        !s.onTerms.empty() || s.join == JoinType::Left || s.join == JoinType::Right ||
+        s.join == JoinType::Full)
+        return;
+    const Table& t = *s.table;
+    for (const Expr* f : filters) {
+        if (f->kind != ExprKind::Binary || f->op < std::uint8_t(BinaryOp::Eq) ||
+            f->op > std::uint8_t(BinaryOp::Ge) || !comparesNumbersDirectly(*f))
+            continue;
+        const bool flip = f->lhs->kind != ExprKind::Column;
+        const Expr& col = flip ? *f->rhs : *f->lhs;
+        const Expr& k = flip ? *f->lhs : *f->rhs;
+        if (col.kind != ExprKind::Column || k.kind == ExprKind::Column || col.slot < int(s.base))
+            continue;
+        const std::size_t at = std::size_t(col.slot) - s.base;
+        // The rowid alias is stored as NULL; loadRow fills it from the key.
+        if (at >= t.columns.size() || int(at) == t.rowidAlias)
+            continue;
+        SourceNode::RecordTest test;
+        test.filter = f;
+        test.constant = &k;
+        test.column = at;
+        test.op = flip ? mirror(BinaryOp(f->op)) : BinaryOp(f->op);
+        s.recordTests.push_back(test);
+    }
+}
+
+void armRecordTests(SourceNode& s, const Ctx& c, const std::vector<Expr*>& filters)
+{
+    // Only a leading run of the filters: a row rejected here skips the ones
+    // after it, and those might have raised an error.
+    for (const Expr* f : filters) {
+        auto it = std::find_if(s.recordTests.begin(), s.recordTests.end(),
+                               [&](const SourceNode::RecordTest& t) { return t.filter == f; });
+        if (it == s.recordTests.end())
+            return;
+        const Expr& k = *it->constant;
+        const Value* v = &k.literal;
+        if (k.kind == ExprKind::Parameter) {
+            if (!c.params || k.param >= c.params->size())
+                return;
+            v = &(*c.params)[k.param];
+        }
+        SourceNode::RecordTest t = *it;
+        if (v->type() == Type::Integer) {
+            t.real = false;
+            t.n = v->integer();
+        } else if (v->type() == Type::Real) {
+            t.real = true;
+            t.r = v->real();
+        } else {
+            return;
+        }
+        s.recordLive.push_back(t);
+    }
+}
+
 void decideCovering(SourceNode& s)
 {
     if (s.coverState != 0)
@@ -887,6 +981,7 @@ void openSource(SourceNode& s, Ctx& c)
     s.keepRowKey = s.join == JoinType::Right || s.join == JoinType::Full;
     s.enforced.clear();
     s.holdEntry = false;
+    s.recordLive.clear();
     switch (s.kind) {
         case SourceNode::Kind::Single:
         case SourceNode::Kind::Pseudo:
@@ -1023,17 +1118,21 @@ bool nextSource(SourceNode& s, Ctx& c)
     AccessPath& ap = s.access;
     const bool fallbackScan = s.rowIndex == std::size_t(-1);
     if (ap.kind == AccessPath::Kind::Scan || fallbackScan) {
-        bool ok;
-        if (s.holdEntry) {
-            s.holdEntry = false;
-            ok = true;
-        } else {
-            ok = nextEntry(s, !s.started);
-        }
-        s.started = true;
-        if (!ok) {
-            s.exhausted = true;
-            return false;
+        for (;;) {
+            bool ok;
+            if (s.holdEntry) {
+                s.holdEntry = false;
+                ok = true;
+            } else {
+                ok = nextEntry(s, !s.started);
+            }
+            s.started = true;
+            if (!ok) {
+                s.exhausted = true;
+                return false;
+            }
+            if (s.recordLive.empty() || !recordRejects(s, s.entryValue))
+                break;
         }
         loadRow(s, c, s.entryKey, s.entryValue);
         return true;
@@ -1047,12 +1146,16 @@ bool nextSource(SourceNode& s, Ctx& c)
             s.exhausted = true;
             return false;
         }
+        if (!s.recordLive.empty() && recordRejects(s, viewOf(*payload)))
+            return false;
         loadRow(s, c, ap.prefix, viewOf(*payload));
         return true;
     }
     if (ap.kind != AccessPath::Kind::Index) {
-        if (!advanceEntry(s))
-            return false;
+        do {
+            if (!advanceEntry(s))
+                return false;
+        } while (!s.recordLive.empty() && recordRejects(s, s.entryValue));
         loadRow(s, c, s.entryKey, s.entryValue);
         return true;
     }
@@ -1073,6 +1176,8 @@ bool nextSource(SourceNode& s, Ctx& c)
         nosql::Slice payload;
         if (!s.rowCursor.seekExact(sliceOf(entry), payload))
             continue;  // an entry without its row: defensive, see design notes
+        if (!s.recordLive.empty() && recordRejects(s, viewOf(payload)))
+            continue;
         loadRow(s, c, entry, viewOf(payload));
         return true;
     }

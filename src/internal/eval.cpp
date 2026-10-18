@@ -316,6 +316,13 @@ int directCompare(const Expr& e, const Ctx& c) noexcept
     }
 }
 
+bool comparesNumbersDirectly(const Expr& e) noexcept
+{
+    if (e.fastShape == 0)
+        e.fastShape = classifyComparison(e);
+    return (e.fastShape & (kShapeDirect | kNumericOk)) == (kShapeDirect | kNumericOk);
+}
+
 namespace {
 
 bool relation(BinaryOp op, int c) noexcept
