@@ -33,98 +33,79 @@
   </div>
 
   <div class="body">
-<div class="grid-area">
     @if (page(); as current) {
-      <table mat-table class="grid" [dataSource]="rows()">
-        <ng-container matColumnDef="rowno">
-          <th mat-header-cell *matHeaderCellDef class="rowno"></th>
-          <td mat-cell *matCellDef="let row" class="rowno" (click)="selectRow(row.index, $event)">{{ current.offset + row.index + 1 }}</td>
-        </ng-container>
-        <ng-container matColumnDef="filter-rowno">
-          <th mat-header-cell *matHeaderCellDef class="rowno"></th>
-        </ng-container>
-
-        @for (column of current.columns; track column.name; let i = $index) {
-          <ng-container [matColumnDef]="'c' + i">
-            <th mat-header-cell *matHeaderCellDef class="sortable" (click)="toggleSort(column.name)">
-              <span class="title">{{ column.name }}</span>
-              @if (sortState(column.name); as state) {
-                <mat-icon class="sort">{{ state === 'asc' ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
+      <app-data-grid
+        class="grid-area"
+        mode="server"
+        selectable="multiple"
+        [data]="current.rows"
+        [columns]="gridColumns()"
+        [total]="current.total"
+        [skip]="current.offset"
+        [filterable]="true"
+        [rowNumbers]="true"
+        [pageSizes]="pageSizes"
+        [(sort)]="sort"
+        [(group)]="group"
+        [(filter)]="filters"
+        [(pageIndex)]="pageIndex"
+        [(pageSize)]="pageSize"
+        [(selection)]="selectedRows"
+        [(activeCell)]="activeCell"
+        (stateChange)="load()"
+        (cellDblClick)="startEdit($event.index, $event.column.field)"
+      >
+        <ng-template gridCell let-value let-index="index" let-column="column" let-text="text">
+          @if (isEditing(index, column.field)) {
+            <input
+              appAutofocus
+              class="cell-input"
+              #box
+              [value]="editing()!.text"
+              (input)="editText(box.value)"
+              (keydown.enter)="commitEdit()"
+              (keydown.escape)="cancelEdit()"
+              (blur)="commitEdit()"
+            />
+          } @else {
+            @switch (kindOf(value)) {
+              @case ('null') {
+                <span class="placeholder">NULL</span>
               }
-            </th>
-            <td mat-cell *matCellDef="let row" [class.active]="isActive(row.index, i)" (click)="selectCell(row.index, i, $event)" (dblclick)="startEdit(row.index, i)">
-              @if (isEditing(row.index, i)) {
-                <input
-                  appAutofocus
-                  class="cell-input"
-                  #box
-                  [value]="editing()!.text"
-                  (input)="editText(box.value)"
-                  (keydown.enter)="commitEdit()"
-                  (keydown.escape)="cancelEdit()"
-                  (blur)="commitEdit()"
-                />
-              } @else {
-                @switch (cellKind(row.cells[i])) {
-                  @case ('null') {
-                    <span class="placeholder">NULL</span>
-                  }
-                  @case ('blob') {
-                    <span class="placeholder">{{ cellText(row.cells[i]) }}</span>
-                  }
-                  @default {
-                    <span class="value" [title]="cellText(row.cells[i])">{{ cellText(row.cells[i]) }}</span>
-                  }
-                }
+              @case ('blob') {
+                <span class="placeholder">{{ text }}</span>
               }
-            </td>
-          </ng-container>
-          <ng-container [matColumnDef]="'filter-c' + i">
-            <th mat-header-cell *matHeaderCellDef>
-              <input class="filter" #filter placeholder="Filter" [value]="filters()[column.name] ?? ''" (input)="setFilter(column.name, filter.value)" />
-            </th>
-          </ng-container>
-        }
-
-        <tr mat-header-row *matHeaderRowDef="dataColumns(); sticky: true"></tr>
-        <tr mat-header-row *matHeaderRowDef="filterColumns(); sticky: true"></tr>
-        <tr mat-row *matRowDef="let row; columns: dataColumns()" [class.selected]="selectedRows().has(row.index)"></tr>
-      </table>
+              @default {
+                <span class="value" [title]="text">{{ text }}</span>
+              }
+            }
+          }
+        </ng-template>
+      </app-data-grid>
     } @else {
-      <p class="hint">Select a table or view to browse its data.</p>
+      <p class="hint grid-area">Select a table or view to browse its data.</p>
+    }
+
+    @if (panelOpen()) {
+      <aside class="panel">
+        <h3>Edit Cell</h3>
+        @if (activeColumn(); as column) {
+          <p class="meta">
+            <span class="mono">{{ page()?.table }}.{{ column.name }}</span>
+            <span>{{ cellKind(activeValue()!) }}, {{ cellText(activeValue()!).length }} characters</span>
+          </p>
+          <textarea class="mono panel-text" [value]="panelText()" [readOnly]="!panelEditable()" (input)="panelText.set(panelBox.value)" #panelBox spellcheck="false"></textarea>
+          <div class="panel-actions">
+            <button mat-flat-button class="apply" (click)="applyPanel()" [disabled]="!panelEditable() || !panelChanged()">Apply</button>
+            <button mat-button class="reset" (click)="panelText.set(cellEditText(activeValue()!))" [disabled]="!panelChanged()">Revert</button>
+          </div>
+          @if (!panelEditable()) {
+            <p class="hint">This cell cannot be edited here.</p>
+          }
+        } @else {
+          <p class="hint">Select a cell.</p>
+        }
+      </aside>
     }
   </div>
-
-  @if (panelOpen()) {
-    <aside class="panel">
-      <h3>Edit Cell</h3>
-      @if (activeColumn(); as column) {
-        <p class="meta">
-          <span class="mono">{{ page()?.table }}.{{ column.name }}</span>
-          <span>{{ cellKind(activeValue()!) }}, {{ cellText(activeValue()!).length }} characters</span>
-        </p>
-        <textarea class="mono panel-text" [value]="panelText()" [readOnly]="!panelEditable()" (input)="panelText.set(panelBox.value)" #panelBox spellcheck="false"></textarea>
-        <div class="panel-actions">
-          <button mat-flat-button class="apply" (click)="applyPanel()" [disabled]="!panelEditable() || !panelChanged()">Apply</button>
-          <button mat-button class="reset" (click)="panelText.set(cellEditText(activeValue()!))" [disabled]="!panelChanged()">Revert</button>
-        </div>
-        @if (!panelEditable()) {
-          <p class="hint">This cell cannot be edited here.</p>
-        }
-      } @else {
-        <p class="hint">Select a cell.</p>
-      }
-    </aside>
-  }
-</div>
-
-  <mat-paginator
-    class="paginator"
-    [length]="page()?.total ?? 0"
-    [pageIndex]="pageIndex()"
-    [pageSize]="pageSize()"
-    [pageSizeOptions]="pageSizes"
-    (page)="onPage($event)"
-    showFirstLastButtons
-  />
 </div>

@@ -63,10 +63,35 @@ describe('ExecuteSqlComponent', () => {
     await setSql(el, 'SELECT id, name FROM person');
     await run(el);
     expect(db.execute).toHaveBeenCalledOnceWith('SELECT id, name FROM person');
-    expect(Array.from(el.querySelectorAll('.results th')).map(th => th.textContent!.trim())).toEqual(['id', 'name']);
+    expect(Array.from(el.querySelectorAll('.results th.grid-header .title')).map(th => th.textContent!.trim())).toEqual(['id', 'name']);
     const rows = Array.from(el.querySelectorAll('.results tr[mat-row]')).map(row => Array.from(row.querySelectorAll('td')).map(td => td.textContent!.trim()));
-    expect(rows).toEqual([['1', 'Ada'], ['2', 'NULL']]);
+    expect(rows).toEqual([
+      ['1', '1', 'Ada'],
+      ['2', '2', 'NULL'],
+    ]);
     expect(message(el)).toBe('2 rows returned in 1ms');
+  });
+
+  it('shows two result columns of one name apart', async () => {
+    db.execute.and.callFake(async () => sqlReply({ columns: ['a', 'a'], rows: [[1, 2]], rowCount: 1 }));
+    const el = await create();
+    await setSql(el, 'SELECT 1 AS a, 2 AS a');
+    await run(el);
+    expect(Array.from(el.querySelectorAll('.results tr[mat-row] td')).map(td => td.textContent!.trim())).toEqual(['1', '1', '2']);
+  });
+
+  it('sorts the rows of a result in the grid the way SQLite orders values', async () => {
+    db.execute.and.callFake(async () =>
+      sqlReply({ columns: ['kind', 'n'], rows: [['b', 10], ['a', 'text'], ['b', null], ['a', 2]], rowCount: 4 }),
+    );
+    const el = await create();
+    await setSql(el, 'SELECT kind, n FROM t');
+    await run(el);
+    el.querySelectorAll<HTMLElement>('.results th.grid-header')[1].click();
+    await settle();
+    const values = () => Array.from(el.querySelectorAll('.results tr.grid-row')).map(row => row.querySelectorAll('td')[2].textContent!.trim());
+    expect(values()).toEqual(['NULL', '2', '10', 'text']);
+    expect(db.execute).toHaveBeenCalledTimes(1);
   });
 
   it('runs on Ctrl+Enter', async () => {

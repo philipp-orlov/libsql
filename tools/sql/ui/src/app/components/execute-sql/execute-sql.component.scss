@@ -56,27 +56,17 @@
 }
 
 .results {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-height: 0;
   margin: 8px 8px 0;
-  overflow: auto;
 }
 
 .grid {
-  min-width: 100%;
-  width: max-content;
-
-  th,
-  td {
-    max-width: 360px;
-    padding: 0 8px;
-    border-right: 1px solid var(--mat-sys-surface-container-high);
-    white-space: nowrap;
-  }
-
-  th {
-    background: var(--mat-sys-surface-container);
-  }
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--mat-sys-outline-variant);
 
   .value {
     display: block;
