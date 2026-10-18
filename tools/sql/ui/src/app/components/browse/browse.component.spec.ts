@@ -42,9 +42,10 @@ describe('BrowseComponent', () => {
     return { fixture, el: fixture.nativeElement as HTMLElement };
   }
 
-  const dataRows = (el: HTMLElement) => Array.from(el.querySelectorAll('tr[mat-row]'));
-  const rowTexts = (el: HTMLElement) => dataRows(el).map(r => Array.from(r.querySelectorAll('td')).map(td => td.textContent!.trim()).join(' '));
-  const cell = (el: HTMLElement, row: number, column: number) => dataRows(el)[row].querySelectorAll<HTMLElement>('td.mat-mdc-cell')[column + 1];
+  const dataRows = (el: HTMLElement) => Array.from(el.querySelectorAll('tr.grid-row'));
+  const rowTexts = (el: HTMLElement) =>
+    dataRows(el).map(r => Array.from(r.querySelectorAll('td:not(.grid-filler)')).map(td => td.textContent!.trim()).join(' '));
+  const cell = (el: HTMLElement, row: number, column: number) => dataRows(el)[row].querySelectorAll<HTMLElement>('td.grid-cell')[column];
   const button = (el: HTMLElement, name: string) => query<HTMLButtonElement>(el, `button.${name}`);
   const doubleClick = (target: HTMLElement) => target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
   const pageTo = (fixture: ComponentFixture<BrowseComponent>, pageIndex: number, pageSize: number) =>

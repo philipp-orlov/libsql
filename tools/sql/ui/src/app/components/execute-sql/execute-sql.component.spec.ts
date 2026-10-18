@@ -64,7 +64,9 @@ describe('ExecuteSqlComponent', () => {
     await run(el);
     expect(db.execute).toHaveBeenCalledOnceWith('SELECT id, name FROM person');
     expect(Array.from(el.querySelectorAll('.results th.grid-header .title')).map(th => th.textContent!.trim())).toEqual(['id', 'name']);
-    const rows = Array.from(el.querySelectorAll('.results tr[mat-row]')).map(row => Array.from(row.querySelectorAll('td')).map(td => td.textContent!.trim()));
+    const rows = Array.from(el.querySelectorAll('.results tr.grid-row')).map(row =>
+      Array.from(row.querySelectorAll('td:not(.grid-filler)')).map(td => td.textContent!.trim()),
+    );
     expect(rows).toEqual([
       ['1', '1', 'Ada'],
       ['2', '2', 'NULL'],
@@ -77,7 +79,7 @@ describe('ExecuteSqlComponent', () => {
     const el = await create();
     await setSql(el, 'SELECT 1 AS a, 2 AS a');
     await run(el);
-    expect(Array.from(el.querySelectorAll('.results tr[mat-row] td')).map(td => td.textContent!.trim())).toEqual(['1', '1', '2']);
+    expect(Array.from(el.querySelectorAll('.results tr.grid-row td:not(.grid-filler)')).map(td => td.textContent!.trim())).toEqual(['1', '1', '2']);
   });
 
   it('sorts the rows of a result in the grid the way SQLite orders values', async () => {

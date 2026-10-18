@@ -4,6 +4,7 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  afterNextRender,
   computed,
   contentChild,
   inject,
@@ -12,23 +13,20 @@ import {
   model,
   output,
   signal,
+  viewChild,
 } from '@angular/core';
-import { MatButtonModule } from '@angular/material/button';
-import { MatChipsModule } from '@angular/material/chips';
-import { MatDividerModule } from '@angular/material/divider';
 import { MatIconModule } from '@angular/material/icon';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
-import { MatTableModule } from '@angular/material/table';
 
 import { GridCellDirective, GridGroupHeaderDirective } from './data-grid.directives';
 import {
   CellRef,
-  GridCellEvent,
   GridColumn,
+  GridCellEvent,
   GridDataRow,
+  GridGroupRow,
   GridState,
-  GridViewRow,
   GroupDescriptor,
   SortDescriptor,
   SortDirection,
@@ -37,6 +35,18 @@ import { buildView, columnText, columnTitle, columnValue, effectiveSort, filterI
 
 const DRAG_THRESHOLD_PX = 5;
 const MIN_COLUMN_WIDTH_PX = 48;
+const MAX_FIT_WIDTH_PX = 600;
+const INDENT_WIDTH_PX = 32;
+const ROW_NUMBER_WIDTH_PX = 56;
+/** Rows rendered above and below the visible ones, so a fast scroll shows no gap. */
+const OVERSCAN_ROWS = 8;
+
+/** A data row of the rendered window, with the values and texts of the visible columns. */
+interface RenderedDataRow<T> extends GridDataRow<T> {
+  cells: { value: unknown; text: string }[];
+}
+
+type RenderedRow<T> = GridGroupRow | RenderedDataRow<T>;
 
 interface DragSource {
   kind: 'column' | 'group';
@@ -70,6 +80,9 @@ const fieldsOf = (columns: readonly GridColumn<never>[]) => columns.map(column =
  * the host loads on `stateChange`, sorted by `effectiveSort(state.group, state.sort)` so that groups stay together;
  * the grid only groups the page.
  *
+ * Only the rows in view are rendered (virtual scrolling): every row has the height `rowHeight`, and the grid needs a
+ * bounded height to scroll in. Columns have fixed widths, so the layout does not move while rows scroll by.
+ *
  * ```html
  * <app-data-grid [data]="people" [columns]="[{ field: 'name' }, { field: 'team', title: 'Team' }]" [(group)]="group">
  *   <ng-template gridCell let-value let-row="row">{{ value }}</ng-template>
@@ -78,16 +91,7 @@ const fieldsOf = (columns: readonly GridColumn<never>[]) => columns.map(column =
  */
 @Component({
   selector: 'app-data-grid',
-  imports: [
-    NgTemplateOutlet,
-    MatButtonModule,
-    MatChipsModule,
-    MatDividerModule,
-    MatIconModule,
-    MatMenuModule,
-    MatPaginatorModule,
-    MatTableModule,
-  ],
+  imports: [NgTemplateOutlet, MatIconModule, MatMenuModule, MatPaginatorModule],
   templateUrl: './data-grid.component.html',
   styleUrl: './data-grid.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -109,10 +113,16 @@ export class DataGridComponent<T = unknown> {
   readonly resizable = input(true);
   readonly filterable = input(false);
   readonly columnMenu = input(true);
-  readonly pageable = input(true);
+  readonly pageable = input(false);
   readonly pageSizes = input<number[]>([50, 100, 500, 1000]);
   readonly selectable = input<'none' | 'single' | 'multiple'>('none');
   readonly rowNumbers = input(false);
+  /** Renders only the rows in view. Off renders every row (of the page). */
+  readonly virtual = input(true);
+  /** The height of every row in pixels, data and group rows alike. */
+  readonly rowHeight = input(40);
+  /** The width of a column that sets none and that the user has not resized. */
+  readonly columnWidth = input(160);
   /** Server mode: how long typing in a filter box pauses before `stateChange`. */
   readonly filterDelay = input(300);
   readonly emptyText = input('No records to display');
@@ -133,11 +143,10 @@ export class DataGridComponent<T = unknown> {
 
   protected readonly cellTemplate = contentChild(GridCellDirective);
   protected readonly groupHeaderTemplate = contentChild(GridGroupHeaderDirective);
+  private readonly scroller = viewChild.required<ElementRef<HTMLElement>>('scroller');
 
-  protected readonly indentWidth = 32;
-  protected readonly groupIds = ['__group'];
-  protected readonly isGroupRow = (_: number, row: GridViewRow<T>) => row.kind === 'group';
-  protected readonly trackRow = (_: number, row: GridViewRow<T>) => row.key;
+  protected readonly indentWidth = INDENT_WIDTH_PX;
+  protected readonly rowNumberWidth = ROW_NUMBER_WIDTH_PX;
 
   private readonly byField = computed(() => new Map(this.columns().map(column => [column.field, column])));
 
@@ -153,12 +162,10 @@ export class DataGridComponent<T = unknown> {
         ? previous.value
         : new Set(columns.filter(c => c.hidden).map(c => c.field)),
   });
+  /** Widths the user set by dragging or fitting; the rest come from the columns. */
   protected readonly widths = linkedSignal<readonly GridColumn<T>[], ReadonlyMap<string, number>>({
     source: this.columns,
-    computation: (columns, previous) =>
-      previous && sameFields(fieldsOf(previous.source), fieldsOf(columns))
-        ? previous.value
-        : new Map(columns.filter(c => c.width !== undefined).map(c => [c.field, c.width!])),
+    computation: (columns, previous) => (previous && sameFields(fieldsOf(previous.source), fieldsOf(columns)) ? previous.value : new Map()),
   });
 
   protected readonly orderedColumns = computed(() => this.order().map(field => this.byField().get(field)!));
@@ -167,13 +174,14 @@ export class DataGridComponent<T = unknown> {
   private readonly validSort = computed(() => this.sort().filter(s => this.byField().has(s.field)));
 
   protected readonly groupLevels = computed(() => this.validGroup().map((_, level) => level));
-  private readonly lead = computed(() => [...this.groupLevels().map(level => `__g${level}`), ...(this.rowNumbers() ? ['__rowno'] : [])]);
-  protected readonly headerIds = computed(() => [...this.lead(), ...this.visibleColumns().map(c => `c-${c.field}`)]);
-  protected readonly filterIds = computed(() => [
-    ...this.groupLevels().map(level => `__fg${level}`),
-    ...(this.rowNumbers() ? ['__frowno'] : []),
-    ...this.visibleColumns().map(c => `f-${c.field}`),
-  ]);
+  /** Every column of the table: indents, row numbers, data columns and the filler that takes the rest. */
+  protected readonly colCount = computed(() => this.groupLevels().length + (this.rowNumbers() ? 1 : 0) + this.visibleColumns().length + 1);
+  protected readonly tableWidth = computed(
+    () =>
+      this.groupLevels().length * INDENT_WIDTH_PX +
+      (this.rowNumbers() ? ROW_NUMBER_WIDTH_PX : 0) +
+      this.visibleColumns().reduce((sum, column) => sum + this.widthOf(column), 0),
+  );
 
   private readonly processed = computed(() => {
     const items = this.data().map((row, index) => ({ row, index }));
@@ -210,7 +218,44 @@ export class DataGridComponent<T = unknown> {
     }
     return buildView(items, this.columns(), this.validGroup(), this.collapsed(), this.firstPosition());
   });
-  protected readonly dataRows = computed(() => this.viewRows().filter((row): row is GridDataRow<T> => row.kind === 'data'));
+
+  /** The scroll position and height of the rows' viewport; set by its listeners, outside change detection. */
+  private readonly viewport = signal({ top: 0, height: 0 });
+  /** The rows to render, [start, end) of viewRows. Equal ranges do not re-render. */
+  private readonly range = computed(
+    () => {
+      const count = this.viewRows().length;
+      if (!this.virtual()) {
+        return { start: 0, end: count };
+      }
+      const height = this.rowHeight();
+      const { top, height: shown } = this.viewport();
+      const start = Math.min(count, Math.max(0, Math.floor(top / height) - OVERSCAN_ROWS));
+      // Before the first measurement, a screenful is a fair guess.
+      const end = Math.min(count, Math.ceil((top + (shown || 1000)) / height) + OVERSCAN_ROWS);
+      return { start, end: Math.max(start, end) };
+    },
+    { equal: (a, b) => a.start === b.start && a.end === b.end },
+  );
+  protected readonly padTop = computed(() => this.range().start * this.rowHeight());
+  protected readonly padBottom = computed(() => (this.viewRows().length - this.range().end) * this.rowHeight());
+  protected readonly rendered = computed<RenderedRow<T>[]>(() => {
+    const { start, end } = this.range();
+    const columns = this.visibleColumns();
+    return this.viewRows()
+      .slice(start, end)
+      .map(row =>
+        row.kind === 'group'
+          ? row
+          : {
+              ...row,
+              cells: columns.map(column => {
+                const value = columnValue(column, row.row);
+                return { value, text: columnText(column, value) };
+              }),
+            },
+      );
+  });
 
   protected readonly drag = signal<DragView | null>(null);
   private dropIndex = 0;
@@ -225,6 +270,25 @@ export class DataGridComponent<T = unknown> {
       clearTimeout(this.filterTimer);
       this.stopTracking?.();
     });
+    // Scrolling sets a signal and nothing else: a render happens only when the range of rows changes.
+    afterNextRender(() => {
+      const element = this.scroller().nativeElement;
+      const measure = () => this.viewport.set({ top: element.scrollTop, height: element.clientHeight });
+      element.addEventListener('scroll', measure, { passive: true });
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      measure();
+      this.destroyRef.onDestroy(() => {
+        element.removeEventListener('scroll', measure);
+        observer.disconnect();
+      });
+    });
+  }
+
+  private scrollToTop(): void {
+    const element = this.scroller().nativeElement;
+    element.scrollTop = 0;
+    this.viewport.set({ top: 0, height: element.clientHeight });
   }
 
   // ------------------------------------------------------------- columns ---
@@ -234,16 +298,8 @@ export class DataGridComponent<T = unknown> {
     return column ? columnTitle(column) : field;
   }
 
-  protected valueOf(column: GridColumn<T>, row: T): unknown {
-    return columnValue(column, row);
-  }
-
-  protected textOf(column: GridColumn<T>, value: unknown): string {
-    return columnText(column, value);
-  }
-
-  protected widthOf(field: string): number | null {
-    return this.widths().get(field) ?? null;
+  protected widthOf(column: GridColumn<T>): number {
+    return this.widths().get(column.field) ?? column.width ?? this.columnWidth();
   }
 
   protected canSort(column: GridColumn<T>): boolean {
@@ -281,7 +337,7 @@ export class DataGridComponent<T = unknown> {
     const columns = this.columns();
     this.order.set(fieldsOf(columns));
     this.hidden.set(new Set(columns.filter(c => c.hidden).map(c => c.field)));
-    this.widths.set(new Map(columns.filter(c => c.width !== undefined).map(c => [c.field, c.width!])));
+    this.widths.set(new Map());
   }
 
   /** Moves a visible column to before the visible column at `to`; hidden columns keep their places. */
@@ -296,10 +352,24 @@ export class DataGridComponent<T = unknown> {
     this.order.set(this.order().map(f => (this.hidden().has(f) ? f : moved[next++])));
   }
 
+  /** Fits the column to its header and to the rows rendered now. */
   protected autoSize(field: string): void {
-    const widths = new Map(this.widths());
-    widths.delete(field);
-    this.widths.set(widths);
+    const root = this.host.nativeElement;
+    // Copies of the cell contents, laid out at their natural width.
+    const probe = root.ownerDocument.createElement('div');
+    probe.style.cssText =
+      'position:absolute;left:-100000px;top:0;visibility:hidden;display:flex;align-items:center;gap:2px;white-space:nowrap;width:max-content';
+    root.appendChild(probe);
+    let widest = MIN_COLUMN_WIDTH_PX;
+    for (const cell of Array.from(root.querySelectorAll<HTMLElement>(`[data-field="${CSS.escape(field)}"]`))) {
+      const box = cell.querySelector('.grid-header-inner') ?? cell;
+      const style = getComputedStyle(cell);
+      probe.style.font = style.font;
+      probe.replaceChildren(...Array.from(box.childNodes, node => node.cloneNode(true)));
+      widest = Math.max(widest, Math.ceil(probe.offsetWidth + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + 1));
+    }
+    probe.remove();
+    this.widths.set(new Map(this.widths()).set(field, Math.min(MAX_FIT_WIDTH_PX, widest)));
   }
 
   protected resizeStart(event: PointerEvent, field: string, header: HTMLElement): void {
@@ -451,11 +521,13 @@ export class DataGridComponent<T = unknown> {
     clearTimeout(this.filterTimer);
     if (this.mode() === 'client') {
       this.pageIndex.set(0);
+      this.scrollToTop();
       this.emitState();
       return;
     }
     this.filterTimer = setTimeout(() => {
       this.pageIndex.set(0);
+      this.scrollToTop();
       this.emitState();
     }, this.filterDelay());
   }
@@ -463,6 +535,7 @@ export class DataGridComponent<T = unknown> {
   protected onPage(event: PageEvent): void {
     this.pageIndex.set(event.pageIndex);
     this.pageSize.set(event.pageSize);
+    this.scrollToTop();
     this.emitState();
   }
 
@@ -483,14 +556,37 @@ export class DataGridComponent<T = unknown> {
     return active?.row === index && active.field === field;
   }
 
-  protected cellClicked(event: MouseEvent, row: GridDataRow<T>, column: GridColumn<T>): void {
-    this.activeCell.set({ row: row.index, field: column.field });
-    this.selectRow(row.index, event);
-    this.cellClick.emit({ row: row.row, index: row.index, column, event });
+  /** The data row and column of a click in the body; one listener serves every cell. */
+  private hit(event: MouseEvent): { row: RenderedDataRow<T>; column: GridColumn<T> | null } | null {
+    const target = event.target as HTMLElement;
+    const tr = target.closest<HTMLElement>('tr[data-at]');
+    const row = tr ? this.rendered()[Number(tr.dataset['at'])] : undefined;
+    if (!row || row.kind !== 'data') {
+      return null;
+    }
+    const field = target.closest<HTMLElement>('td[data-field]')?.dataset['field'];
+    return { row, column: field === undefined ? null : (this.byField().get(field) ?? null) };
   }
 
-  protected cellDblClicked(event: MouseEvent, row: GridDataRow<T>, column: GridColumn<T>): void {
-    this.cellDblClick.emit({ row: row.row, index: row.index, column, event });
+  protected bodyClick(event: MouseEvent): void {
+    const hit = this.hit(event);
+    if (!hit) {
+      return;
+    }
+    if (hit.column) {
+      this.activeCell.set({ row: hit.row.index, field: hit.column.field });
+    }
+    this.selectRow(hit.row.index, event);
+    if (hit.column) {
+      this.cellClick.emit({ row: hit.row.row, index: hit.row.index, column: hit.column, event });
+    }
+  }
+
+  protected bodyDblClick(event: MouseEvent): void {
+    const hit = this.hit(event);
+    if (hit?.column) {
+      this.cellDblClick.emit({ row: hit.row.row, index: hit.row.index, column: hit.column, event });
+    }
   }
 
   /** Click selects one row, Ctrl or Cmd adds or removes one, Shift selects the rows shown between. */
@@ -502,7 +598,7 @@ export class DataGridComponent<T = unknown> {
     const multi = mode === 'multiple';
     const selection = new Set(multi && (event.ctrlKey || event.metaKey) ? this.selection() : []);
     if (multi && event.shiftKey && this.anchorRow !== null) {
-      const shown = this.dataRows().map(row => row.index);
+      const shown = this.viewRows().flatMap(row => (row.kind === 'data' ? [row.index] : []));
       const a = shown.indexOf(this.anchorRow);
       const b = shown.indexOf(index);
       if (a >= 0 && b >= 0) {
