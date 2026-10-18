@@ -431,6 +431,22 @@ TEST(busyTimeoutBoundsTheWaitForTheWriter)
     CHECK_EQ(tst::only(other2.exec("PRAGMA busy_timeout")), std::string("25"));
 }
 
+TEST(closingWithAnOpenBeginRollsBackAndFreesTheWriter)
+{
+    tst::Scratch s("sqlite");
+    {
+        Database db = s.open();
+        db.exec("CREATE TABLE t (a)");
+        db.exec("BEGIN; INSERT INTO t VALUES (1)");
+        CHECK(db.inTransaction());
+        Database savepoint = Database::configure().open(s.file("b.sqldb"));
+        savepoint.exec("SAVEPOINT p");
+    }
+    Database db = Database::configure().busyTimeout(std::chrono::milliseconds(25)).open(s.file());
+    db.exec("INSERT INTO t VALUES (2)");
+    CHECK_EQ(tst::flatten(db.exec("SELECT a FROM t")), std::string("2"));
+}
+
 TEST(eachStreamsRowsWithoutAResult)
 {
     tst::Scratch s("sqlite");
