@@ -1,7 +1,10 @@
 import { provideZonelessChangeDetection } from '@angular/core';
-import { TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { MatPaginator } from '@angular/material/paginator';
+import { By } from '@angular/platform-browser';
 
 import { WorkspaceService } from '../../services/workspace.service';
+import { DataGridComponent } from '../../shared/data-grid';
 import {
   FakeDatabase,
   PERSON_COLUMNS,
@@ -44,6 +47,8 @@ describe('BrowseComponent', () => {
   const cell = (el: HTMLElement, row: number, column: number) => dataRows(el)[row].querySelectorAll<HTMLElement>('td.mat-mdc-cell')[column + 1];
   const button = (el: HTMLElement, name: string) => query<HTMLButtonElement>(el, `button.${name}`);
   const doubleClick = (target: HTMLElement) => target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  const pageTo = (fixture: ComponentFixture<BrowseComponent>, pageIndex: number, pageSize: number) =>
+    fixture.debugElement.query(By.directive(MatPaginator)).componentInstance.page.emit({ pageIndex, pageSize, length: 500, previousPageIndex: 0 });
 
   it('shows nothing until a table is chosen', async () => {
     const { el } = await create(null);
@@ -63,7 +68,7 @@ describe('BrowseComponent', () => {
 
   it('shows the column names, the row numbers and the values', async () => {
     const { el } = await create();
-    expect(Array.from(el.querySelectorAll('th.sortable')).map(th => th.textContent!.trim())).toEqual(['id', 'name', 'age', 'note']);
+    expect(Array.from(el.querySelectorAll('th.sortable .title')).map(title => title.textContent!.trim())).toEqual(['id', 'name', 'age', 'note']);
     expect(rowTexts(el)).toEqual(['1 1 Ada 36 first', '2 2 Bob 17 NULL', '3 3 Cyd 52 third']);
     expect(el.querySelectorAll('.placeholder').length).toBe(1);
   });
@@ -104,7 +109,7 @@ describe('BrowseComponent', () => {
 
     it('sorts by one column at a time and starts again on the first page', async () => {
       const { fixture, el } = await create();
-      fixture.componentInstance['onPage']({ pageIndex: 2, pageSize: 50, length: 500 });
+      pageTo(fixture, 2, 50);
       await settle();
       el.querySelectorAll<HTMLElement>('th.sortable')[1].click();
       await settle();
@@ -113,6 +118,40 @@ describe('BrowseComponent', () => {
       const request = db.browse.calls.mostRecent().args[0];
       expect(request.sort).toEqual([{ column: 'age', descending: false }]);
       expect(request.offset).toBe(0);
+    });
+  });
+
+  describe('grouping', () => {
+    const groupHeaders = (el: HTMLElement) =>
+      Array.from(el.querySelectorAll('tr.grid-group-row')).map(row => `${row.querySelector('.grid-group-value')!.textContent} ${row.querySelector('.grid-group-count')!.textContent}`);
+
+    it('asks for the rows by the grouped column first and heads each group', async () => {
+      db.browse.and.callFake(async () => personPage({ rows: [[2, 'Bob', 17, null], [1, 'Ada', 36, 'first'], [3, 'Cyd', 36, 'third']], keys: [[2], [1], [3]] }));
+      const { fixture, el } = await create();
+      el.querySelectorAll<HTMLElement>('th.sortable')[1].click();
+      await settle();
+      fixture.debugElement.query(By.directive(DataGridComponent)).componentInstance['addGroup']('age');
+      await settle();
+      const request = db.browse.calls.mostRecent().args[0];
+      expect(request.sort).toEqual([
+        { column: 'age', descending: false },
+        { column: 'name', descending: false },
+      ]);
+      expect(request.offset).toBe(0);
+      expect(groupHeaders(el)).toEqual(['17 (1)', '36 (2)']);
+    });
+
+    it('deletes the rows selected under a group by their keys', async () => {
+      dialog.answer(true);
+      db.browse.and.callFake(async () => personPage({ rows: [[2, 'Bob', 17, null], [1, 'Ada', 36, 'first'], [3, 'Cyd', 36, 'third']], keys: [[2], [1], [3]] }));
+      const { fixture, el } = await create();
+      fixture.debugElement.query(By.directive(DataGridComponent)).componentInstance['addGroup']('age');
+      await settle();
+      el.querySelectorAll<HTMLElement>('tr.grid-row td.rowno')[2].click();
+      await settle();
+      button(el, 'delete-record').click();
+      await settle();
+      expect(db.deleteRows).toHaveBeenCalledOnceWith('person', [[3]]);
     });
   });
 
@@ -142,7 +181,7 @@ describe('BrowseComponent', () => {
 
   it('pages', async () => {
     const { fixture } = await create();
-    fixture.componentInstance['onPage']({ pageIndex: 3, pageSize: 50, length: 500 });
+    pageTo(fixture, 3, 50);
     await settle();
     expect(db.browse.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ offset: 150, limit: 50 }));
   });

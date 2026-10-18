@@ -1,0 +1,275 @@
+// Material 3 tokens (--mat-sys-*) throughout, so the grid follows the application's theme.
+
+:host {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.grid-group-panel {
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+  background: var(--mat-sys-surface-container-low);
+  color: var(--mat-sys-on-surface-variant);
+  font: var(--mat-sys-body-medium);
+
+  &.grid-drop-active {
+    outline: 2px dashed var(--mat-sys-primary);
+    outline-offset: -4px;
+  }
+}
+
+.grid-group-chip {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.grid-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.grid-table {
+  min-width: 100%;
+  width: max-content;
+
+  th,
+  td {
+    max-width: 360px;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+
+  th {
+    background: var(--mat-table-background-color, var(--mat-sys-surface));
+  }
+}
+
+.grid-header {
+  position: relative;
+  user-select: none;
+
+  &.grid-draggable {
+    touch-action: none;
+  }
+
+  &.sortable {
+    cursor: pointer;
+  }
+
+  &:hover,
+  &:focus-visible {
+    background: var(--mat-sys-surface-container);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--mat-sys-primary);
+    outline-offset: -2px;
+  }
+}
+
+.grid-header-inner {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+
+  .title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.sort {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  font-size: 18px;
+}
+
+.sort-order {
+  color: var(--mat-sys-primary);
+  font: var(--mat-sys-label-small);
+}
+
+.grid-menu-button,
+.grid-group-toggle {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 4px;
+
+  mat-icon {
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+  }
+}
+
+.grid-menu-button {
+  margin-left: auto;
+  opacity: 0;
+
+  .grid-header:hover &,
+  .grid-header:focus-within &,
+  &[aria-expanded='true'] {
+    opacity: 1;
+  }
+}
+
+.grid-resize {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  z-index: 1;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+
+  &:hover::after {
+    content: '';
+    position: absolute;
+    top: 25%;
+    left: 3px;
+    width: 2px;
+    height: 50%;
+    border-radius: 1px;
+    background: var(--mat-sys-primary);
+  }
+}
+
+.grid-indent {
+  width: 32px;
+  min-width: 32px;
+  max-width: 32px;
+  padding: 0 !important;
+}
+
+.rowno {
+  width: 48px;
+  min-width: 48px;
+  text-align: right;
+  color: var(--mat-sys-outline);
+}
+
+.grid-row {
+  td {
+    cursor: cell;
+  }
+
+  &:hover td {
+    background: color-mix(in srgb, var(--mat-sys-on-surface) 4%, transparent);
+  }
+
+  &.selected td {
+    background: var(--mat-sys-secondary-container);
+    color: var(--mat-sys-on-secondary-container);
+  }
+
+  td.active {
+    outline: 2px solid var(--mat-sys-primary);
+    outline-offset: -2px;
+  }
+}
+
+.value {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.grid-group-row td {
+  padding-left: 0;
+  background: var(--mat-sys-surface-container-low);
+}
+
+.grid-group-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font: var(--mat-sys-title-small);
+}
+
+.grid-group-count {
+  color: var(--mat-sys-on-surface-variant);
+  font: var(--mat-sys-body-small);
+}
+
+.grid-filter-row th {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.filter {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 80px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--mat-sys-outline-variant);
+  border-radius: var(--mat-sys-corner-extra-small);
+  background: var(--mat-sys-surface);
+  color: inherit;
+  font: var(--mat-sys-body-medium);
+
+  &:focus {
+    outline: 2px solid var(--mat-sys-primary);
+    outline-offset: -2px;
+  }
+}
+
+.grid-empty td {
+  padding: 16px;
+  color: var(--mat-sys-outline);
+}
+
+.grid-pager {
+  flex: none;
+  border-top: 1px solid var(--mat-sys-outline-variant);
+}
+
+.grid-drop-indicator {
+  position: absolute;
+  // Above the sticky header cells.
+  z-index: 1000;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--mat-sys-primary);
+  pointer-events: none;
+}
+
+.grid-drag-hint {
+  position: absolute;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px 0 8px;
+  border-radius: var(--mat-sys-corner-small);
+  background: var(--mat-sys-surface-container-high);
+  box-shadow: var(--mat-sys-level3);
+  color: var(--mat-sys-on-surface);
+  font: var(--mat-sys-label-large);
+  white-space: nowrap;
+  pointer-events: none;
+
+  mat-icon {
+    width: 18px;
+    height: 18px;
+    font-size: 18px;
+    color: var(--mat-sys-primary);
+  }
+
+  &.invalid mat-icon {
+    color: var(--mat-sys-error);
+  }
+}

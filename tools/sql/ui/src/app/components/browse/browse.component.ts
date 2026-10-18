@@ -3,9 +3,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatDialog } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
-import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
 import { MatSelectModule } from '@angular/material/select';
-import { MatTableModule } from '@angular/material/table';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
 import { AutofocusDirective } from '../../directives/autofocus.directive';
@@ -13,30 +11,20 @@ import { BrowseReply, Cell, SortSpec } from '../../models/api.models';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { WorkspaceService } from '../../services/workspace.service';
-import { cellEditText, cellKind, cellText, inputToCell, isEditableCell, toCsv } from '../../utils/cell';
+import { CellRef, DataGridComponent, GridCellDirective, GroupDescriptor, SortDescriptor, effectiveSort } from '../../shared/data-grid';
+import { cellColumn, cellEditText, cellKind, cellText, inputToCell, isEditableCell, toCsv } from '../../utils/cell';
 import { downloadText } from '../../utils/download';
 import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
 import { RecordDialogComponent } from '../record-dialog/record-dialog.component';
 
 const PAGE_SIZES = [50, 100, 500, 1000];
-const FILTER_DELAY_MS = 300;
 const EXPORT_PAGE_ROWS = 1000;
 const EXPORT_LIMIT = 100000;
 
-interface GridRow {
-  index: number;
-  cells: Cell[];
-}
-
-interface CellRef {
-  row: number;
-  column: number;
-}
-
-/** The Browse Data tab: one table or view as a grid that can be sorted, filtered, paged and, for a table, edited. */
+/** The Browse Data tab: one table or view as a grid that can be sorted, grouped, filtered, paged and, for a table, edited. */
 @Component({
   selector: 'app-browse',
-  imports: [AutofocusDirective, MatButtonModule, MatFormFieldModule, MatIconModule, MatPaginatorModule, MatSelectModule, MatTableModule, MatTooltipModule],
+  imports: [AutofocusDirective, DataGridComponent, GridCellDirective, MatButtonModule, MatFormFieldModule, MatIconModule, MatSelectModule, MatTooltipModule],
   templateUrl: './browse.component.html',
   styleUrl: './browse.component.scss',
 })
@@ -50,6 +38,7 @@ export class BrowseComponent {
   protected readonly cellText = cellText;
   protected readonly cellEditText = cellEditText;
   protected readonly cellKind = cellKind;
+  protected readonly kindOf = (value: unknown) => cellKind(value as Cell);
 
   protected readonly table = this.workspace.table;
   protected readonly tableNames = computed(() => [
@@ -60,16 +49,15 @@ export class BrowseComponent {
   protected readonly page = signal<BrowseReply | null>(null);
   protected readonly pageIndex = signal(0);
   protected readonly pageSize = signal(PAGE_SIZES[1]);
-  protected readonly sort = signal<SortSpec | null>(null);
+  protected readonly sort = signal<SortDescriptor[]>([]);
+  protected readonly group = signal<GroupDescriptor[]>([]);
   protected readonly filters = signal<Record<string, string>>({});
   protected readonly selectedRows = signal<ReadonlySet<number>>(new Set());
+  /** The field of a cell is the name of its column. */
   protected readonly activeCell = signal<CellRef | null>(null);
   protected readonly editing = signal<(CellRef & { text: string }) | null>(null);
 
-  protected readonly rows = computed<GridRow[]>(() => (this.page()?.rows ?? []).map((cells, index) => ({ index, cells })));
-  protected readonly columnIds = computed(() => (this.page()?.columns ?? []).map((_, i) => `c${i}`));
-  protected readonly dataColumns = computed(() => ['rowno', ...this.columnIds()]);
-  protected readonly filterColumns = computed(() => ['filter-rowno', ...this.columnIds().map(id => `filter-${id}`)]);
+  protected readonly gridColumns = computed(() => (this.page()?.columns ?? []).map((column, i) => cellColumn(column.name, column.name, i)));
   protected readonly editable = computed(() => this.page()?.editable ?? false);
 
   protected readonly panelOpen = signal(false);
@@ -77,11 +65,12 @@ export class BrowseComponent {
   protected readonly exporting = signal(false);
   protected readonly activeValue = computed(() => {
     const active = this.activeCell();
-    return active ? this.page()?.rows[active.row]?.[active.column] : undefined;
+    const page = this.page();
+    return active && page ? page.rows[active.row]?.[this.columnIndex(active.field)] : undefined;
   });
   protected readonly activeColumn = computed(() => {
     const active = this.activeCell();
-    return active ? (this.page()?.columns[active.column] ?? null) : null;
+    return active ? (this.page()?.columns.find(column => column.name === active.field) ?? null) : null;
   });
   protected readonly panelEditable = computed(() => {
     const value = this.activeValue();
@@ -93,8 +82,6 @@ export class BrowseComponent {
   });
 
   private loadCount = 0;
-  private filterTimer: ReturnType<typeof setTimeout> | undefined;
-  private anchorRow = 0;
   private seenRevision = this.db.revision();
 
   constructor() {
@@ -102,7 +89,8 @@ export class BrowseComponent {
       const table = this.table();
       untracked(() => {
         this.pageIndex.set(0);
-        this.sort.set(null);
+        this.sort.set([]);
+        this.group.set([]);
         this.filters.set({});
         void this.load(table);
       });
@@ -136,13 +124,12 @@ export class BrowseComponent {
       this.page.set(null);
       return;
     }
-    const sort = this.sort();
     try {
       const reply = await this.db.browse({
         table,
         offset: this.pageIndex() * this.pageSize(),
         limit: this.pageSize(),
-        sort: sort ? [sort] : [],
+        sort: this.sortSpecs(),
         filters: this.filters(),
       });
       if (id !== this.loadCount) {
@@ -164,76 +151,24 @@ export class BrowseComponent {
     this.workspace.table.set(name);
   }
 
-  protected onPage(event: PageEvent): void {
-    this.pageIndex.set(event.pageIndex);
-    this.pageSize.set(event.pageSize);
-    void this.load();
+  /** The grouped columns sort first, so a group is not split across the pages it spans. */
+  private sortSpecs(): SortSpec[] {
+    return effectiveSort(this.group(), this.sort()).map(s => ({ column: s.field, descending: s.dir === 'desc' }));
   }
 
-  protected sortState(columnName: string): 'asc' | 'desc' | null {
-    const sort = this.sort();
-    return sort?.column === columnName ? (sort.descending ? 'desc' : 'asc') : null;
+  private columnIndex(field: string): number {
+    return this.page()?.columns.findIndex(column => column.name === field) ?? -1;
   }
 
-  /** Ascending, then descending, then the table's own order. */
-  protected toggleSort(columnName: string): void {
-    const state = this.sortState(columnName);
-    this.sort.set(state === null ? { column: columnName, descending: false } : state === 'asc' ? { column: columnName, descending: true } : null);
-    this.pageIndex.set(0);
-    void this.load();
-  }
-
-  protected setFilter(columnName: string, text: string): void {
-    this.filters.update(filters => {
-      const next = { ...filters };
-      if (text.trim() === '') {
-        delete next[columnName];
-      } else {
-        next[columnName] = text;
-      }
-      return next;
-    });
-    clearTimeout(this.filterTimer);
-    this.filterTimer = setTimeout(() => {
-      this.pageIndex.set(0);
-      void this.load();
-    }, FILTER_DELAY_MS);
-  }
-
-  protected selectCell(row: number, column: number, event: MouseEvent): void {
-    this.activeCell.set({ row, column });
-    this.selectRow(row, event);
-  }
-
-  protected selectRow(row: number, event: MouseEvent): void {
-    const selection = new Set(event.ctrlKey || event.metaKey ? this.selectedRows() : []);
-    if (event.shiftKey) {
-      for (let i = Math.min(this.anchorRow, row); i <= Math.max(this.anchorRow, row); i++) {
-        selection.add(i);
-      }
-    } else if ((event.ctrlKey || event.metaKey) && selection.has(row)) {
-      selection.delete(row);
-    } else {
-      selection.add(row);
-      this.anchorRow = row;
-    }
-    this.selectedRows.set(selection);
-  }
-
-  protected isActive(row: number, column: number): boolean {
-    const active = this.activeCell();
-    return active?.row === row && active.column === column;
-  }
-
-  protected isEditing(row: number, column: number): boolean {
+  protected isEditing(row: number, field: string): boolean {
     const edit = this.editing();
-    return edit?.row === row && edit.column === column;
+    return edit?.row === row && edit.field === field;
   }
 
-  protected startEdit(row: number, column: number): void {
-    const cell = this.page()?.rows[row]?.[column];
+  protected startEdit(row: number, field: string): void {
+    const cell = this.page()?.rows[row]?.[this.columnIndex(field)];
     if (this.editable() && cell !== undefined && isEditableCell(cell)) {
-      this.editing.set({ row, column, text: cellEditText(cell) });
+      this.editing.set({ row, field, text: cellEditText(cell) });
     }
   }
 
@@ -252,8 +187,9 @@ export class BrowseComponent {
       return;
     }
     this.editing.set(null);
-    const column = page.columns[edit.column];
-    const original = page.rows[edit.row][edit.column];
+    const index = this.columnIndex(edit.field);
+    const column = page.columns[index];
+    const original = page.rows[edit.row][index];
     if (edit.text === cellEditText(original)) {
       return;
     }
@@ -262,9 +198,9 @@ export class BrowseComponent {
 
   protected async setNull(): Promise<void> {
     const active = this.activeCell();
-    const page = this.page();
-    if (active && page && isEditableCell(page.rows[active.row][active.column])) {
-      await this.update(active.row, page.columns[active.column].name, null);
+    const value = this.activeValue();
+    if (active && value !== undefined && isEditableCell(value)) {
+      await this.update(active.row, active.field, null);
     }
   }
 
@@ -284,11 +220,11 @@ export class BrowseComponent {
     }
     this.exporting.set(true);
     try {
-      const sort = this.sort();
+      const sort = this.sortSpecs();
       const wanted = Math.min(page.total, EXPORT_LIMIT);
       const rows: Cell[][] = [];
       for (let offset = 0; offset < wanted; offset += EXPORT_PAGE_ROWS) {
-        const part = await this.db.browse({ table: page.table, offset, limit: EXPORT_PAGE_ROWS, sort: sort ? [sort] : [], filters: this.filters() });
+        const part = await this.db.browse({ table: page.table, offset, limit: EXPORT_PAGE_ROWS, sort, filters: this.filters() });
         rows.push(...part.rows);
       }
       downloadText(`${page.table}.csv`, toCsv(page.columns.map(column => column.name), rows), 'text/csv');

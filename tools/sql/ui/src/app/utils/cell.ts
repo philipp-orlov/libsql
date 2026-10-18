@@ -1,4 +1,5 @@
-import { Cell, ColumnInfo } from '../models/api.models';
+import { BlobCell, Cell, ColumnInfo, IntegerCell } from '../models/api.models';
+import type { GridColumn } from '../shared/data-grid/data-grid.models';
 
 export type CellKind = 'null' | 'integer' | 'real' | 'text' | 'blob';
 
@@ -34,6 +35,51 @@ export function cellEditText(cell: Cell): string {
 /** The grid cannot send a blob back, so it does not offer to edit one. */
 export function isEditableCell(cell: Cell): boolean {
   return cellKind(cell) !== 'blob';
+}
+
+const KIND_RANK: Record<CellKind, number> = { null: 0, integer: 1, real: 1, text: 2, blob: 3 };
+
+function compareNumbers(a: number | IntegerCell, b: number | IntegerCell): number {
+  if (typeof a === 'number' && typeof b === 'number') {
+    return Math.sign(a - b);
+  }
+  // An integer beyond double precision: exact against an integer, close enough against a real.
+  const exact = (n: number | IntegerCell) => (typeof n === 'number' ? (Number.isInteger(n) ? BigInt(n) : null) : BigInt(n.value));
+  const x = exact(a);
+  const y = exact(b);
+  if (x !== null && y !== null) {
+    return x < y ? -1 : x > y ? 1 : 0;
+  }
+  return Math.sign(Number(typeof a === 'number' ? a : a.value) - Number(typeof b === 'number' ? b : b.value));
+}
+
+/** SQLite's order of values: NULL, numbers, text, then blobs. */
+export function compareCells(a: unknown, b: unknown): number {
+  const x = a as Cell;
+  const y = b as Cell;
+  const kx = cellKind(x);
+  const ky = cellKind(y);
+  if (KIND_RANK[kx] !== KIND_RANK[ky]) {
+    return KIND_RANK[kx] - KIND_RANK[ky];
+  }
+  switch (KIND_RANK[kx]) {
+    case 0:
+      return 0;
+    case 1:
+      return compareNumbers(x as number | IntegerCell, y as number | IntegerCell);
+    case 2:
+      return (x as string) < (y as string) ? -1 : (x as string) > (y as string) ? 1 : 0;
+    default: {
+      const p = (x as BlobCell).value;
+      const q = (y as BlobCell).value;
+      return p < q ? -1 : p > q ? 1 : (x as BlobCell).size - (y as BlobCell).size;
+    }
+  }
+}
+
+/** A grid column over rows of cells: cell `index`, shown, sorted and grouped the way SQLite sees the values. */
+export function cellColumn(field: string, title: string, index: number): GridColumn<Cell[]> {
+  return { field, title, value: row => row[index], text: value => cellText(value as Cell), compare: compareCells };
 }
 
 const SAFE_INTEGER = /^[+-]?\d{1,15}$/;

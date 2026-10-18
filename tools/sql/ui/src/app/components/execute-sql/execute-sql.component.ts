@@ -1,13 +1,13 @@
 import { Component, inject, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { MatTableModule } from '@angular/material/table';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
-import { SqlReply } from '../../models/api.models';
+import { Cell, SqlReply } from '../../models/api.models';
 import { DatabaseService } from '../../services/database.service';
-import { cellKind, cellText, toCsv } from '../../utils/cell';
+import { DataGridComponent, GridCellDirective, GridColumn } from '../../shared/data-grid';
+import { cellColumn, cellKind, toCsv } from '../../utils/cell';
 import { downloadText } from '../../utils/download';
 import { SqlEditorComponent } from '../sql-editor/sql-editor.component';
 
@@ -38,19 +38,20 @@ function newEditor(id: number): Editor {
 /** The Execute SQL tab: editors in tabs, each with the result of its last run. */
 @Component({
   selector: 'app-execute-sql',
-  imports: [MatButtonModule, MatIconModule, MatTableModule, MatTabsModule, MatTooltipModule, SqlEditorComponent],
+  imports: [DataGridComponent, GridCellDirective, MatButtonModule, MatIconModule, MatTabsModule, MatTooltipModule, SqlEditorComponent],
   templateUrl: './execute-sql.component.html',
   styleUrl: './execute-sql.component.scss',
 })
 export class ExecuteSqlComponent {
   protected readonly db = inject(DatabaseService);
 
-  protected readonly cellText = cellText;
-  protected readonly cellKind = cellKind;
+  protected readonly kindOf = (value: unknown) => cellKind(value as Cell);
 
   protected readonly editors = signal<Editor[]>([newEditor(1)]);
   protected readonly selected = signal(0);
   private nextId = 2;
+  /** One set of columns per result, so the grid sees the same columns until the next run. */
+  private readonly gridColumns = new WeakMap<SqlReply, GridColumn<Cell[]>[]>();
 
   protected addEditor(): void {
     this.editors.update(editors => [...editors, newEditor(this.nextId++)]);
@@ -85,8 +86,14 @@ export class ExecuteSqlComponent {
     }
   }
 
-  protected columnIds(editor: Editor): string[] {
-    return (editor.result?.columns ?? []).map((_, i) => `c${i}`);
+  protected columnsOf(result: SqlReply): GridColumn<Cell[]>[] {
+    let columns = this.gridColumns.get(result);
+    if (!columns) {
+      // Result columns may share a name.
+      columns = result.columns.map((name, i) => cellColumn(`c${i}`, name, i));
+      this.gridColumns.set(result, columns);
+    }
+    return columns;
   }
 
   protected exportCsv(editor: Editor): void {

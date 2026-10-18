@@ -12,9 +12,15 @@ Open `http://127.0.0.1:8080/`. The window has the four tabs of DB Browser:
 | Tab | What it does |
 | --- | --- |
 | Database Structure | Lists the tables, indices, views and triggers with their columns. Creates and deletes them, and modifies a table (rename it, rename, drop or add a column). Each dialog shows the SQL before it runs. Export SQL downloads a script that rebuilds the schema and the rows. |
-| Browse Data | Shows a table or view in a grid. Sort by a column heading, filter in the box under it, page through the rows. Double-click a cell to edit it, or open the Edit Cell panel to see and edit a long value. Add and delete records, set a cell to NULL. Export CSV saves the rows that match the filter. |
+| Browse Data | Shows a table or view in a grid. Sort by a column heading (`Ctrl`+click adds a column to the sort), filter in the box under it, page through the rows. Double-click a cell to edit it, or open the Edit Cell panel to see and edit a long value. Add and delete records, set a cell to NULL. Export CSV saves the rows that match the filter. |
 | Edit Pragmas | Shows the pragmas that change what libsql does, in three groups: saved in the database file, this connection only, and reported by the store. |
-| Execute SQL | Runs SQL from editor tabs. The editor colors the SQL and completes keywords, functions, tables and columns (`Ctrl+Space`, or as you type; `alias.` and `table.` offer columns). Runs the selection when there is one; `Ctrl+Enter` runs. Opens and saves `.sql` files, and saves the rows as CSV. |
+| Execute SQL | Runs SQL from editor tabs. The editor colors the SQL and completes keywords, functions, tables and columns (`Ctrl+Space`, or as you type; `alias.` and `table.` offer columns). Runs the selection when there is one; `Ctrl+Enter` runs. Opens and saves `.sql` files, and saves the rows as CSV. The rows show in the same grid, sorted, filtered and grouped in the browser. |
+
+Both grids (`ui/src/app/shared/data-grid`) work like Kendo UI's: drag a column heading into the bar above
+the grid to group the rows by it, drag more to nest groups, click a group chip to turn its order around
+and drag it away to ungroup. Drag headings to rearrange the columns and their right edge to resize them.
+The menu of a heading sorts, groups, and shows or hides columns. In Browse Data the server sorts by the
+grouped columns first, so a group continues on the next page.
 
 The top bar shows which database the page edits and whether it is read-write or read-only.
 
