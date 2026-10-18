@@ -644,6 +644,14 @@ std::shared_ptr<TxnImpl> newTxn(const std::shared_ptr<DatabaseImpl>& db, bool re
     return t;
 }
 
+/// Makes `t` the SQL transaction of `db`. Its link back does not own `db`, so closing the
+/// handle with BEGIN open frees both and rolls the transaction back.
+void adoptSqlTxn(DatabaseImpl& db, std::shared_ptr<TxnImpl>&& t)
+{
+    t->db = std::shared_ptr<DatabaseImpl>(std::shared_ptr<DatabaseImpl>(), &db);
+    db.sqlTxn = std::move(t);
+}
+
 /// Ends `t` (aborting whatever it still holds) and returns it to the pool.
 void park(std::shared_ptr<TxnImpl>&& owner)
 {
@@ -847,7 +855,7 @@ Result execBatch(const std::shared_ptr<DatabaseImpl>& dbp, Batch& b, const std::
                             throw Error(ErrorCode::ReadOnly, "attempt to write a readonly database");
                         start(*t, true);
                     }
-                    db.sqlTxn = std::move(t);
+                    adoptSqlTxn(db, std::move(t));
                     break;
                 }
                 case TransactionStmt::Kind::Commit:
@@ -866,7 +874,7 @@ Result execBatch(const std::shared_ptr<DatabaseImpl>& dbp, Batch& b, const std::
                         auto t = newTxn(dbp, db.readOnly);
                         t->sql = true;
                         t->bySavepoint = true;
-                        db.sqlTxn = std::move(t);
+                        adoptSqlTxn(db, std::move(t));
                     }
                     bool done = false;
                     savepointControl(*db.sqlTxn, st, done);
