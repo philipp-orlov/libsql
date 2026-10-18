@@ -834,6 +834,20 @@ bool planCurrent(const Program& p, Session& s)
 
 namespace {
 
+/// Drops the borrows a run left in the frame, so no later copy reads a page
+/// of a transaction that has ended.
+struct FrameGuard
+{
+    std::vector<Value>& frame;
+    ~FrameGuard()
+    {
+        for (Value& v : frame) {
+            if (v.borrowed())
+                v.setNull();
+        }
+    }
+};
+
 }  // namespace
 
 void runProgram(Program& p, Session& s, const std::vector<Value>& params, ResultBuilder& out, FuncContext& fctx)
@@ -849,6 +863,10 @@ void runProgram(Program& p, Session& s, const std::vector<Value>& params, Result
     fctx.nowUsec = INT64_MIN;
     fctx.conn = s.conn;
     if (p.select) {
+        // A row callback may write through this transaction, and a write may
+        // change pages in place.
+        c.borrow = !(out.each && s.writable);
+        FrameGuard guard{p.frame};
         SelectPlan& sp = *p.select;
         if (!sp.sharedNames) {
             auto names = std::make_shared<ColumnNames>();
@@ -892,6 +910,8 @@ std::int64_t runNested(Program& p, Session& s, int depth, FuncContext& fctx)
     c.depth = depth;
     c.run = ++s.conn->runCounter;
     if (p.select) {
+        c.borrow = true;
+        FrameGuard guard{p.frame};
         NullSink sink;
         runSelect(*p.select, c, sink);
         return 0;

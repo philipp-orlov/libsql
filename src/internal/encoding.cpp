@@ -273,7 +273,7 @@ void appendKey(std::string& out, const Value& v, Collation c, bool desc)
             break;
         case Type::Blob: {
             out.push_back(char(kKeyBlob));
-            const Blob& b = v.blob();
+            const BlobView b = v.blob();
             appendBytes(out, reinterpret_cast<const char*>(b.data()), b.size());
             break;
         }
@@ -309,7 +309,7 @@ void throwTruncatedKey()
     corrupt("truncated fixed-width key field");
 }
 
-void decodeKeyInto(std::string_view& in, Value& out)
+void decodeKeyInto(std::string_view& in, Value& out, bool borrow)
 {
     if (in.empty())
         corrupt("empty key");
@@ -352,7 +352,10 @@ void decodeKeyInto(std::string_view& in, Value& out)
         case kKeyText: {
             std::string_view run;
             if (plainBytes(in, run)) {
-                out.setText(run);
+                if (borrow)
+                    out.setTextRef(run);
+                else
+                    out.setText(run);
                 return;
             }
             thread_local std::string buffer;
@@ -363,7 +366,10 @@ void decodeKeyInto(std::string_view& in, Value& out)
         case kKeyBlob: {
             std::string_view run;
             if (plainBytes(in, run)) {
-                out.setBlob(run.data(), run.size());
+                if (borrow)
+                    out.setBlobRef(run.data(), run.size());
+                else
+                    out.setBlob(run.data(), run.size());
                 return;
             }
             thread_local std::string buffer;
@@ -471,7 +477,7 @@ void putValue(std::string& out, const Value& v)
         }
         case Type::Text: putString(out, v.text()); break;
         case Type::Blob: {
-            const Blob& b = v.blob();
+            const BlobView b = v.blob();
             putString(out, std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
             break;
         }
@@ -591,17 +597,13 @@ std::uint64_t typeCode(const Value& v) noexcept
 
 inline std::size_t payloadSize(std::uint64_t code)
 {
+    // Codes 0-11: NULL, six integer widths, REAL, 0, 1, DATETIME, unknown.
+    static constexpr std::uint8_t kSize[12] = {0, 1, 2, 3, 4, 6, 8, 8, 0, 0, 8, 0xff};
     if (code >= 12)
         return std::size_t((code - 12) >> 1);
-    switch (code) {
-        case 0:
-        case 8:
-        case 9: return 0;
-        case 7:
-        case 10: return 8;
-        case 11: corrupt("unknown record type code");
-        default: return kIntWidth[code];
-    }
+    if (code == 11)
+        corrupt("unknown record type code");
+    return kSize[code];
 }
 
 void putPayload(std::string& out, const Value& v, std::uint64_t code)
@@ -664,13 +666,19 @@ inline std::int64_t readInt(const char* p, unsigned width) noexcept
 }
 
 /// Decodes the payload of type `code` at `p` (already bounds-checked).
-inline void decodeCell(std::uint64_t code, const char* p, std::size_t size, Value& out)
+inline void decodeCell(std::uint64_t code, const char* p, std::size_t size, Value& out, bool borrow)
 {
     if (code >= 12) {
-        if (code & 1)
+        if (borrow) {
+            if (code & 1)
+                out.setTextRef(std::string_view(p, size));
+            else
+                out.setBlobRef(p, size);
+        } else if (code & 1) {
             out.setText(std::string_view(p, size));
-        else
+        } else {
             out.setBlob(p, size);
+        }
         return;
     }
     switch (code) {
@@ -710,15 +718,17 @@ struct RecordCursor
 
     explicit RecordCursor(std::string_view in)
     {
-        const std::uint64_t n = getVarint(in);
-        const std::uint64_t hdr = getVarint(in);
-        if (hdr > in.size() || n > hdr)
+        const char* p = in.data();
+        const char* end = p + in.size();
+        const std::uint64_t n = headerVarint(p, end);
+        const std::uint64_t hdr = headerVarint(p, end);
+        if (hdr > std::size_t(end - p) || n > hdr)
             corrupt("implausible record header");
         count = std::size_t(n);
-        code = in.data();
+        code = p;
         codeEnd = code + hdr;
         body = codeEnd;
-        bodyEnd = in.data() + in.size();
+        bodyEnd = end;
     }
     /// The next cell's type code and payload; advances past it.
     std::uint64_t next(const char*& payload, std::size_t& size)
@@ -765,7 +775,7 @@ void encodeRowInto(std::string& out, const Value* values, std::size_t count, con
     }
 }
 
-std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width)
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, bool borrow)
 {
     RecordCursor r(in);
     const std::size_t have = std::min(r.count, width);
@@ -773,15 +783,15 @@ std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width)
         const char* p;
         std::size_t size;
         const std::uint64_t c = r.next(p, size);
-        decodeCell(c, p, size, out[i]);
+        decodeCell(c, p, size, out[i], borrow);
     }
     for (std::size_t i = have; i < width; ++i)
         out[i].setNull();
     return have;
 }
 
-std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, const std::uint8_t* used,
-                          bool fillMissing)
+std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width,
+                          const std::uint8_t* used, bool fillMissing, bool borrow)
 {
     RecordCursor r(in);
     const std::size_t have = std::min(r.count, width);
@@ -790,7 +800,7 @@ std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, co
         std::size_t size;
         const std::uint64_t c = r.next(p, size);
         if (used[i])
-            decodeCell(c, p, size, out[i]);
+            decodeCell(c, p, size, out[i], borrow);
     }
     if (fillMissing) {
         for (std::size_t i = have; i < width; ++i)
@@ -812,7 +822,7 @@ std::vector<Value> decodeRow(std::string_view in)
         const char* p;
         std::size_t size;
         const std::uint64_t c = r.next(p, size);
-        decodeCell(c, p, size, out[i]);
+        decodeCell(c, p, size, out[i], false);
     }
     return out;
 }

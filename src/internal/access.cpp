@@ -449,12 +449,13 @@ void loadRow(SourceNode& s, Ctx& c, std::string_view key, std::string_view paylo
         if (s.split == 2) {
             // Two-phase: what this level's filters read now, the rest in
             // finishRow once the row has passed them.
-            have = decodeRowInto(payload, row, s.decodeWidth, s.firstUsed.data());
+            have = decodeRowInto(payload, row, s.decodeWidth, s.firstUsed.data(), true, c.borrow);
             s.restRecord = payload;
             s.restPending = true;
         } else {
-            have = s.used.size() >= s.decodeWidth ? decodeRowInto(payload, row, s.decodeWidth, s.used.data())
-                                                  : decodeRowInto(payload, row, s.decodeWidth);
+            have = s.used.size() >= s.decodeWidth
+                       ? decodeRowInto(payload, row, s.decodeWidth, s.used.data(), true, c.borrow)
+                       : decodeRowInto(payload, row, s.decodeWidth, c.borrow);
         }
         // Columns added by ALTER TABLE after this row was written.
         for (std::size_t i = have; i < s.decodeWidth; ++i) {
@@ -499,7 +500,7 @@ void loadEntry(SourceNode& s, Ctx& c, std::string_view entry, std::string_view f
             skipKeys(in, 1);
             continue;
         }
-        decodeKeyInto(in, row[col]);
+        decodeKeyInto(in, row[col], c.borrow);
         if (i / 8 < flags.size() && (std::uint8_t(flags[i / 8]) >> (i % 8) & 1) &&
             row[col].type() == Type::Integer)
             row[col].setReal(double(row[col].integer()));
@@ -522,7 +523,7 @@ void loadEntry(SourceNode& s, Ctx& c, std::string_view entry, std::string_view f
             skipKeys(in, 1);
             continue;
         }
-        decodeKeyInto(in, row[col]);
+        decodeKeyInto(in, row[col], c.borrow);
         const std::size_t bit = parts + j;
         if (bit / 8 < flags.size() && (std::uint8_t(flags[bit / 8]) >> (bit % 8) & 1) &&
             row[col].type() == Type::Integer)
@@ -740,7 +741,16 @@ void window(SourceNode& s, Ctx& c, const std::string& prefix, std::size_t next)
 
 bool inWindow(const AccessPath& ap, std::string_view key)
 {
-    return ap.hi.empty() || key < std::string_view(ap.hi);
+    if (ap.hi.empty())
+        return true;
+    // A rowid key is eight bytes, and most keys differ within their first
+    // eight: one word compare settles those without a memcmp call.
+    if (key.size() >= 8 && ap.hi.size() >= 8) {
+        const std::uint64_t a = loadBigEndian64(key.data()), b = loadBigEndian64(ap.hi.data());
+        if (a != b)
+            return a < b;
+    }
+    return key < std::string_view(ap.hi);
 }
 
 bool seekEntry(SourceNode& s, std::string_view at)
@@ -1114,7 +1124,8 @@ void finishRow(SourceNode& s, Ctx& c)
     if (!s.restPending)
         return;
     s.restPending = false;
-    decodeRowInto(s.restRecord, c.slots + s.base, s.decodeWidth, s.restUsed.data(), false);
+    decodeRowInto(s.restRecord, c.slots + s.base, s.decodeWidth, s.restUsed.data(), false,
+                  c.borrow);
 }
 
 }  // namespace sql::internal

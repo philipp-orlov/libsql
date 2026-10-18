@@ -53,6 +53,9 @@ struct Ctx
     /// Identifies this execution of the program, so uncorrelated sub-query
     /// results are reused within it and recomputed by the next one.
     std::uint64_t run = 0;
+    /// Table reads may leave text and blobs in the store's pages (see
+    /// Value::borrowed): nothing writes while this statement runs.
+    bool borrow = false;
 };
 
 /// Rows of a fixed width, stored flat. Clearing keeps both the vector and
@@ -143,8 +146,24 @@ enum LazyFn : std::uint8_t
 /// Evaluates `e`. Leaves come back as a reference to where they already live;
 /// computed values land in `e.scratch`.
 const Value& eval(const Expr& e, Ctx& c);
+/// 1 true, 0 false, -1 NULL, 2 not decided here (use the general path).
+int directCompare(const Expr& e, const Ctx& c) noexcept;
+/// holds() past its fast path.
+bool holdsEval(const Expr& e, Ctx& c);
 /// `!e` is true; otherwise the expression's SQL truth (NULL is false).
-bool holds(const Expr* e, Ctx& c);
+inline bool holds(const Expr* e, Ctx& c)
+{
+    if (!e)
+        return true;
+    // Expr::fastShape 1 (kShapeNone, eval.cpp) marks a comparison
+    // directCompare cannot settle.
+    if (e->kind == ExprKind::Binary && e->op >= std::uint8_t(BinaryOp::Eq) &&
+        e->op <= std::uint8_t(BinaryOp::Ge) && e->fastShape != 1) {
+        if (const int d = directCompare(*e, c); d != 2)
+            return d == 1;
+    }
+    return holdsEval(*e, c);
+}
 /// Comparison of two values after SQLite's affinity rules for the
 /// expressions they came from. Returns false (and sets `isNull`) when either
 /// side is NULL.
@@ -478,6 +497,9 @@ struct CorePlan
     /// that slot before the next row replaces it), or -1. Empty until the
     /// first projection decides.
     std::vector<int> swapFrom;
+    /// Per output: a bare column it may borrow from (the slot stays as it is
+    /// until the sink has taken the row), or -1.
+    std::vector<int> borrowFrom;
     /// The first of the slots every output takes in order, when they are
     /// consecutive: the row goes to the sink from there, uncopied. Else -1.
     int directFrom = -1;

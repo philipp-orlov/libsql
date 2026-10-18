@@ -240,10 +240,71 @@ std::size_t formatDatetimeIso(Datetime when, char* buf, std::size_t size)
 
 // --------------------------------------------------------------- value ----
 
-Value Value::blob(const void* data, std::size_t size)
+void Value::setBytes(Type t, const char* p, std::size_t n)
 {
-    const auto* p = static_cast<const std::byte*>(data);
-    return Value(Blob(p, p + size));
+    sub_ = 0;
+    if (store_ == kHeap) {
+        if (n <= u_.ext.capacity) {
+            if (n)
+                std::memmove(u_.ext.data, p, n);
+            u_.ext.size = n;
+            type_ = t;
+            return;
+        }
+    } else if (n <= kInlineBytes) {
+        if (n)
+            std::memmove(u_.inl, p, n);
+        store_ = kInline;
+        size_ = std::uint8_t(n);
+        type_ = t;
+        return;
+    }
+    // Grows: `p` may lie in the old buffer, so it is freed only after.
+    const std::size_t cap = store_ == kHeap ? std::max(n, u_.ext.capacity * 2) : n;
+    char* fresh = static_cast<char*>(::operator new(cap));
+    std::memcpy(fresh, p, n);
+    release();
+    store_ = kHeap;
+    u_.ext.data = fresh;
+    u_.ext.size = n;
+    u_.ext.capacity = cap;
+    type_ = t;
+}
+
+// Out of line and never inlined: GCC cannot tell which member of the union a
+// release() sees and warns (-Wfree-nonheap-object) on inline copies.
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
+void Value::freeBytes(char* p) noexcept
+{
+    ::operator delete(p);
+}
+
+void Value::copyFrom(const Value& other)
+{
+    if (other.type_ == Type::Text || other.type_ == Type::Blob) {
+        u_.i = 0;
+        const std::string_view b = other.bytes();
+        setBytes(other.type_, b.data(), b.size());
+    } else {
+        u_ = other.u_;
+        type_ = other.type_;
+    }
+    sub_ = other.sub_;
+}
+
+void Value::assign(const Value& other)
+{
+    if (other.type_ == Type::Text || other.type_ == Type::Blob) {
+        const std::string_view b = other.bytes();
+        setBytes(other.type_, b.data(), b.size());
+    } else {
+        release();
+        u_ = other.u_;
+        type_ = other.type_;
+    }
+    sub_ = other.sub_;
 }
 
 void Value::wrongType(Type wanted) const
@@ -265,11 +326,11 @@ std::string Value::toText() const
 {
     switch (type()) {
         case Type::Null: return std::string();
-        case Type::Text: return std::get<std::string>(v_);
-        case Type::Integer: return std::to_string(std::get<std::int64_t>(v_));
-        case Type::Datetime: return formatDatetime(std::get<Datetime>(v_));
+        case Type::Text: return std::string(bytes());
+        case Type::Integer: return std::to_string(u_.i);
+        case Type::Datetime: return formatDatetime(Datetime{u_.i});
         case Type::Real: {
-            const double d = std::get<double>(v_);
+            const double d = u_.r;
             // The shortest spelling that reads back as the same double, so
             // exact values stay tidy and inexact ones stay honest.
             char buf[40];
@@ -278,7 +339,7 @@ std::string Value::toText() const
         }
         case Type::Blob: {
             static const char* kHex = "0123456789abcdef";
-            const Blob& b = std::get<Blob>(v_);
+            const std::string_view b = bytes();
             std::string out(b.size() * 2, '\0');
             for (std::size_t i = 0; i < b.size(); ++i) {
                 const auto byte = static_cast<unsigned char>(b[i]);
@@ -316,11 +377,11 @@ bool Value::truthy() const noexcept
 {
     switch (type()) {
         case Type::Null: return false;
-        case Type::Integer: return std::get<std::int64_t>(v_) != 0;
-        case Type::Real: return std::get<double>(v_) != 0.0;
-        case Type::Datetime: return std::get<Datetime>(v_).usec != 0;
-        case Type::Text: return !std::get<std::string>(v_).empty();
-        case Type::Blob: return !std::get<Blob>(v_).empty();
+        case Type::Integer:
+        case Type::Datetime: return u_.i != 0;
+        case Type::Real: return u_.r != 0.0;
+        case Type::Text:
+        case Type::Blob: return !bytes().empty();
     }
     return false;
 }
@@ -334,14 +395,14 @@ Value Value::cast(Type target) const
         case Type::Integer:
             switch (type()) {
                 case Type::Real: {
-                    const double d = std::get<double>(v_);
+                    const double d = u_.r;
                     if (!(d >= -9.2233720368547758e18 && d <= 9.2233720368547758e18))
                         mismatch("real value is out of INTEGER range");
                     return Value(std::int64_t(d));
                 }
-                case Type::Datetime: return Value(std::get<Datetime>(v_).usec);
+                case Type::Datetime: return Value(u_.i);
                 case Type::Text: {
-                    const std::string& s = std::get<std::string>(v_);
+                    const std::string s(bytes());
                     char* end = nullptr;
                     const long long v = std::strtoll(s.c_str(), &end, 10);
                     if (end == s.c_str() || *end != '\0')
@@ -354,10 +415,10 @@ Value Value::cast(Type target) const
 
         case Type::Real:
             switch (type()) {
-                case Type::Integer: return Value(double(std::get<std::int64_t>(v_)));
-                case Type::Datetime: return Value(double(std::get<Datetime>(v_).usec));
+                case Type::Integer:
+                case Type::Datetime: return Value(double(u_.i));
                 case Type::Text: {
-                    const std::string& s = std::get<std::string>(v_);
+                    const std::string s(bytes());
                     char* end = nullptr;
                     const double v = internal::parseDouble(s.c_str(), &end);
                     if (end == s.c_str() || *end != '\0')
@@ -370,22 +431,20 @@ Value Value::cast(Type target) const
 
         case Type::Datetime:
             switch (type()) {
-                case Type::Integer: return Value(Datetime{std::get<std::int64_t>(v_)});
-                case Type::Text: return Value(parseDatetime(std::get<std::string>(v_)));
+                case Type::Integer: return Value(Datetime{u_.i});
+                case Type::Text: return Value(parseDatetime(bytes()));
                 default: break;
             }
             break;
 
         case Type::Text:
-            if (type() == Type::Blob) {
-                const Blob& b = std::get<Blob>(v_);
-                return Value(std::string(reinterpret_cast<const char*>(b.data()), b.size()));
-            }
+            if (type() == Type::Blob)
+                return Value(bytes());
             return Value(toText());
 
         case Type::Blob:
             if (type() == Type::Text) {
-                const std::string& s = std::get<std::string>(v_);
+                const std::string_view s = bytes();
                 return Value::blob(s.data(), s.size());
             }
             break;
@@ -397,7 +456,17 @@ Value Value::cast(Type target) const
 
 bool operator==(const Value& a, const Value& b) noexcept
 {
-    return a.v_ == b.v_;
+    if (a.type_ != b.type_)
+        return false;
+    switch (a.type_) {
+        case Type::Null: return true;
+        case Type::Integer:
+        case Type::Datetime: return a.u_.i == b.u_.i;
+        case Type::Real: return a.u_.r == b.u_.r;
+        case Type::Text:
+        case Type::Blob: return a.bytes() == b.bytes();
+    }
+    return false;
 }
 
 namespace {
@@ -434,27 +503,15 @@ int compare(const Value& a, const Value& b) noexcept
         case Type::Null: return 0;
         case Type::Integer:
             if (b.type() == Type::Integer)
-                return cmp3(std::get<std::int64_t>(a.v_), std::get<std::int64_t>(b.v_));
-            return cmp3(double(std::get<std::int64_t>(a.v_)), std::get<double>(b.v_));
+                return cmp3(a.u_.i, b.u_.i);
+            return cmp3(double(a.u_.i), b.u_.r);
         case Type::Real:
             if (b.type() == Type::Real)
-                return cmp3(std::get<double>(a.v_), std::get<double>(b.v_));
-            return cmp3(std::get<double>(a.v_), double(std::get<std::int64_t>(b.v_)));
-        case Type::Datetime:
-            return cmp3(std::get<Datetime>(a.v_).usec, std::get<Datetime>(b.v_).usec);
+                return cmp3(a.u_.r, b.u_.r);
+            return cmp3(a.u_.r, double(b.u_.i));
+        case Type::Datetime: return cmp3(a.u_.i, b.u_.i);
         case Type::Text:
-            return cmp3(std::get<std::string>(a.v_).compare(std::get<std::string>(b.v_)), 0);
-        case Type::Blob: {
-            const Blob& x = std::get<Blob>(a.v_);
-            const Blob& y = std::get<Blob>(b.v_);
-            const std::size_t n = std::min(x.size(), y.size());
-            if (n) {
-                const int c = std::memcmp(x.data(), y.data(), n);
-                if (c)
-                    return c < 0 ? -1 : 1;
-            }
-            return cmp3(x.size(), y.size());
-        }
+        case Type::Blob: return cmp3(a.bytes().compare(b.bytes()), 0);
     }
     return 0;
 }

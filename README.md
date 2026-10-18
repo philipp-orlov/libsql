@@ -265,6 +265,10 @@ scan.bind(1, sql::Value(20.0)).each([&](const sql::RowView& r) {
 });
 ```
 
+The callback sees the rows without a copy: `text()` is a `std::string_view` and
+`blob()` a `sql::BlobView`, and in a row from `each` they may point straight
+into the database pages. Copy the `Value` (or call `r.row()`) to keep one.
+
 `ORDER BY` without `LIMIT` over more rows than fit in the sort memory
 (`Database::configure().sortMemoryLimit(bytes)`, 64 MiB by default) writes
 sorted runs to a temporary file and merges them; with `LIMIT` it only ever
@@ -368,42 +372,41 @@ see Building):
 
 | workload | libsql | libsql PGO | SQLite | PGO / SQLite |
 |---|---:|---:|---:|---:|
-| `INSERT`, 2 indexes, prepared, batches of 1,000 | 4.36 µs | 3.93 µs | 5.27 µs | 0.75x |
-| the same, one transaction per row | 9.4 µs | 8.9 µs | 12.5 µs | 0.72x |
-| `INSERT` prepared and run once each | 9.6 µs | 9.1 µs | 14.7 µs | 0.62x |
-| `SELECT ... WHERE id = ?`, prepared, own transaction | 1.59 µs | 1.42 µs | 1.98 µs | 0.72x |
-| the same inside one read transaction | 0.66 µs | 0.66 µs | 0.79 µs | 0.83x |
-| `SELECT ... WHERE id = ?` prepared and run once each | 1.97 µs | 1.38 µs | 4.58 µs | 0.30x |
-| `SELECT id FROM item WHERE name = ?` | 2.04 µs | 1.69 µs | 2.23 µs | 0.76x |
-| index equality returning ~200 rows | 67 µs | 48 µs | 73 µs | 0.65x |
-| rowid range of 100 rows | 13.7 µs | 9.3 µs | 8.3 µs | 1.12x |
-| index equality, `ORDER BY name LIMIT 10` | 76 µs | 66 µs | 85 µs | 0.78x |
-| `count(*)` of ~200 rows through an index | 1.77 µs | 1.60 µs | 6.3 µs | 0.25x |
+| `INSERT`, 2 indexes, prepared, batches of 1,000 | 3.89 µs | 3.63 µs | 4.85 µs | 0.75x |
+| the same, one transaction per row | 9.2 µs | 8.9 µs | 11.9 µs | 0.75x |
+| `INSERT` prepared and run once each | 9.3 µs | 8.9 µs | 14.3 µs | 0.63x |
+| `SELECT ... WHERE id = ?`, prepared, own transaction | 1.45 µs | 1.27 µs | 1.86 µs | 0.68x |
+| the same inside one read transaction | 0.53 µs | 0.48 µs | 0.72 µs | 0.67x |
+| `SELECT ... WHERE id = ?` prepared and run once each | 1.46 µs | 1.35 µs | 4.18 µs | 0.32x |
+| `SELECT id FROM item WHERE name = ?` | 1.82 µs | 1.66 µs | 2.03 µs | 0.82x |
+| index equality returning ~200 rows | 55 µs | 44 µs | 72 µs | 0.61x |
+| rowid range of 100 rows | 8.9 µs | 7.8 µs | 7.9 µs | 0.98x |
+| index equality, `ORDER BY name LIMIT 10` | 69 µs | 54 µs | 83 µs | 0.64x |
+| `count(*)` of ~200 rows through an index | 1.76 µs | 1.56 µs | 6.5 µs | 0.24x |
 | `count(*)` of the whole table | constant | constant | 0.1 ns/row | |
-| full scan with a predicate, per row | 45 ns | 36 ns | 32 ns | 1.12x |
-| `GROUP BY` over a full scan, per row | 152 ns | 133 ns | 380 ns | 0.35x |
-| `ORDER BY price LIMIT 100` over a full scan, per row | 63 ns | 50 ns | 51 ns | 0.98x |
-| covering index scan returning 100,000 names, per row | 24.8 ns | 20.9 ns | 18.9 ns | 1.11x |
-| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 2.1 ns | 1.8 ns | 1.9 ns | 0.95x |
-| full sort of 200,000 rows, per row | 629 ns | 604 ns | 689 ns | 0.88x |
-| join through an index, ~400 output rows | 277 µs | 252 µs | 378 µs | 0.67x |
-| join with `GROUP BY` over 1,000 items | 1.25 ms | 0.91 ms | 1.33 ms | 0.69x |
-| `UPDATE ... WHERE id = ?`, batches of 1,000 | 2.9 µs | 2.6 µs | 4.8 µs | 0.55x |
-| `UPDATE` of an indexed column, batches of 1,000 | 6.9 µs | 6.2 µs | 11.6 µs | 0.54x |
-| `UPDATE ... WHERE id = ?`, one transaction each | 7.5 µs | 7.0 µs | 8.6 µs | 0.82x |
-| `DELETE` + re-`INSERT` by key, batches of 1,000 | 14.1 µs | 14.5 µs | 26.9 µs | 0.54x |
-| `prepare` and discard a `SELECT` | 2.9 µs | 2.0 µs | 2.5 µs | 0.77x |
-| `prepare` and discard a join | 3.9 µs | 2.7 µs | 5.2 µs | 0.51x |
-| a trivial statement run once | 1.48 µs | 1.24 µs | 3.35 µs | 0.37x |
+| full scan with a predicate, per row | 41.5 ns | 38.4 ns | 35.8 ns | 1.07x |
+| `GROUP BY` over a full scan, per row | 140 ns | 121 ns | 376 ns | 0.32x |
+| `ORDER BY price LIMIT 100` over a full scan, per row | 53 ns | 51 ns | 54 ns | 0.95x |
+| covering index scan returning 100,000 names, per row | 21.1 ns | 18.8 ns | 19.4 ns | 0.97x |
+| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 2.1 ns | 1.7 ns | 1.9 ns | 0.89x |
+| full sort of 200,000 rows, per row | 524 ns | 483 ns | 693 ns | 0.70x |
+| join through an index, ~400 output rows | 265 µs | 237 µs | 368 µs | 0.64x |
+| join with `GROUP BY` over 1,000 items | 1.16 ms | 0.91 ms | 1.29 ms | 0.71x |
+| `UPDATE ... WHERE id = ?`, batches of 1,000 | 2.7 µs | 2.4 µs | 4.3 µs | 0.55x |
+| `UPDATE` of an indexed column, batches of 1,000 | 6.1 µs | 5.8 µs | 10.4 µs | 0.55x |
+| `UPDATE ... WHERE id = ?`, one transaction each | 7.3 µs | 6.7 µs | 7.8 µs | 0.86x |
+| `DELETE` + re-`INSERT` by key, batches of 1,000 | 12.6 µs | 12.3 µs | 23.1 µs | 0.53x |
+| `prepare` and discard a `SELECT` | 2.7 µs | 1.9 µs | 2.5 µs | 0.75x |
+| `prepare` and discard a join | 3.7 µs | 2.6 µs | 5.2 µs | 0.51x |
+| a trivial statement run once | 1.48 µs | 1.23 µs | 3.23 µs | 0.38x |
 
 The SQLite column is from the plain build's tree, which compiles the
 amalgamation with LTO; the PGO tree compiles it with `-fprofile-use`, no
 profile and no LTO, which makes it 10-20% slower, so its own SQLite figures
-are not used. A plain build is ahead on 21 of the 27, a PGO build on 24. The
-three left -- the rowid range, the predicate scan and the covering scan -- are
-per-row costs: each row is decoded into `Value`s and passed through the sink
-chain to the callback, where SQLite's VDBE reads a column in place in the
-page.
+are not used. A plain build is ahead on 22 of the 27, a PGO build on 26. The
+one left, the predicate scan, rejects 199 of every 200 rows: its time goes
+into stepping the cursor and decoding and comparing one column, which both
+engines do, and libsql still spends a few nanoseconds more per row on it.
 
 What the engine does to get there:
 
@@ -452,11 +455,21 @@ What the engine does to get there:
 - **Cheap prepare.** Statement trees live in a per-statement arena, keywords
   are recognized through one small static table, and a per-connection cache of
   parsed batches means `exec` of a repeated text plans once.
+- **Text stays in the page.** A `SELECT` leaves the text and blobs it reads
+  where the store keeps them: a `Value` can borrow its bytes, so a table or
+  index read sets a pointer and a length instead of copying. Rows reach a
+  `Statement::each` callback that way; a `Result`, a sort, a cache or a copy
+  takes its own bytes.
+- **Small cells.** A `Value` is a 32-byte tagged union rather than a
+  `std::variant` of a string and a vector: up to 24 bytes of text sit inside
+  the cell, and copying, swapping or resetting one is a few stores. With
+  borrowed text, a rowid range went from 13.7 µs to 8.9 µs and a covering scan
+  from 24.8 ns to 21.1 ns per row (plain build).
 - **No copies on the way out.** Result rows hold up to four values inline and
   wider rows share a few chunks of their `Result`; an output that is a plain
-  column takes its value from the row by swapping buffers instead of copying,
-  and outputs that are a consecutive run of one table's columns go out as the
-  row itself; `Statement::each` skips building a `Result` altogether.
+  column takes or borrows its value from the row instead of copying it, and
+  outputs that are a consecutive run of one table's columns go out as the row
+  itself; `Statement::each` skips building a `Result` altogether.
 
 ## Long runs
 

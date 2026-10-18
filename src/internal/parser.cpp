@@ -322,7 +322,7 @@ private:
         }
         if (t.kind == Tok::String) {
             ++at_;
-            return t.value.text();
+            return std::string(t.value.text());
         }
         fail();
     }

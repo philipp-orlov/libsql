@@ -85,7 +85,7 @@ Cell fromLibsql(const sql::Value& value)
         break;
     case sql::Type::Blob: {
         out.type = CellType::Blob;
-        const sql::Blob& blob = value.blob();
+        const sql::BlobView blob = value.blob();
         out.blob.reserve(blob.size());
         for (std::byte byte : blob)
             out.blob.push_back(static_cast<unsigned char>(byte));

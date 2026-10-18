@@ -25,7 +25,7 @@
     std::string alias()
     {
         const Token& t = take();
-        return t.kind == Tok::String ? t.value.text() : t.text;
+        return t.kind == Tok::String ? std::string(t.value.text()) : t.text;
     }
 
     SelectStmt selectStatement()

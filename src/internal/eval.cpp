@@ -810,22 +810,15 @@ const Value& eval(const Expr& e, Ctx& c)
             const RaiseKind k = RaiseKind(e.op);
             if (k == RaiseKind::Ignore)
                 throw TriggerIgnore();
-            throw RaiseError(k, e.literal.isNull() ? std::string() : e.literal.text());
+            throw RaiseError(k, e.literal.isNull() ? std::string() : std::string(e.literal.text()));
         }
     }
     return nullValue();
 }
 
-bool holds(const Expr* e, Ctx& c)
+bool holdsEval(const Expr& e, Ctx& c)
 {
-    if (!e)
-        return true;
-    if (e->kind == ExprKind::Binary && e->op >= std::uint8_t(BinaryOp::Eq) && e->op <= std::uint8_t(BinaryOp::Ge) &&
-        e->fastShape != kShapeNone) {
-        if (const int d = directCompare(*e, c); d != 2)
-            return d == 1;
-    }
-    return isTrue(eval(*e, c));
+    return isTrue(eval(e, c));
 }
 
 }  // namespace sql::internal

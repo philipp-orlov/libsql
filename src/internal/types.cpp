@@ -223,7 +223,7 @@ std::string_view bytesOf(const Value& v) noexcept
 {
     if (v.type() == Type::Text)
         return v.text();
-    const Blob& b = v.blob();
+    const BlobView b = v.blob();
     return std::string_view(reinterpret_cast<const char*>(b.data()), b.size());
 }
 

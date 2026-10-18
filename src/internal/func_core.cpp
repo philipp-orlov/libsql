@@ -30,7 +30,7 @@ bool anyNull(int argc, Args argv)
 
 std::string_view bytesView(const Value& v)
 {
-    const Blob& b = v.blob();
+    const BlobView b = v.blob();
     return std::string_view(reinterpret_cast<const char*>(b.data()), b.size());
 }
 

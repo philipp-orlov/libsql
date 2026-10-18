@@ -134,13 +134,13 @@ Json encodeValue(const sql::Value& value)
         }
         case sql::Type::Datetime: return Json(sql::formatDatetime(value.datetime()));
         case sql::Type::Text: {
-            const std::string& text = value.text();
+            const std::string_view text = value.text();
             if (json::isValidUtf8(text))
                 return Json(text);
             return blobCell(reinterpret_cast<const unsigned char*>(text.data()), text.size());
         }
         case sql::Type::Blob: {
-            const sql::Blob& blob = value.blob();
+            const sql::BlobView blob = value.blob();
             return blobCell(reinterpret_cast<const unsigned char*>(blob.data()), blob.size());
         }
     }

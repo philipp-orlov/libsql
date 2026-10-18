@@ -1010,10 +1010,12 @@ void Values::fill(Value* first, std::size_t count, bool move, Value* cells)
     std::size_t built = 0;
     try {
         for (; built < count; ++built) {
-            if (move)
+            if (move) {
+                first[built].own();
                 new (data + built) Value(std::move(first[built]));
-            else
+            } else {
                 new (data + built) Value(first[built]);
+            }
         }
     } catch (...) {
         for (std::size_t i = 0; i < built; ++i)

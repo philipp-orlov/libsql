@@ -41,7 +41,7 @@ const char* const kPragmas[] = {
 bool flagValue(const Value& v)
 {
     if (v.type() == Type::Text) {
-        const std::string& s = v.text();
+        const std::string_view s = v.text();
         if (equalsNoCase(s, "on") || equalsNoCase(s, "yes") || equalsNoCase(s, "true"))
             return true;
         if (equalsNoCase(s, "off") || equalsNoCase(s, "no") || equalsNoCase(s, "false") ||
@@ -413,7 +413,7 @@ PragmaResult runPragma(Session& s, const std::string& schema, const std::string&
         if (value) {
             int v = -1;
             if (value->type() == Type::Text) {
-                const std::string& t = value->text();
+                const std::string_view t = value->text();
                 if (equalsNoCase(t, "default"))
                     v = 0;
                 else if (equalsNoCase(t, "file"))

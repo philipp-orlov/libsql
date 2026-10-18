@@ -99,7 +99,7 @@ std::vector<std::string> split(std::string_view text, char sep)
     return out;
 }
 
-std::string bytesOfBlob(const Blob& blob)
+std::string bytesOfBlob(sql::BlobView blob)
 {
     return std::string(reinterpret_cast<const char*>(blob.data()), blob.size());
 }
