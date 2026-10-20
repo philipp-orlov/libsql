@@ -535,6 +535,13 @@ the sort memory goes to a temporary file rather than the heap. A statement's
 parse tree lives in a few arena blocks of its own, freed together, so dropping
 statements leaves no small holes behind.
 
+The flat key sets used for grouping and DISTINCT/IN grow only for a new key,
+not for a repeated key at the load limit. A failed allocation while adding key
+bytes cannot publish a partial member. The soak suite injects these failures
+and checks that existing keys survive and insertion can be retried; it also
+requires zero allocations and unchanged retained bytes for repeated keys at
+the load limit.
+
 ### Memory
 
 What a `Database` keeps between statements so as not to allocate it again is
