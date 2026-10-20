@@ -33,11 +33,21 @@
 
 #include "sql/json.hpp"
 #include "sql_test.hpp"
+#include "../src/internal/flat_hash.hpp"
 
 namespace {
 
 std::atomic<long long> gLiveBytes{0};
 std::atomic<long long> gLiveBlocks{0};
+thread_local std::size_t gAllocations = 0;
+thread_local std::size_t gFailAllocation = 0;
+
+class AllocationFailure
+{
+public:
+    explicit AllocationFailure(std::size_t after) { gFailAllocation = gAllocations + after; }
+    ~AllocationFailure() { gFailAllocation = 0; }
+};
 
 /// Every block carries its size just ahead of the pointer handed out, so that
 /// the plain (unsized) delete can still account for it. One max_align_t keeps
@@ -46,6 +56,8 @@ constexpr std::size_t kHeader = alignof(std::max_align_t);
 
 void* tracked(std::size_t size)
 {
+    if (++gAllocations == gFailAllocation)
+        throw std::bad_alloc();
     auto* raw = static_cast<std::byte*>(std::malloc(size + kHeader));
     if (!raw)
         throw std::bad_alloc();
@@ -182,6 +194,79 @@ void checkStable(const char* what, const Snapshot& warm, const Snapshot& late,
 }
 
 using namespace sql;
+
+TEST(distinctKeyAllocationFailurePreservesMembers)
+{
+    const std::string first(64, 'a'), second(128, 'b');
+    for (std::size_t failAt : {1u, 2u}) {
+        internal::FlatKeySet keys;
+        CHECK(keys.insert(first));
+        bool failed = false;
+        {
+            AllocationFailure failure(failAt);
+            try {
+                keys.insert(second);
+            } catch (const std::bad_alloc&) {
+                failed = true;
+            }
+        }
+        CHECK(failed);
+        CHECK_EQ(keys.size(), 1u);
+        CHECK_EQ(keys.find(first), 0u);
+        CHECK_EQ(keys.find(second), internal::FlatKeySet::npos);
+        CHECK(keys.key(0) == first);
+        CHECK(keys.insert(second));
+        CHECK_EQ(keys.find(second), 1u);
+        CHECK(keys.key(1) == second);
+        keys.clear();
+        CHECK(keys.insert(second));
+        CHECK_EQ(keys.find(second), 0u);
+    }
+}
+
+TEST(duplicateDistinctKeysAtLoadLimitDoNotAllocate)
+{
+    internal::FlatKeySet keys;
+    std::vector<std::string> values;
+    for (unsigned i = 0; i < 12; ++i) {
+        values.push_back("key-" + std::to_string(i));
+        CHECK(keys.insert(values.back()));
+    }
+    const auto memory = keys.memory();
+    const auto allocations = gAllocations;
+    bool duplicateAdded = false;
+    for (unsigned round = 0; round < 10000; ++round)
+        for (const auto& value : values)
+            duplicateAdded |= keys.insert(value);
+    const auto used = gAllocations - allocations;
+    CHECK(!duplicateAdded);
+    CHECK_EQ(used, 0u);
+    CHECK_EQ(keys.memory(), memory);
+    CHECK_EQ(keys.size(), values.size());
+}
+
+TEST(distinctKeysPreserveEmptyAndBinaryMembersAcrossGrowth)
+{
+    internal::FlatKeySet keys;
+    CHECK(keys.insert(std::string_view{}));
+    CHECK(!keys.insert(std::string_view{}));
+    CHECK(keys.key(0).empty());
+    const std::string binary("a\0b", 3);
+    CHECK(keys.insert(binary));
+    for (unsigned i = 0; i < 4096; ++i)
+        CHECK(keys.insert(std::to_string(i)));
+    CHECK_EQ(keys.find(std::string_view{}), 0u);
+    CHECK_EQ(keys.find(binary), 1u);
+    CHECK(keys.key(1) == binary);
+    for (unsigned i = 0; i < 4096; ++i)
+        CHECK_EQ(keys.find(std::to_string(i)), i + 2);
+    keys.clear();
+    CHECK(keys.empty());
+    CHECK(keys.insert(std::string_view{}));
+    CHECK_EQ(keys.find(binary), internal::FlatKeySet::npos);
+    keys.releaseAbove(0);
+    CHECK_EQ(keys.memory(), 0u);
+}
 
 /// Long runs are the point, but not on every build. LIBSQL_SOAK_SCALE
 /// multiplies the measured phase, so the same test is a quick check by default

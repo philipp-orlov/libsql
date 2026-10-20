@@ -11,6 +11,7 @@
 // `release` gives the memory back when a run made it unusually large.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
@@ -97,7 +98,7 @@ public:
     /// Adds `key` if absent. Returns its index; `added` says whether it is new.
     std::uint32_t insert(std::string_view key, bool& added)
     {
-        if ((entries_.size() + 1) * 4 > table_.size() * 3)
+        if (table_.empty())
             grow();
         const std::uint64_t h = hashBytes(key.data(), key.size());
         const std::uint64_t tag = h & kTagMask;
@@ -111,11 +112,22 @@ public:
                 return std::uint32_t(slot);
             }
         }
-        if (bytes_.size() + key.size() > 0xFFFFFFFFu || entries_.size() >= npos - 1)
+        if (key.size() > 0xFFFFFFFFu - bytes_.size() || entries_.size() >= npos - 1)
             throw Error(ErrorCode::Runtime, "too many distinct keys in one statement");
+        if (entries_.size() >= table_.size() - table_.size() / 4) {
+            grow();
+            i = std::size_t(h) & mask_;
+            while (table_[i] != kEmpty)
+                i = (i + 1) & mask_;
+        }
+        // Finish allocations before publishing a member or its byte range.
+        if (entries_.size() == entries_.capacity())
+            entries_.reserve(entries_.empty() ? 1 : entries_.capacity() * 2);
         const std::uint32_t at = std::uint32_t(entries_.size());
-        entries_.push_back(Entry{h, std::uint32_t(bytes_.size()), std::uint32_t(key.size())});
-        bytes_.insert(bytes_.end(), key.data(), key.data() + key.size());
+        const auto offset = std::uint32_t(bytes_.size());
+        if (!key.empty())
+            bytes_.insert(bytes_.end(), key.data(), key.data() + key.size());
+        entries_.push_back(Entry{h, offset, std::uint32_t(key.size())});
         table_[i] = tag | at;
         added = true;
         return at;
@@ -132,7 +144,7 @@ public:
     std::string_view key(std::uint32_t i) const noexcept
     {
         const Entry& e = entries_[i];
-        return std::string_view(bytes_.data() + e.offset, e.size);
+        return e.size ? std::string_view(bytes_.data() + e.offset, e.size) : std::string_view{};
     }
 
     /// Empties the set, keeping its memory for the next run.
@@ -170,6 +182,8 @@ private:
         const Entry& e = entries_[at];
         if (e.size != key.size())
             return false;
+        if (key.empty())
+            return true;
         const char* a = bytes_.data() + e.offset;
         const char* b = key.data();
         std::size_t n = key.size();
