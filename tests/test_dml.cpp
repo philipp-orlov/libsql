@@ -228,6 +228,28 @@ TEST(aFailedStatementRollsBackTheWholeBatch)
     CHECK_EQ(db.exec("SELECT id FROM items").size(), std::size_t(1));
 }
 
+TEST(aDeleteReadsWholeRowsForForeignKeys)
+{
+    tst::Scratch s("dml-delete-fk");
+    Database db = s.open();
+    db.exec("PRAGMA foreign_keys = ON");
+    db.exec("CREATE TABLE par (code TEXT PRIMARY KEY)");
+    db.exec(
+        "CREATE TABLE chi (id INTEGER PRIMARY KEY, code TEXT REFERENCES par (code) DEFERRABLE "
+        "INITIALLY DEFERRED,"
+        " v BLOB)");
+    Statement insert = db.prepare("INSERT INTO chi VALUES (?, ?, x'00')");
+    // The scan reads only what finds a row (its key); the foreign key needs
+    // the row's code as well.
+    Statement drop = db.prepare("DELETE FROM chi WHERE id >= ? AND id <= ?");
+    Transaction txn = db.begin();
+    insert.exec(txn, {Value(1), Value("orphan")});
+    insert.exec(txn, {Value(2), Value("orphan")});
+    CHECK_EQ(drop.exec(txn, {Value(1), Value(2)}).changes(), std::uint64_t(2));
+    txn.commit();  // the deferred violations went with the rows
+    CHECK_EQ(tst::only(db.exec("SELECT COUNT(*) FROM chi")), std::string("0"));
+}
+
 int main()
 {
     return tst::runAll("dml");

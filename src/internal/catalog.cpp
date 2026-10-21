@@ -267,6 +267,8 @@ const nosql::Db& Catalog::meta(bool create)
 
 Schema& Catalog::edit()
 {
+    // Pending rowid marks are kept by table position, which DDL changes.
+    flush();
     if (!edited_) {
         edited_ = schema_->clone();
         ++edited_->version;

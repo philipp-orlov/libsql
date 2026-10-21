@@ -168,8 +168,8 @@ bool joinKey(const std::vector<const Expr*>& exprs, const std::vector<Affinity>&
     return true;
 }
 
-/// Marks in `mask` the columns of `s` that `e` reads. False when `e` might
-/// read the row some other way (a sub-query may read any column).
+}  // namespace
+
 bool columnsRead(const Expr* e, const SourceNode& s, std::vector<std::uint8_t>& mask)
 {
     if (!e)
@@ -202,6 +202,8 @@ bool columnsRead(const Expr* e, const SourceNode& s, std::vector<std::uint8_t>& 
     }
     return true;
 }
+
+namespace {
 
 /// Decides whether source `d` reads its rows in two phases: first the
 /// columns its level's filters (and, for the innermost source of a core whose
@@ -576,6 +578,28 @@ bool countByWindow(CorePlan& p, Ctx& c, std::int64_t& counted)
     return true;
 }
 
+/// CorePlan::extremeSeek: hands `emit` the one row holding the min() or
+/// max() when the source's window enforces every term; false (nothing
+/// emitted) when rows must be read.
+template <class Emit>
+bool extremeByWindow(CorePlan& p, Ctx& c, Emit& emit)
+{
+    SourceNode& s = p.sources[0];
+    openSource(s, c);
+    if (s.exhausted)
+        return true;
+    if (s.point || !s.probes.empty() || s.rowIndex == std::size_t(-1) || s.skipComponents ||
+        s.access.kind == AccessPath::Kind::Scan)
+        return false;
+    for (const Expr* f : p.levelFilters[0]) {
+        if (!enforced(s, f))
+            return false;
+    }
+    if (seekExtreme(s, c, p.extremeSeek == 2))
+        emit();
+    return true;
+}
+
 void finishSources(CorePlan& p, Ctx& c)
 {
     for (SourceNode& s : p.sources)
@@ -845,7 +869,11 @@ private:
         if ((v.type() != Type::Integer && v.type() != Type::Real) ||
             (v.type() == Type::Integer ? v.integer() < 0 : v.real() < 0))
             error(std::string("frame ") + what + " offset must be a non-negative number");
-        return v.type() == Type::Integer ? v.integer() : std::int64_t(v.real());
+        if (v.type() == Type::Integer)
+            return v.integer();
+        // Past INT64_MAX the frame reaches the partition's edge anyway.
+        return v.real() < 9223372036854775808.0 ? std::int64_t(v.real())
+                                                : std::numeric_limits<std::int64_t>::max();
     }
 
     void compute(std::size_t w, const WindowSpec& spec, const std::vector<std::uint32_t>& order,
@@ -1217,7 +1245,7 @@ bool runCore(CorePlan& p, Ctx& c, RowSink& sink)
         counted = std::int64_t(c.session->catalog(s.schemaIndex).rows(*s.table).count());
     } else if (p.countWindow && countByWindow(p, c, counted)) {
         counting = true;
-    } else {
+    } else if (!(p.extremeSeek && extremeByWindow(p, c, emit))) {
         runJoins(p, c, emit);
     }
     if (gt.used == 0 && p.groupBy.empty()) {
@@ -1639,9 +1667,13 @@ void runSelect(SelectPlan& sp, Ctx& c, RowSink& sink)
     runRows(sp, c, collect);
     static thread_local JsonWriter writer;
     writer.options(*sp.forJson);
-    Value doc{std::string(writer.write(rows.result, sp.jsonPaths))};
+    Value doc;
+    doc.setText(writer.write(rows.result, sp.jsonPaths));
+    // One large document must not pin its buffer for the thread's life.
+    if (writer.capacity() > scratchRetain(c))
+        writer.compact();
     doc.setSubtype(kJsonSubtype);
-    sink.row(c, &doc, 1);
+    sink.take(c, &doc, 1);
 }
 
 namespace {
@@ -1757,7 +1789,9 @@ void runRows(SelectPlan& sp, Ctx& c, RowSink& sink)
     }
 
     const std::size_t want =
-        limit < 0 ? rows.size() : std::size_t(std::min<std::int64_t>(std::int64_t(rows.size()), limit + offset));
+        limit < 0 || limit > std::numeric_limits<std::int64_t>::max() - offset
+            ? rows.size()
+            : std::size_t(std::min<std::int64_t>(std::int64_t(rows.size()), limit + offset));
     if (!sp.order.empty()) {
         sortRows(sp, want);
     } else {

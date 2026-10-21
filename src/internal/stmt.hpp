@@ -16,14 +16,37 @@ namespace sql::internal {
 /// constructors private so that nothing outside this layer can fabricate one.
 struct ResultBuilder
 {
+    ResultBuilder() = default;
+    /// Builds into `into` (Statement::execInto): its rows become spares that
+    /// the rows of this run are refilled into, as long as this run has the
+    /// columns of the last one (the same statement).
+    explicit ResultBuilder(Result& into) : result(into)
+    {
+        previous = std::move(into.names_);
+        into.names_ = nullptr;
+        for (std::size_t i = into.rows_.size(); i-- > 0;)
+            into.spare_.push_back(std::move(into.rows_[i]));
+        into.rows_.clear();
+        into.changes_ = 0;
+        into.lastInsertId_ = 0;
+    }
+    ResultBuilder(const ResultBuilder&) = delete;
+    ResultBuilder& operator=(const ResultBuilder&) = delete;
+
     void columns(std::vector<std::string> names, std::vector<std::string> qualified = {})
     {
         auto n = std::make_shared<ColumnNames>();
         n->names = std::move(names);
         n->qualified = std::move(qualified);
+        dropSpares();
         result.names_ = std::move(n);
     }
-    void columns(std::shared_ptr<const ColumnNames> names) { result.names_ = std::move(names); }
+    void columns(std::shared_ptr<const ColumnNames> names)
+    {
+        if (names != previous)
+            dropSpares();
+        result.names_ = std::move(names);
+    }
     void row(std::vector<Value> values)
     {
         if (each) {
@@ -41,17 +64,36 @@ struct ResultBuilder
     void lastInsertId(std::int64_t id) { result.lastInsertId_ = id; }
     bool hasColumns() const noexcept { return result.names_ != nullptr; }
 
-    Result result;
+    Result own;
+    Result& result = own;
     /// Statement::each: rows go here instead of into `result`.
-    const RowCallback* each = nullptr;
+    const RowVisitor* each = nullptr;
     bool stopped = false;  ///< the callback asked for no more rows
+    std::shared_ptr<const ColumnNames> previous;  ///< the columns of the spares
 
 private:
+    /// Spare rows only fit the statement whose columns they carry.
+    void dropSpares()
+    {
+        result.spare_.clear();
+        if (result.rows_.empty()) {
+            result.chunks_.clear();
+            result.chunkSize_ = result.chunkFree_ = 0;
+        }
+    }
+
     void add(Value* values, std::size_t count, bool move)
     {
         if (each) {
             if (!stopped && !(*each)(RowView(values, count, &result.names_)))
                 stopped = true;
+            return;
+        }
+        std::vector<Row>& spare = result.spare_;
+        if (!spare.empty() && spare.back().values_.size() == count) {
+            result.rows_.push_back(std::move(spare.back()));
+            spare.pop_back();
+            result.rows_.back().values_.refill(values);
             return;
         }
         Row& r = result.rows_.emplace_back();

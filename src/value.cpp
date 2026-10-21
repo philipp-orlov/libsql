@@ -396,7 +396,7 @@ Value Value::cast(Type target) const
             switch (type()) {
                 case Type::Real: {
                     const double d = u_.r;
-                    if (!(d >= -9.2233720368547758e18 && d <= 9.2233720368547758e18))
+                    if (!(d >= -9.2233720368547758e18 && d < 9.2233720368547758e18))
                         mismatch("real value is out of INTEGER range");
                     return Value(std::int64_t(d));
                 }

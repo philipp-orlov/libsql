@@ -143,6 +143,75 @@ TEST(compositeIndexesAcceptAPrefix)
              std::string("1;3;4"));
 }
 
+TEST(failingIndexExpressionLeavesNoRowBehind)
+{
+    tst::Scratch s("index-expr-fail");
+    Database db = s.open();
+    db.exec("CREATE TABLE t (x INTEGER)");
+    db.exec("CREATE INDEX t_abs ON t (abs(x))");
+    db.exec("CREATE TABLE p (x INTEGER, y INTEGER)");
+    db.exec("CREATE INDEX p_part ON p (y) WHERE abs(x) > 0");
+    Statement insertT = db.prepare("INSERT INTO t (x) VALUES (?)");
+    Statement insertP = db.prepare("INSERT INTO p (x, y) VALUES (?, 1)");
+    {
+        // A single-row insert inside a larger transaction: abs() of INT64_MIN
+        // fails while the index entry is computed.
+        Transaction txn = db.begin();
+        CHECK_THROWS(insertT.exec(txn, {Value(INT64_MIN)}), ErrorCode::Runtime);
+        CHECK_THROWS(insertP.exec(txn, {Value(INT64_MIN)}), ErrorCode::Runtime);
+        insertT.exec(txn, {Value(5)});
+        txn.commit();
+    }
+    CHECK_EQ(tst::only(db.exec("SELECT COUNT(*) FROM t")), std::string("1"));
+    CHECK_EQ(tst::only(db.exec("SELECT COUNT(*) FROM p")), std::string("0"));
+    CHECK_EQ(tst::only(db.exec("PRAGMA integrity_check")), std::string("ok"));
+}
+
+TEST(keyOrderNeedsNoSort)
+{
+    tst::Scratch s("index-key-order");
+    Database db = s.open();
+    db.exec(
+        "CREATE TABLE e (record_id INTEGER, slot INTEGER, v BLOB, PRIMARY KEY (record_id, slot))");
+    db.exec("CREATE TABLE r (id INTEGER PRIMARY KEY, k INTEGER)");
+    db.exec("CREATE INDEX r_k ON r (k)");
+    db.exec("INSERT INTO e VALUES (1, 3, x'03'), (1, 1, x'01'), (2, 0, x'00'), (1, 2, x'02')");
+    db.exec("INSERT INTO r VALUES (5, 2), (6, 1), (7, 2)");
+    auto sorts = [&](const std::string& query) {
+        bool temp = false;
+        for (const Row& row : db.exec("EXPLAIN QUERY PLAN " + query))
+            temp = temp || row[3].text() == "USE TEMP B-TREE FOR ORDER BY";
+        return temp;
+    };
+    CHECK(!sorts("SELECT v FROM e WHERE record_id = 1 ORDER BY slot"));
+    CHECK(!sorts("SELECT v FROM e WHERE record_id = 1 ORDER BY slot DESC LIMIT 1"));
+    CHECK(!sorts("SELECT v FROM e WHERE record_id = 1 ORDER BY record_id, slot"));
+    CHECK(!sorts("SELECT id FROM r WHERE k = 2 ORDER BY id"));
+    CHECK(!sorts("SELECT id FROM r WHERE id > 5 ORDER BY id DESC"));
+    CHECK(!sorts("SELECT k FROM r WHERE k > 0 ORDER BY k"));
+    // These the key order does not deliver: a sort stays.
+    CHECK(sorts("SELECT v FROM e WHERE record_id = 1 ORDER BY v"));
+    CHECK(sorts("SELECT v FROM e WHERE record_id = 1 ORDER BY slot, v"));
+    CHECK(sorts("SELECT v FROM e WHERE record_id IN (1, 2) ORDER BY slot"));
+    CHECK(sorts("SELECT k FROM r WHERE k > 0 ORDER BY k DESC"));  // ties under k
+    CHECK(sorts("SELECT v FROM e ORDER BY slot"));
+    CHECK(sorts("SELECT slot FROM e WHERE record_id = 1 ORDER BY slot COLLATE NOCASE"));
+
+    CHECK_EQ(tst::flatten(db.exec("SELECT hex(v) FROM e WHERE record_id = 1 ORDER BY slot")),
+             std::string("01;02;03"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT slot FROM e WHERE record_id = 1 ORDER BY slot DESC")),
+             std::string("3;2;1"));
+    CHECK_EQ(tst::flatten(db.exec(
+                 "SELECT slot FROM e WHERE record_id = 1 ORDER BY slot DESC LIMIT 1 OFFSET 1")),
+             std::string("2"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT id FROM r WHERE id > 5 ORDER BY id DESC")),
+             std::string("7;6"));
+    CHECK_EQ(tst::only(db.exec("SELECT MAX(slot) FROM e WHERE record_id = 1")), std::string("3"));
+    CHECK_EQ(tst::only(db.exec("SELECT MIN(slot) FROM e WHERE record_id = 1")), std::string("1"));
+    CHECK(db.exec("SELECT MAX(slot) FROM e WHERE record_id = 9")[0][0].isNull());
+    CHECK_EQ(tst::only(db.exec("SELECT MAX(k) FROM r WHERE k < 2")), std::string("1"));
+}
+
 int main()
 {
     return tst::runAll("index");

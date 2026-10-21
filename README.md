@@ -242,8 +242,13 @@ t.commit();
 
 `exec()` runs in a transaction of its own; `exec(txn)` runs in one you control.
 Both take an optional `Params` or `NamedParams` to bind and run in a single
-call. `parameterIndex`, `parameterName` and `columnNames` describe the
-statement; `sql::complete(text)` tells a prompt whether a statement is finished.
+call. Values in braces, `insert.exec(t, {sql::Value(id), sql::Value::blobRef(p, n)})`,
+are bound in place: each is copied into the statement's own parameter cell,
+which keeps its buffer, so no vector is built and a warm call allocates
+nothing. A `Value::textRef` or `Value::blobRef` stays a reference, as it does
+through `bind`, so its bytes must outlive the run. `parameterIndex`,
+`parameterName` and `columnNames` describe the statement; `sql::complete(text)`
+tells a prompt whether a statement is finished.
 
 A prepared statement also keeps its plan -- the columns it bound, the access
 path it chose for each table, the layout and names of its result -- and reuses
@@ -267,7 +272,36 @@ scan.bind(1, sql::Value(20.0)).each([&](const sql::RowView& r) {
 
 The callback sees the rows without a copy: `text()` is a `std::string_view` and
 `blob()` a `sql::BlobView`, and in a row from `each` they may point straight
-into the database pages. Copy the `Value` (or call `r.row()`) to keep one.
+into the database pages. Copy the `Value` (or call `r.row()`) to keep one. A
+lambda is called where it is, through a `sql::RowVisitor`, never copied into a
+`std::function`, whatever it captures; a `RowCallback` (`std::function`) is
+still accepted.
+
+To keep rows after the transaction without paying for a fresh `Result` each
+time, run into one you keep:
+
+```cpp
+sql::Result rows;
+sql::Transaction t = db.beginRead();
+vectorsOf.bind(1, sql::Value(id)).execInto(t, rows);  // returns rows
+```
+
+`execInto(txn, out)` refills the rows `out` holds from its last run of the same
+statement in place, each cell keeping its buffer, so a warm run allocates
+nothing. `out` keeps the rows of its largest run until it is destroyed; running
+another statement into it starts it afresh.
+
+An `ORDER BY` that the access path already delivers costs no sort: one table
+read through its primary key, its rowid or an index, ordered by the key parts
+after the ones `WHERE` pins with `=`, ascending and `BINARY` (an index's
+entries continue with the row key). The rows then stream to `each` with their
+cells still borrowed. All-descending terms that reach the end of the primary
+key (or the rowid) walk the window backward instead, so `ORDER BY slot DESC
+LIMIT 1` reads one row. `EXPLAIN QUERY PLAN` shows `USE TEMP B-TREE FOR ORDER
+BY` only when a sort remains. A lone `min(c)` or `max(c)` of the part after the
+pinned ones, with every `WHERE` term enforced by that window, is one seek
+instead of a scan: `SELECT max(slot) FROM embedding WHERE record_id = ?` reads
+one row however many samples the record has.
 
 `ORDER BY` without `LIMIT` over more rows than fit in the sort memory
 (`Database::configure().sortMemoryLimit(bytes)`, 64 MiB by default) writes
@@ -299,7 +333,39 @@ point lookup and of every probe inside a join. The trade is that damage done to
 the file from outside is noticed on the next re-verification -- every minute by
 default, `cacheReadChecksums(true, interval)` to change it -- rather than the
 next read; writes always verify. `Database::configure().cacheReadChecksums(false)`
-verifies every page on every read.
+verifies every page on every read; `revalidateAfter(interval)` sets the
+interval alone.
+
+How the store flushes, and how it uses memory, are libnosql's settings, which
+`Database::Options` passes through:
+
+```cpp
+sql::Database db = sql::Database::configure()
+                       .durability(nosql::Durability::Lazy)       // any libnosql mode
+                       .syncInterval(std::chrono::seconds(1))
+                       .pageSize(4096)
+                       .initialSize(64ull << 20)
+                       .growthStep(16ull << 20)
+                       .bufferCache(16ull << 20)
+                       .dirtyLimit(64ull << 20)
+                       .open(path);
+```
+
+`durable(true)`, the default, is `nosql::Durability::Safe`: every commit is
+flushed. `durable(false)` is `nosql::Durability::None`: commits reach the
+device only on `nosql::Env::sync()`, on close, or when libnosql decides to, and
+a crash loses the ones since then. After a process crash the store reopens on
+a consistent snapshot either way. After a power loss it does so only with a
+libnosql that keeps the newest meta page in memory until a sync (deferred
+meta); with an older one, `None` leaves meta and data pages unordered on the
+device, so do not open a store that must survive a power cut with
+`durable(false)` there. `durability(mode)` takes any `nosql::Durability` value
+(`Safe`, `NoMetaSync`, `None`, `Lazy`, ...) and wins over `durable`;
+`syncInterval` is the interval of `Lazy`. The others are as libnosql documents
+them: the page size of a new store, the size a new file starts at and the least
+it grows by, the page buffers kept between transactions, and the most dirty
+bytes one write transaction may hold (more fails with
+`nosql::ErrorCode::OutOfMemory`). Left unset, each keeps libnosql's default.
 
 ## Python
 
@@ -435,6 +501,12 @@ What the engine does to get there:
 - **Top-N.** `ORDER BY ... LIMIT n` keeps only rows that can still make the
   cut; a row that cannot is dropped after its sort keys are computed, before
   the rest of it is decoded or copied.
+- **No sort the key already makes.** An `ORDER BY` of the key parts after the
+  pinned ones streams the rows as the window yields them (backward for
+  `DESC` over a unique key), and a lone `min()` or `max()` of such a part is
+  one seek. isvc's `WHERE record_id = ? ORDER BY slot` over 50 rows of 512-byte
+  blobs went from 50 allocations to none through `each`, and its
+  `MAX(slot)` from a scan of the record to one row.
 - **Hash joins.** An equality join with no usable index on the inner table
   reads that table once and buckets it by the join key -- SQLite's automatic
   index -- instead of re-reading it for every outer row.
@@ -567,6 +639,8 @@ sql::Database db = sql::Database::configure()
 - `sortMemoryLimit`: what an `ORDER BY` holds before it spills to a temporary
   file.
 - `arenaBlockSize`: the block size of each parsed statement's arena.
+
+A reader from `openReader()` keeps the figures of the `Database` it came from.
 
 The soak also re-checks, at every sample point, that each index returns exactly
 what a full scan finds. A stale index entry is the failure mode that a long run

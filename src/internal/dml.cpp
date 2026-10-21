@@ -304,12 +304,14 @@ void Writer::planFks(TablePlan& tp)
 
 // ----------------------------------------------------------- row prep ----
 
-void Writer::initRow(TablePlan& tp, Ctx& c)
+void Writer::initRow(TablePlan& tp, Ctx& c, const std::uint8_t* targeted)
 {
     const Table& t = *tp.table;
     Value* row = c.slots + tp.newBase;
     for (std::size_t i = 0; i < t.columns.size(); ++i) {
         const Column& col = t.columns[i];
+        if (targeted && targeted[i])
+            continue;
         if (col.hasDefault && col.defaultConstant)
             row[i] = col.defaultValue;
         else if (tp.defaults[i])
@@ -317,7 +319,7 @@ void Writer::initRow(TablePlan& tp, Ctx& c)
         else
             row[i].setNull();
     }
-    if (t.hasRowid())
+    if (t.hasRowid() && !(targeted && targeted[t.columns.size()]))
         row[t.columns.size()].setNull();
 }
 
@@ -1192,9 +1194,20 @@ bool Writer::insert(TablePlan& tp, Ctx& c, Conflict mode, std::vector<UpsertPlan
             conflictError(m, Constraint::Unique, indexMessage(t, *iw.index));
         }
     }
+    // Every entry is computed before the row is written: an expression part
+    // or a partial-index predicate that fails must leave nothing behind.
+    for (IndexWriter& iw : tp.indexes) {
+        bool hasNull = false;
+        iw.newIn = entryFor(tp, iw, c, tp.newBase, true, iw.newEntry, hasNull, &iw.newFlags);
+    }
     if (!writeRow(tp, c, key, deferKeyCheck))
         keyError();
-    addEntries(tp, c, key);
+    for (IndexWriter& iw : tp.indexes) {
+        if (!iw.newIn)
+            continue;
+        iw.newEntry += key;
+        cat.entries(*iw.index).put(sliceOf(iw.newEntry), sliceOf(iw.newFlags));
+    }
     if (t.hasRowid()) {
         rowid = row[rs].integer();
         cat.noteRowid(t, rowid);

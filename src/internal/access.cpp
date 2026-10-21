@@ -397,6 +397,17 @@ bool recordRejects(const SourceNode& s, std::string_view payload)
     return false;
 }
 
+/// applyComparisonAffinity(v, a) would change `v`: it turns only text into a
+/// number or a number into text, so anything else is encoded uncopied.
+bool convertsUnder(const Value& v, Affinity a) noexcept
+{
+    if (a == Affinity::Blob)
+        return false;
+    if (a == Affinity::Text)
+        return v.type() == Type::Integer || v.type() == Type::Real;
+    return v.type() == Type::Text;
+}
+
 /// Encodes one bound value for a key part. Returns false when the value
 /// cannot select anything through this part (NULL, or a non-integer for a
 /// rowid) -- `noMatch` then says whether that means "no rows at all".
@@ -410,7 +421,7 @@ bool encodePart(const Value& raw, Affinity aff, bool rowid, Collation coll, bool
     }
     const Value* v = &raw;
     Value conv;
-    if (aff != Affinity::Blob) {
+    if (convertsUnder(raw, aff)) {
         conv = raw;
         applyComparisonAffinity(conv, aff);
         v = &conv;
@@ -655,7 +666,7 @@ bool rowidBound(const Value& raw, Affinity aff, bool isLow, bool strict, std::in
     }
     const Value* v = &raw;
     Value conv;
-    if (aff != Affinity::Blob) {
+    if (convertsUnder(raw, aff)) {
         conv = raw;
         applyComparisonAffinity(conv, aff);
         v = &conv;
@@ -807,6 +818,25 @@ bool nextEntry(SourceNode& s, bool first)
     return true;
 }
 
+/// Backward walks: the last entry of the window [lo, hi) when `last`, else
+/// the one before the current entry; false when that lies below `lo`.
+bool previousEntry(SourceNode& s, bool last)
+{
+    const AccessPath& ap = s.access;
+    bool ok;
+    if (!last)
+        ok = s.cursor.prev();
+    else if (ap.hi.empty() || !s.cursor.seek(sliceOf(ap.hi)))
+        ok = s.cursor.last();
+    else
+        ok = s.cursor.prev();
+    if (!ok)
+        return false;
+    s.entryKey = viewOf(s.cursor.key());
+    s.entryValue = viewOf(s.cursor.value());
+    return s.entryKey >= std::string_view(ap.lo);
+}
+
 /// Positions the source's cursor on its next candidate entry for a windowed
 /// or point access; false when exhausted.
 bool advanceEntry(SourceNode& s)
@@ -818,6 +848,15 @@ bool advanceEntry(SourceNode& s)
         if (s.holdEntry) {
             s.holdEntry = false;
             return true;
+        }
+        if (s.reverse) {
+            // No probes or skips: the planner reverses only a plain window.
+            const bool first = !s.started;
+            s.started = true;
+            if (previousEntry(s, first))
+                return true;
+            s.exhausted = true;
+            return false;
         }
         if (!s.started) {
             s.started = true;
@@ -976,6 +1015,7 @@ void openSource(SourceNode& s, Ctx& c)
     s.started = false;
     s.exhausted = false;
     s.point = false;
+    s.single = false;
     s.probeAt = 0;
     s.rowIndex = 0;
     s.keepRowKey = s.join == JoinType::Right || s.join == JoinType::Full;
@@ -1060,6 +1100,7 @@ void openSource(SourceNode& s, Ctx& c)
         s.point = true;
         return;
     }
+    s.single = ap.kind == AccessPath::Kind::Index && pinned == parts && ap.index->unique;
     window(s, c, ap.prefix, pinned);
 }
 
@@ -1163,6 +1204,7 @@ bool nextSource(SourceNode& s, Ctx& c)
         if (!advanceEntry(s))
             return false;
         loadEntry(s, c, s.entryKey, s.entryValue);
+        s.exhausted = s.single;
         return true;
     }
     const nosql::Db& data = *s.rowsDb;
@@ -1179,6 +1221,7 @@ bool nextSource(SourceNode& s, Ctx& c)
         if (!s.recordLive.empty() && recordRejects(s, viewOf(payload)))
             continue;
         loadRow(s, c, entry, viewOf(payload));
+        s.exhausted = s.single;
         return true;
     }
 }
@@ -1201,8 +1244,8 @@ void nullSource(SourceNode& s, Ctx& c)
 
 std::uint64_t skipEntries(SourceNode& s, Ctx& c, std::uint64_t n)
 {
-    if (n == 0 || s.kind != SourceNode::Kind::Table || s.exhausted || s.started || s.point || !s.probes.empty() ||
-        s.skipComponents)
+    if (n == 0 || s.kind != SourceNode::Kind::Table || s.exhausted || s.started || s.point ||
+        !s.probes.empty() || s.skipComponents || s.reverse)
         return 0;
     AccessPath& ap = s.access;
     const bool scan = ap.kind == AccessPath::Kind::Scan || s.rowIndex == std::size_t(-1);
@@ -1222,6 +1265,50 @@ std::uint64_t skipEntries(SourceNode& s, Ctx& c, std::uint64_t n)
     s.entryValue = viewOf(s.cursor.value());
     s.holdEntry = true;
     return n;
+}
+
+bool seekExtreme(SourceNode& s, Ctx& c, bool max)
+{
+    AccessPath& ap = s.access;
+    s.started = true;
+    // A rowid is never NULL and its key carries no tag; every other part
+    // after the prefix is one tagged component, NULLs first.
+    const bool rowid = ap.kind == AccessPath::Kind::Rowid;
+    if (!max) {
+        if (!rowid && ap.lo.size() <= ap.prefix.size()) {
+            ap.probe = ap.prefix;
+            appendKey(ap.probe, Value());
+            successorInto(ap.lo, ap.probe);
+        }
+        if (!seekEntry(s, ap.lo) || !inWindow(ap, s.entryKey))
+            return false;
+    } else {
+        if (!previousEntry(s, true))
+            return false;
+        if (!rowid) {
+            ap.probe.clear();
+            appendKey(ap.probe, Value());
+            if (s.entryKey.substr(ap.prefix.size(), ap.probe.size()) == ap.probe)
+                return false;  // the largest is NULL: so is every value
+        }
+    }
+    if (ap.kind == AccessPath::Kind::Index && s.coverState == 2) {
+        loadEntry(s, c, s.entryKey, s.entryValue);
+    } else if (ap.kind == AccessPath::Kind::Index) {
+        const nosql::Db& data = *s.rowsDb;
+        if (!s.rowCursor.boundTo(data))
+            s.rowCursor = data.cursor();
+        std::string_view entry = s.entryKey;
+        skipKeys(entry, ap.index->parts.size());
+        nosql::Slice payload;
+        if (!s.rowCursor.seekExact(sliceOf(entry), payload))
+            return false;
+        loadRow(s, c, entry, viewOf(payload));
+    } else {
+        loadRow(s, c, s.entryKey, s.entryValue);
+    }
+    finishRow(s, c);
+    return true;
 }
 
 void finishRow(SourceNode& s, Ctx& c)
