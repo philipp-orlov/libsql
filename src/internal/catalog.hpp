@@ -100,7 +100,10 @@ public:
     std::int64_t sequence(const Table& t);
     void setSequence(const Table& t, std::int64_t seq);
 
-    /// Writes back pending AUTOINCREMENT marks. Called after every statement.
+    /// Writes back pending rowid high-water marks (AUTOINCREMENT, and the
+    /// hidden rowid of a table with a declared key): at commit, before a
+    /// nested level opens and before DDL, so each is written once per
+    /// transaction and only when it rose.
     void flush();
     /// After a successful commit as store transaction `txnid`.
     void committed(std::uint64_t txnid);

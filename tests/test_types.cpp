@@ -43,6 +43,9 @@ TEST(castsFollowTheDeclaredType)
     CHECK(Value().cast(Type::Integer).isNull());
     CHECK_THROWS(Value("banana").cast(Type::Integer), ErrorCode::TypeMismatch);
     CHECK_THROWS(Value::blob("ab", 2).cast(Type::Integer), ErrorCode::TypeMismatch);
+    // 2^63 is one past INT64_MAX; -2^63 is INT64_MIN itself.
+    CHECK_THROWS(Value(9223372036854775808.0).cast(Type::Integer), ErrorCode::TypeMismatch);
+    CHECK_EQ(Value(-9223372036854775808.0).cast(Type::Integer).integer(), INT64_MIN);
 }
 
 TEST(orderingRanksTheStorageClasses)

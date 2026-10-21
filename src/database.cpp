@@ -57,11 +57,20 @@ struct StoreHandle
 struct OpenOptions
 {
     std::uint64_t maxSize = 64ull << 30;
-    bool durable = true;
+    nosql::Durability durability = nosql::Durability::Safe;
     bool cacheReads = true;
     std::chrono::milliseconds revalidate{60000};
     std::size_t statementCache = 32;
     std::size_t arenaBlock = 4096;
+    /// libnosql settings passed through when set (kUnset or negative: its own
+    /// default).
+    static constexpr std::uint64_t kUnset = ~std::uint64_t(0);
+    std::chrono::milliseconds syncInterval{-1};
+    std::uint64_t pageSize = kUnset;
+    std::uint64_t initialSize = kUnset;
+    std::uint64_t growthStep = kUnset;
+    std::uint64_t bufferCache = kUnset;
+    std::uint64_t dirtyLimit = kUnset;
 };
 
 std::filesystem::path scratchPath()
@@ -104,15 +113,27 @@ std::unique_ptr<StoreHandle> openFile(const std::string& name, const std::filesy
     h->path = path;
     h->displayPath = std::filesystem::absolute(path).string();
     h->readOnly = readOnly;
-    h->env = nosql::Env::configure()
-                 .maxSize(o.maxSize)
-                 .maxDbs(512)
-                 .readOnly(readOnly)
-                 .createIfMissing(create)
-                 .sync(o.durable ? nosql::Durability::Safe : nosql::Durability::None)
-                 .cacheReadChecksums(o.cacheReads)
-                 .revalidateAfter(o.revalidate)
-                 .open(path);
+    nosql::Env::Options eo = nosql::Env::configure()
+                                 .maxSize(o.maxSize)
+                                 .maxDbs(512)
+                                 .readOnly(readOnly)
+                                 .createIfMissing(create)
+                                 .sync(o.durability)
+                                 .cacheReadChecksums(o.cacheReads)
+                                 .revalidateAfter(o.revalidate);
+    if (o.syncInterval.count() >= 0)
+        eo.syncInterval(o.syncInterval);
+    if (o.pageSize != OpenOptions::kUnset)
+        eo.pageSize(std::size_t(o.pageSize));
+    if (o.initialSize != OpenOptions::kUnset)
+        eo.initialSize(o.initialSize);
+    if (o.growthStep != OpenOptions::kUnset)
+        eo.growthStep(o.growthStep);
+    if (o.bufferCache != OpenOptions::kUnset)
+        eo.bufferCache(std::size_t(o.bufferCache));
+    if (o.dirtyLimit != OpenOptions::kUnset)
+        eo.dirtyLimit(o.dirtyLimit);
+    h->env = eo.open(path);
     return h;
 }
 
@@ -282,6 +303,7 @@ struct TxnImpl
     std::vector<std::unique_ptr<Catalog>> catalogPool;  ///< kept across uses
     std::vector<Catalog*> catalogs;                     ///< open ones, by store
     std::vector<std::unique_ptr<Level>> levels;
+    std::vector<std::unique_ptr<Level>> levelPool;  ///< ended levels, for reuse
     Session session;
     FuncContext fctx;
     BatchCache cache;
@@ -414,7 +436,13 @@ void start(TxnImpl& t, bool write)
 /// Opens nested store transactions for a new level.
 void pushLevel(TxnImpl& t, std::string name, bool savepoint)
 {
-    auto level = std::make_unique<Level>();
+    std::unique_ptr<Level> level;
+    if (!t.levelPool.empty()) {
+        level = std::move(t.levelPool.back());
+        t.levelPool.pop_back();
+    } else {
+        level = std::make_unique<Level>();
+    }
     level->name = std::move(name);
     level->savepoint = savepoint;
     level->deferredFk = t.session.deferredFkViolations;
@@ -423,6 +451,9 @@ void pushLevel(TxnImpl& t, std::string name, bool savepoint)
         for (std::size_t i = 0; i < t.roots.size(); ++i) {
             if (!t.catalogs[i] || t.roots[i].isReadOnly())
                 continue;
+            // Rowid marks so far belong to the parent: an abort of this
+            // level must not lose them (Catalog::flush).
+            t.catalogs[i]->flush();
             level->txns[i] = t.catalogs[i]->txn().nested();
             t.catalogs[i]->pushLevel(level->txns[i]);
         }
@@ -449,6 +480,7 @@ void popLevel(TxnImpl& t, bool commit)
     if (!commit)
         t.session.deferredFkViolations = level->deferredFk;
     refreshSession(t);
+    t.levelPool.push_back(std::move(level));
 }
 
 /// Turns a reading transaction into a writing one (SQL BEGIN DEFERRED), if no
@@ -548,7 +580,7 @@ void checkWritable(DatabaseImpl& db, const StatementMeta& m, const TxnImpl* t)
 /// a nested level of its own so that a failure undoes it alone; DML opens
 /// that level only when it has to (see Session::beginAtomic).
 Result runOne(Batch& b, std::size_t k, TxnImpl& t, const std::vector<Value>& params, bool atomic,
-              const RowCallback* each = nullptr)
+              const RowVisitor* each = nullptr, Result* into = nullptr)
 {
     DatabaseImpl& db = *t.db;
     const StatementMeta& m = b.meta[k];
@@ -558,7 +590,8 @@ Result runOne(Batch& b, std::size_t k, TxnImpl& t, const std::vector<Value>& par
     ensurePlanned(b, k, t.session);
     Program& p = *b.programs[k];
     db.interrupted.store(false, std::memory_order_relaxed);
-    ResultBuilder out;
+    Result fresh;
+    ResultBuilder out(into ? *into : fresh);
     out.each = each;
     const bool guarded = atomic && (m.mutating || m.writesPragma) && t.writer;
     bool nested = false;
@@ -617,7 +650,7 @@ Result runOne(Batch& b, std::size_t k, TxnImpl& t, const std::vector<Value>& par
     }
     if (nested)
         popLevel(t, true);
-    return std::move(out.result);
+    return fresh;
 }
 
 std::shared_ptr<TxnImpl> newTxn(const std::shared_ptr<DatabaseImpl>& db, bool readOnly)
@@ -821,8 +854,8 @@ Result connectionStatement(DatabaseImpl& db, StatementNode& node, const std::vec
 }
 
 /// Runs a whole batch the way Database::exec and Statement::exec do.
-Result execBatch(const std::shared_ptr<DatabaseImpl>& dbp, Batch& b, const std::vector<Value>& params,
-                 const RowCallback* each = nullptr)
+Result execBatch(const std::shared_ptr<DatabaseImpl>& dbp, Batch& b,
+                 const std::vector<Value>& params, const RowVisitor* each = nullptr)
 {
     DatabaseImpl& db = *dbp;
     Result last;
@@ -1037,6 +1070,12 @@ void Values::fill(Value* first, std::size_t count, bool move, Value* cells)
     borrowed_ = borrow;
 }
 
+void Values::refill(const Value* first)
+{
+    for (std::size_t i = 0; i < size_; ++i)
+        data_[i] = first[i];
+}
+
 Values::Values(std::vector<Value>&& values) : size_(values.size())
 {
     data_ = size_ <= kInline ? reinterpret_cast<Value*>(inline_)
@@ -1115,10 +1154,12 @@ Result::Result(Result&& other) noexcept
       chunkSize_(other.chunkSize_),
       chunkFree_(other.chunkFree_),
       rows_(std::move(other.rows_)),
+      spare_(std::move(other.spare_)),
       changes_(other.changes_),
       lastInsertId_(other.lastInsertId_)
 {
     other.rows_.clear();
+    other.spare_.clear();
     other.chunks_.clear();
     other.chunkSize_ = other.chunkFree_ = 0;
 }
@@ -1128,14 +1169,17 @@ Result& Result::operator=(Result&& other) noexcept
     if (this != &other) {
         // Rows first: they destroy the values that live in our chunks.
         rows_.clear();
+        spare_.clear();
         names_ = std::move(other.names_);
         chunks_ = std::move(other.chunks_);
         chunkSize_ = other.chunkSize_;
         chunkFree_ = other.chunkFree_;
         rows_ = std::move(other.rows_);
+        spare_ = std::move(other.spare_);
         changes_ = other.changes_;
         lastInsertId_ = other.lastInsertId_;
         other.rows_.clear();
+        other.spare_.clear();
         other.chunks_.clear();
         other.chunkSize_ = other.chunkFree_ = 0;
     }
@@ -1314,6 +1358,24 @@ internal::StatementImpl& live(const std::shared_ptr<internal::StatementImpl>& im
     return *impl;
 }
 
+/// Binds every parameter into the statement's own cells, which keep their
+/// buffers; a borrowing value stays a borrow, as bind(index, value) keeps it.
+void bindInPlace(internal::StatementImpl& s, std::initializer_list<Value> params)
+{
+    if (params.size() != s.bound.size())
+        throw Error(ErrorCode::InvalidArgument,
+                    "statement takes " + std::to_string(s.bound.size()) + " parameters, " +
+                        std::to_string(params.size()) + " were given");
+    Value* cell = s.bound.data();
+    for (const Value& v : params) {
+        if (v.borrowed())
+            cell->borrow(v);
+        else
+            *cell = v;
+        ++cell;
+    }
+}
+
 }  // namespace
 
 Statement::Statement(Statement&&) noexcept = default;
@@ -1424,18 +1486,43 @@ Result Statement::exec(Transaction& txn)
     return run(txn, nullptr);
 }
 
+Result Statement::exec(std::initializer_list<Value> params)
+{
+    bindInPlace(live(impl_), params);
+    return exec();
+}
+
+Result Statement::exec(Transaction& txn, std::initializer_list<Value> params)
+{
+    bindInPlace(live(impl_), params);
+    return exec(txn);
+}
+
+Result& Statement::execInto(Transaction& txn, Result& out)
+{
+    run(txn, nullptr, &out);
+    return out;
+}
+
 std::uint64_t Statement::each(const RowCallback& fn)
 {
-    internal::StatementImpl& s = live(impl_);
-    return internal::execBatch(s.db, *s.batch, s.bound, &fn).changes();
+    return eachRow(nullptr, RowVisitor(fn));
 }
 
 std::uint64_t Statement::each(Transaction& txn, const RowCallback& fn)
 {
-    return run(txn, &fn).changes();
+    return eachRow(&txn, RowVisitor(fn));
 }
 
-Result Statement::run(Transaction& txn, const RowCallback* each)
+std::uint64_t Statement::eachRow(Transaction* txn, RowVisitor fn)
+{
+    if (txn)
+        return run(*txn, &fn).changes();
+    internal::StatementImpl& s = live(impl_);
+    return internal::execBatch(s.db, *s.batch, s.bound, &fn).changes();
+}
+
+Result Statement::run(Transaction& txn, const RowVisitor* each, Result* into)
 {
     internal::StatementImpl& s = live(impl_);
     internal::TxnImpl& t = internal::live(txn.impl_);
@@ -1445,7 +1532,7 @@ Result Statement::run(Transaction& txn, const RowCallback* each)
     Result last;
     for (std::size_t k = 0; k < b.meta.size(); ++k) {
         try {
-            last = internal::runOne(b, k, t, s.bound, true, each);
+            last = internal::runOne(b, k, t, s.bound, true, each, into);
         } catch (...) {
             if (t.doomed)
                 internal::park(std::move(txn.impl_));
@@ -1461,9 +1548,17 @@ Database Database::Options::open(const std::filesystem::path& path) const
 {
     auto impl = std::make_shared<internal::DatabaseImpl>();
     impl->options.maxSize = maxSize_;
-    impl->options.durable = durable_;
+    impl->options.durability = durabilitySet_
+                                   ? durability_
+                                   : (durable_ ? nosql::Durability::Safe : nosql::Durability::None);
     impl->options.cacheReads = cacheReads_;
     impl->options.revalidate = revalidateAfter_;
+    impl->options.syncInterval = syncInterval_;
+    impl->options.pageSize = pageSize_;
+    impl->options.initialSize = initialSize_;
+    impl->options.growthStep = growthStep_;
+    impl->options.bufferCache = bufferCache_;
+    impl->options.dirtyLimit = dirtyLimit_;
     impl->conn.busyTimeout = busyTimeout_.count();
     struct Preset
     {
@@ -1550,6 +1645,9 @@ Database Database::openReader() const
     internal::DatabaseImpl& source = internal::open(impl_);
     auto impl = std::make_shared<internal::DatabaseImpl>();
     impl->options = source.options;
+    impl->conn.sortMemory = source.conn.sortMemory.load(std::memory_order_relaxed);
+    impl->conn.scratchRetain = source.conn.scratchRetain.load(std::memory_order_relaxed);
+    impl->cache.configure(impl->options);
     impl->readOnly = true;
     auto main = std::make_unique<internal::StoreHandle>();
     main->name = "main";

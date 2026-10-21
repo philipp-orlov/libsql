@@ -1429,6 +1429,127 @@ void markCacheable(CorePlan& core)
     }
 }
 
+/// One part of the key a table source's access path walks, in key order.
+/// `plain`: ascending and BINARY, so key order is SQL order for it.
+struct WalkedPart
+{
+    int column;  ///< the rowid is the column past the table's last
+    bool plain;
+    bool rowKey;  ///< the row key an index entry ends with
+};
+
+/// The parts of the key or index `s` reads, up to the first expression part;
+/// an index's entries then continue with the row key.
+std::vector<WalkedPart> walkedParts(const SourceNode& s)
+{
+    const Table& t = *s.table;
+    const int rowid = int(t.columns.size());
+    std::vector<WalkedPart> parts;
+    auto key = [&](bool rowKey) {
+        if (t.keyedByRowid()) {
+            parts.push_back({rowid, true, rowKey});
+            return;
+        }
+        for (std::size_t i = 0; i < t.primaryKey.size(); ++i)
+            parts.push_back(
+                {t.primaryKey[i], t.pkCollation[i] == Collation::Binary && !t.pkDesc[i], rowKey});
+    };
+    switch (s.access.kind) {
+        case AccessPath::Kind::Scan: break;
+        case AccessPath::Kind::Rowid:
+        case AccessPath::Kind::Key: key(false); break;
+        case AccessPath::Kind::Index: {
+            bool expression = false;
+            for (const IndexPart& p : s.access.index->parts) {
+                expression = p.column == -1;
+                if (expression)
+                    break;
+                parts.push_back({p.column == -2 ? rowid : p.column,
+                                 p.collation == Collation::Binary && !p.desc, false});
+            }
+            if (!expression)
+                key(true);
+            break;
+        }
+    }
+    for (WalkedPart& p : parts) {
+        if (t.rowidAlias >= 0 && p.column == t.rowidAlias)
+            p.column = rowid;
+    }
+    return parts;
+}
+
+/// The column of `s` that `e` is a bare reference to (the rowid alias as the
+/// rowid), or -1.
+int walkedColumn(const SourceNode& s, const Expr* e)
+{
+    if (e->kind != ExprKind::Column || e->slot < 0 || std::size_t(e->slot) < s.base ||
+        std::size_t(e->slot) >= s.base + s.width)
+        return -1;
+    const int col = int(std::size_t(e->slot) - s.base);
+    return s.table->rowidAlias >= 0 && col == s.table->rowidAlias ? int(s.table->columns.size())
+                                                                  : col;
+}
+
+/// A lone table source whose access path is a plain window: Key, Rowid or
+/// Index access with no IN list.
+SourceNode* windowedSource(CorePlan& p)
+{
+    if (p.sources.size() != 1 || p.sources[0].kind != SourceNode::Kind::Table)
+        return nullptr;
+    SourceNode& s = p.sources[0];
+    if (s.access.kind == AccessPath::Kind::Scan || s.access.inList || !s.onTerms.empty())
+        return nullptr;
+    return &s;
+}
+
+/// Drops an ORDER BY the access path already delivers: one table read
+/// through its key or an index, ordered by the parts after the pinned ones
+/// (pinned parts may appear anywhere: each holds one value), all ascending
+/// and BINARY. Rows then arrive in order and the stable sort would leave them
+/// as they are. All descending works the same over a backward walk, when the
+/// terms reach the end of a unique key so that no two rows tie.
+void elideOrder(SelectPlan& sp)
+{
+    if (sp.order.empty() || sp.cores.size() != 1)
+        return;
+    CorePlan& p = sp.cores[0];
+    if (p.aggregate || !p.windows.empty() || p.distinct || !p.values.empty())
+        return;
+    SourceNode* s = windowedSource(p);
+    if (!s)
+        return;
+    const std::vector<WalkedPart> parts = walkedParts(*s);
+    const std::size_t pinned = s->access.equals.size();
+    std::size_t next = pinned;
+    int desc = -1;
+    for (const SelectPlan::SortKey& k : sp.order) {
+        const int col = walkedColumn(*s, p.outputs[k.column]);
+        if (col < 0 || k.collation != Collation::Binary)
+            return;
+        bool constant = false;
+        for (std::size_t i = 0; i < pinned && i < parts.size(); ++i)
+            constant = constant || (parts[i].column == col && parts[i].plain);
+        if (constant)
+            continue;
+        if (next >= parts.size() || parts[next].column != col || !parts[next].plain)
+            return;
+        // NULLs come first in key order: the default for ASC, last for DESC.
+        if (k.nulls != 0 && k.nulls != (k.desc ? 2 : 1))
+            return;
+        if (desc >= 0 && desc != int(k.desc))
+            return;
+        desc = int(k.desc);
+        ++next;
+    }
+    if (desc == 1) {
+        if (s->access.kind == AccessPath::Kind::Index || next != parts.size())
+            return;
+        s->reverse = true;
+    }
+    sp.order.clear();
+}
+
 }  // namespace
 
 void Planner::planFilters(CorePlan& core, Expr* where)
@@ -1887,6 +2008,42 @@ void Planner::planCore(SelectCore& core, CorePlan& plan, Scope& scope, SelectPla
         onlyCount = onlyCount && !readsRow(plan.having);
         plan.countWindow = onlyCount;
     }
+    if (plan.aggregate && plan.groupBy.empty() && plan.windows.empty() && plan.aggs.size() == 1 &&
+        plan.aggs[0].minMax && plan.finalFilters.empty()) {
+        const Expr& call = *plan.aggs[0].call;
+        const SourceNode* s = windowedSource(plan);
+        if (s && s->generated.empty() && !call.filter && call.orderBy.empty() &&
+            call.collation == Collation::Binary) {
+            const std::vector<WalkedPart> parts = walkedParts(*s);
+            const std::size_t pinned = s->access.equals.size();
+            const int col = walkedColumn(*s, call.list[0].get());
+            // Nothing but the call may read the row: a bare column beside
+            // min() or max() takes that row's value, and the seek reads one.
+            std::function<bool(const Expr*)> readsRow = [&](const Expr* e) {
+                if (!e || e == &call)
+                    return false;
+                if (e->sub || e->select)
+                    return true;
+                if ((e->kind == ExprKind::Column || e->kind == ExprKind::Slot) && e->slot >= 0 &&
+                    std::size_t(e->slot) >= s->base && std::size_t(e->slot) < s->base + s->width)
+                    return true;
+                if (readsRow(e->lhs.get()) || readsRow(e->rhs.get()) || readsRow(e->extra.get()) ||
+                    readsRow(e->filter.get()))
+                    return true;
+                for (const ExprPtr& x : e->list) {
+                    if (readsRow(x.get()))
+                        return true;
+                }
+                return false;
+            };
+            bool only = col >= 0 && pinned < parts.size() && parts[pinned].column == col &&
+                        parts[pinned].plain && !parts[pinned].rowKey && !readsRow(plan.having);
+            for (const Expr* o : plan.outputs)
+                only = only && !readsRow(o);
+            if (only)
+                plan.extremeSeek = equalsNoCase(call.name, "max") ? 2 : 1;
+        }
+    }
     plan.frameEnd = prog_.frameSize;
 }
 
@@ -2011,6 +2168,7 @@ std::unique_ptr<SelectPlan> Planner::planSelect(SelectStmt& s, Scope* outer, std
     for (const CorePlan& c : sp->cores)
         width = std::max(width, c.outputs.size());
     sp->rowWidth = width;
+    elideOrder(*sp);
     if (s.limit) {
         resolve(s.limit, withScope, 0);
         sp->limit = s.limit.get();

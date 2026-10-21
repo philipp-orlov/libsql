@@ -46,6 +46,10 @@ struct IndexWriter
     /// the new row's is identical -- then the entry is left alone.
     std::string oldEntry, oldFlags;
     bool unchanged = false;
+    /// INSERT: the new row's entry and flags, computed before the row is
+    /// written; `newIn` false when a partial index leaves the row out.
+    std::string newEntry, newFlags;
+    bool newIn = false;
 };
 
 struct FkParent
@@ -117,8 +121,10 @@ public:
     /// tables its actions reach).
     TablePlan& plan(const Table& t, std::size_t store);
 
-    /// Fills the new row's defaults (and NULLs) into slots[newBase...].
-    void initRow(TablePlan& tp, Ctx& c);
+    /// Fills the new row's defaults (and NULLs) into slots[newBase...],
+    /// leaving alone the slots `targeted` marks (by position, the rowid
+    /// last): the caller assigns those next, into the buffers they keep.
+    void initRow(TablePlan& tp, Ctx& c, const std::uint8_t* targeted = nullptr);
     /// Inserts the new row in slots[newBase...]. Returns false when the row
     /// was skipped (OR IGNORE, RAISE(IGNORE), DO NOTHING). `upserts` may be
     /// empty. Sets `rowid` to the row's rowid (rowid tables).

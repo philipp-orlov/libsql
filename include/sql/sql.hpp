@@ -14,9 +14,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "sql/error.hpp"
@@ -25,6 +27,7 @@
 namespace nosql {
 class Env;
 class Txn;
+enum class Durability;
 }  // namespace nosql
 
 namespace sql {
@@ -125,6 +128,9 @@ private:
     /// row wider than the inline space goes into `cells` when given (memory
     /// its Result owns) instead of a heap block of its own.
     void fill(Value* first, std::size_t count, bool move, Value* cells = nullptr);
+    /// Copies size() values from `first` over the ones held, each cell
+    /// keeping its buffer, so a recycled row allocates nothing.
+    void refill(const Value* first);
 
     static constexpr std::size_t kInline = 4;
     bool inlined() const noexcept { return data_ == reinterpret_cast<const Value*>(inline_); }
@@ -201,6 +207,25 @@ private:
 /// Called for each row by Statement::each; return false to stop early.
 using RowCallback = std::function<bool(const RowView&)>;
 
+/// A borrowed reference to whatever Statement::each calls per row: a lambda
+/// is called where it is, never copied into a std::function, so no call
+/// allocates. Valid only while the callable it refers to lives.
+class RowVisitor
+{
+public:
+    template <class F,
+              class = std::enable_if_t<!std::is_same_v<std::remove_const_t<F>, RowVisitor>>>
+    RowVisitor(F& fn) noexcept
+        : fn_(const_cast<void*>(static_cast<const void*>(&fn))),
+          call_([](void* f, const RowView& row) { return bool((*static_cast<F*>(f))(row)); })
+    {}
+    bool operator()(const RowView& row) const { return call_(fn_, row); }
+
+private:
+    void* fn_;
+    bool (*call_)(void*, const RowView&);
+};
+
 /// What a statement produced: rows for SELECT, counters for everything else.
 class Result
 {
@@ -243,6 +268,9 @@ private:
     std::size_t chunkSize_ = 0;  ///< values the last chunk holds
     std::size_t chunkFree_ = 0;  ///< of which still unused
     std::vector<Row> rows_;
+    /// Rows of an earlier run kept by Statement::execInto, refilled in place
+    /// (each cell keeps its buffer) by the next run of the same statement.
+    std::vector<Row> spare_;
     std::uint64_t changes_ = 0;
     std::int64_t lastInsertId_ = 0;
 };
@@ -351,16 +379,40 @@ public:
     Result exec(const Params& params) { return bind(params).exec(); }
     Result exec(Transaction& txn, const Params& params) { return bind(params).exec(txn); }
     Result exec(const NamedParams& params) { return bind(params).exec(); }
+    /// Bind in place, then run: each value is copied into the statement's
+    /// own parameter cell, which keeps its buffer, so no Params vector is
+    /// built and a warm call allocates nothing. A Value::textRef or
+    /// Value::blobRef stays a reference: its bytes must outlive the run.
+    Result exec(std::initializer_list<Value> params);
+    Result exec(Transaction& txn, std::initializer_list<Value> params);
+
+    /// Runs inside `txn` into `out`, reusing it: the rows `out` holds from
+    /// its last run of this statement are refilled in place, each cell
+    /// keeping its buffer, so a warm run allocates nothing. `out` keeps the
+    /// rows of its largest run until it is destroyed. Returns `out`.
+    Result& execInto(Transaction& txn, Result& out);
 
     /// Runs like exec(), but hands each row to `fn` as it is produced instead
     /// of collecting a Result: nothing is copied or kept, so a large result
     /// costs no memory. `fn` returning false stops the statement there.
-    /// Returns the number of rows changed.
+    /// Returns the number of rows changed. A lambda is called through a
+    /// RowVisitor, so the call itself allocates nothing.
     std::uint64_t each(const RowCallback& fn);
     std::uint64_t each(Transaction& txn, const RowCallback& fn);
+    template <class F>
+    std::uint64_t each(F&& fn)
+    {
+        return eachRow(nullptr, RowVisitor(fn));
+    }
+    template <class F>
+    std::uint64_t each(Transaction& txn, F&& fn)
+    {
+        return eachRow(&txn, RowVisitor(fn));
+    }
 
 private:
-    Result run(Transaction& txn, const RowCallback* each);
+    std::uint64_t eachRow(Transaction* txn, RowVisitor fn);
+    Result run(Transaction& txn, const RowVisitor* each, Result* into = nullptr);
     friend class Database;
     explicit Statement(std::shared_ptr<internal::StatementImpl> impl) noexcept
         : impl_(std::move(impl))
@@ -415,11 +467,68 @@ public:
             create_ = on;
             return *this;
         }
-        /// Off trades crash durability for throughput on bulk loads; the store
-        /// still opens on a consistent snapshot either way.
+        /// On is nosql::Durability::Safe: every commit is flushed. Off is
+        /// nosql::Durability::None: commits are flushed only by
+        /// nosql::Env::sync(), on close, or when libnosql decides to; a crash
+        /// loses the commits since then. The store reopens on a consistent
+        /// snapshot after a process crash either way; after a power loss it
+        /// does so only with a libnosql that keeps the newest meta page in
+        /// memory until a sync (deferred meta). An older libnosql writes meta
+        /// and data unordered under None, so do not use durable(false) on a
+        /// store that must survive a power cut there.
         Options& durable(bool on = true)
         {
             durable_ = on;
+            return *this;
+        }
+        /// Any libnosql durability mode, for example nosql::Durability::Lazy
+        /// with syncInterval(). Wins over durable().
+        Options& durability(nosql::Durability mode)
+        {
+            durability_ = mode;
+            durabilitySet_ = true;
+            return *this;
+        }
+        /// libnosql's sync interval for Durability::Lazy (one second by
+        /// default): the longest a commit may wait to become durable.
+        Options& syncInterval(std::chrono::milliseconds interval)
+        {
+            syncInterval_ = interval;
+            return *this;
+        }
+        /// libnosql's page size for a store being created; an existing store
+        /// keeps its own (pinning a different one is an error). 4096 by
+        /// default.
+        Options& pageSize(std::size_t bytes)
+        {
+            pageSize_ = bytes;
+            return *this;
+        }
+        /// Size a new store file starts at, and the least it grows by each
+        /// time (libnosql's initialSize and growthStep).
+        Options& initialSize(std::uint64_t bytes)
+        {
+            initialSize_ = bytes;
+            return *this;
+        }
+        Options& growthStep(std::uint64_t bytes)
+        {
+            growthStep_ = bytes;
+            return *this;
+        }
+        /// Payload bytes of page buffers libnosql keeps for reuse between
+        /// transactions (32 MiB by default); size it to the dirty set of a
+        /// typical commit.
+        Options& bufferCache(std::size_t bytes)
+        {
+            bufferCache_ = bytes;
+            return *this;
+        }
+        /// The most dirty page bytes one write transaction may hold (256 MiB
+        /// by default); a larger one fails with nosql::ErrorCode::OutOfMemory.
+        Options& dirtyLimit(std::uint64_t bytes)
+        {
+            dirtyLimit_ = bytes;
             return *this;
         }
         /// Let reads trust a page checksum the process has already verified
@@ -435,6 +544,13 @@ public:
         {
             cacheReads_ = on;
             revalidateAfter_ = revalidateAfter;
+            return *this;
+        }
+        /// How long a remembered page check is trusted (see
+        /// cacheReadChecksums); zero trusts it for ever.
+        Options& revalidateAfter(std::chrono::milliseconds interval)
+        {
+            revalidateAfter_ = interval;
             return *this;
         }
 
@@ -503,6 +619,14 @@ public:
         bool durable_ = true;
         bool cacheReads_ = true;
         std::chrono::milliseconds revalidateAfter_{60000};
+        bool durabilitySet_ = false;
+        nosql::Durability durability_{};
+        std::chrono::milliseconds syncInterval_{-1};  ///< negative: libnosql's default
+        std::uint64_t pageSize_ = kUnset;
+        std::uint64_t initialSize_ = kUnset;
+        std::uint64_t growthStep_ = kUnset;
+        std::uint64_t bufferCache_ = kUnset;
+        std::uint64_t dirtyLimit_ = kUnset;
     };
 
     static Options configure() { return Options(); }

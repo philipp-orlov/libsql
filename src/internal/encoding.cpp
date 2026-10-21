@@ -181,6 +181,14 @@ void readBytesInto(std::string_view& in, std::string& out)
     }
 }
 
+/// A thread's decode scratch keeps an ordinary key's worth, not the largest
+/// key the thread ever decoded.
+void trimScratch(std::string& scratch)
+{
+    if (scratch.capacity() > (64u << 10))
+        std::string().swap(scratch);
+}
+
 void skipBytes(std::string_view& in)
 {
     for (std::size_t i = 0;; ++i) {
@@ -324,6 +332,7 @@ void decodeKeyInto(std::string_view& in, Value& out, bool borrow)
         std::string_view view = flipped;
         in.remove_prefix(n);
         decodeKeyInto(view, out);
+        trimScratch(flipped);
         return;
     }
     in.remove_prefix(1);
@@ -361,6 +370,7 @@ void decodeKeyInto(std::string_view& in, Value& out, bool borrow)
             thread_local std::string buffer;
             readBytesInto(in, buffer);
             out.setText(buffer);
+            trimScratch(buffer);
             return;
         }
         case kKeyBlob: {
@@ -375,6 +385,7 @@ void decodeKeyInto(std::string_view& in, Value& out, bool borrow)
             thread_local std::string buffer;
             readBytesInto(in, buffer);
             out.setBlob(buffer.data(), buffer.size());
+            trimScratch(buffer);
             return;
         }
         default: corrupt("unknown key tag");

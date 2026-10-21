@@ -754,8 +754,12 @@ separate index.
   so they use the persisted `'a' + id` sequence as a high-water mark.
 
 `noteRowid` updates the in-memory max for rowid-keyed tables and the persisted
-sequence when the table is `AUTOINCREMENT` or `payloadRowid()`. `flush` writes
-dirty sequences after statements and before commit.
+sequence when the table is `AUTOINCREMENT` or `payloadRowid()`, and only when
+the rowid rises past it. `flush` writes dirty sequences into `sql_catalog` at
+commit, before a nested level opens (so a level that aborts drops only its own
+marks; `popLevel(false)` clears the cached state and the next read comes from
+the catalog) and before DDL edits the schema (the marks are kept by table
+position). A transaction of many inserts thus writes each mark once.
 
 ---
 
@@ -1117,7 +1121,13 @@ database in the same transaction (`nosql::Cursor::boundTo`), and index reads
 fetch rows through a second kept cursor (`rowCursor`, `seekExact(key, value)`):
 libnosql answers a seek that falls inside the cursor's current leaf without
 descending from the root, and stops trying for a while on a cursor whose seeks
-keep missing.
+keep missing. When a top-level run ends (`runProgram`), every table source
+lets go of its cursors, so a prepared statement does not keep its finished
+libnosql transaction out of the pool until it runs again.
+
+A fully pinned `UNIQUE` index (`SourceNode::single`) is exhausted after the one
+entry it can hold, without stepping the cursor again. A window the planner
+marks `reverse` (§13.5) is walked from its last entry back with `prev`.
 
 **Two-phase rows.** At the first open in `nest`, `decideSplit` gives a table
 source two column masks when its level has terms that can reject rows: the
@@ -1272,6 +1282,15 @@ them at finish time and then steps the aggregate state in order.
 The single `min()`/`max()` bare-column rule is implemented by updating the
 group sample when the extreme aggregate's value changes.
 
+`CorePlan::extremeSeek` marks `SELECT min(c)` or `max(c)` over one table, and
+nothing else that reads the row, where `c` is the key or index part after the
+pinned ones (ascending, `BINARY`, not the row key an index entry ends with).
+When the open window enforces every `WHERE` term, `seekExtreme` loads one row:
+for `min` the first entry past the NULLs, for `max` the last entry of the
+window (none when it is NULL). Among equal values that is the first in key order
+for `min` and the last for `max`, the rows SQLite's own seek finds; the
+aggregate then steps that row alone. Otherwise the core runs as usual.
+
 ### 13.4 Windows
 
 `WindowRunner` materializes the core rows, groups window calls by compatible
@@ -1301,6 +1320,17 @@ Compound operators are evaluated left to right:
 when a finite `LIMIT + OFFSET` needs only a prefix; otherwise it sorts the
 whole index. Null ordering follows SQLite's default and explicit
 `NULLS FIRST`/`NULLS LAST`; ties keep arrival order, so every sort is stable.
+
+Before that, `elideOrder` (planning) drops an `ORDER BY` the access path
+already delivers: a lone table read through Key, Rowid or Index access with no
+IN list, whose terms are bare columns naming the parts after the pinned
+equalities in order (pinned parts may appear anywhere), all ascending, `BINARY`
+and with NULLs first. An index's entries continue with the row key, so its
+parts are followed by the rowid or primary key. Rows then arrive in that order,
+and the stable sort would have left them as they were. All-descending terms
+over Key or Rowid access that reach the last key part (so no two rows tie) set
+`SourceNode::reverse` instead. The rows then stream through the plain path,
+`LIMIT` and `OFFSET` included (a backward walk does not skip by entry counts).
 
 An `ORDER BY` over one core collects through `SortCollector`:
 
@@ -1390,7 +1420,13 @@ no index covers writes only the row.
 
 `UPDATE ... FROM` tracks storage keys and updates each target row at most once.
 Triggers or cascades that remove a later matched row are handled by reloading
-and skipping if the row no longer exists.
+and skipping if the row no longer exists. A DELETE reloads only when the table
+has triggers or foreign keys are on; without either, nothing can change a row
+before the statement reaches it. Without triggers and `RETURNING`, and with no
+expression or partial index, `keyColumns` narrows the DELETE's scan to the
+primary key, the index columns and what its terms read, so the rest of each
+row is never decoded or copied; with foreign keys on, each row is then loaded
+whole before it goes.
 
 ### 14.4 Constraints and conflict algorithms
 
@@ -1737,7 +1773,11 @@ Public headers live under [`../include/sql/`](../include/sql/).
 - `maxSize`, default 64 GiB;
 - `readOnly`;
 - `createIfMissing`;
-- `durable`;
+- `durable` (`nosql::Durability::Safe`, or `None` when off) and `durability`,
+  any `nosql::Durability` value, which wins; `syncInterval` for `Lazy`;
+- libnosql pass-throughs, each left at libnosql's default unless set:
+  `pageSize`, `initialSize`, `growthStep`, `bufferCache`, `dirtyLimit`,
+  `revalidateAfter`;
 - `cacheReadChecksums`, default on: a read snapshot trusts a page's checksum
   once verified until the page is replaced (writers always re-verify);
 - `busyTimeout`, the initial `PRAGMA busy_timeout`;
@@ -1750,7 +1790,9 @@ Public headers live under [`../include/sql/`](../include/sql/).
 `Database` supports:
 
 - `exec` with positional or named parameters;
-- `prepare`;
+- `prepare`, giving a `Statement` with `exec` (also with braced values bound
+  in place), `execInto(txn, result)` (refills `result`'s rows of its last run of
+  the statement in place) and `each` (any callable, through `RowVisitor`);
 - `begin` and `beginRead`;
 - `openReader`;
 - `changes`, `totalChanges`, `lastInsertRowid`, `inTransaction`;

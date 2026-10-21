@@ -180,6 +180,8 @@ struct InsertPlan final : ExecPlan
     TablePlan* tp = nullptr;
     Conflict mode = Conflict::Default;
     std::vector<int> targets;  ///< column positions per source value (rowid = ncols)
+    /// Per new-row slot: a value fills it, so initRow leaves its buffer alone.
+    std::vector<std::uint8_t> targeted;
     std::vector<std::vector<Expr*>> values;  ///< direct VALUES rows
     SubqueryPlan* source = nullptr;          ///< INSERT ... SELECT
     bool defaultValues = false;
@@ -191,7 +193,7 @@ struct InsertPlan final : ExecPlan
 
     bool insertOne(Ctx& c, const Value* v, std::size_t n, ResultBuilder* out, std::int64_t& changes)
     {
-        writer->initRow(*tp, c);
+        writer->initRow(*tp, c, targeted.empty() ? nullptr : targeted.data());
         const Table& t = *tp->table;
         for (std::size_t i = 0; i < n; ++i) {
             const int col = targets[i];
@@ -264,7 +266,6 @@ struct InsertPlan final : ExecPlan
                 insertOne(c, row.data(), row.size(), out, changes);
             }
         }
-        c.session->catalog(tp->store).flush();
         checkImmediateFks(c);
         return changes;
     }
@@ -431,6 +432,14 @@ std::unique_ptr<ExecPlan> planInsert(Program& p, Session& s, Scope* outer)
             plan->upserts.push_back(std::move(up));
         }
     }
+    if (!plan->targets.empty()) {
+        plan->targeted.assign(ncols + 1, 0);
+        for (const int col : plan->targets) {
+            plan->targeted[std::size_t(col)] = 1;
+            if (col == int(ncols) && t->rowidAlias >= 0)
+                plan->targeted[std::size_t(t->rowidAlias)] = 1;
+        }
+    }
     planReturning(pl, st.returning, *t, plan->tp->newBase, alias, p.text, outer, plan->returning);
     return plan;
 }
@@ -584,7 +593,6 @@ struct UpdatePlan final : ExecPlan
                 emitReturning(returning, c, out);
             }
         }
-        c.session->catalog(tp->store).flush();
         checkImmediateFks(c);
         return changes;
     }
@@ -651,6 +659,56 @@ std::unique_ptr<ExecPlan> planUpdate(Program& p, Session& s, Scope* outer)
     return plan;
 }
 
+/// A DELETE without triggers or RETURNING needs, of each row, its key, its
+/// index columns and what the statement's terms read: the scan decodes only
+/// those (a blob beside them is never copied). True when it narrowed the
+/// scan; never with an index on an expression or a partial one, a generated
+/// column or a term holding a sub-query.
+bool keyColumns(const TablePlan& tp, SelectPlan& scan, bool noReturning)
+{
+    const Table& t = *tp.table;
+    if (!noReturning || !tp.triggers.empty() || scan.cores.size() != 1)
+        return false;
+    CorePlan& core = scan.cores[0];
+    if (core.sources.size() != 1 || core.sources[0].table != &t)
+        return false;
+    SourceNode& src = core.sources[0];
+    std::vector<std::uint8_t> mask(t.columns.size(), 0);
+    for (const Column& col : t.columns) {
+        if (col.generated)
+            return false;
+    }
+    for (const int col : t.primaryKey)
+        mask[std::size_t(col)] = 1;
+    for (const IndexWriter& iw : tp.indexes) {
+        if (!iw.index->whereSql.empty())
+            return false;
+        for (const IndexPart& part : iw.index->parts) {
+            if (part.column == -1)
+                return false;
+            if (part.column >= 0)
+                mask[std::size_t(part.column)] = 1;
+        }
+    }
+    for (const std::vector<Expr*>& level : core.levelFilters) {
+        for (const Expr* f : level) {
+            if (!columnsRead(f, src, mask))
+                return false;
+        }
+    }
+    for (const Expr* f : core.finalFilters) {
+        if (!columnsRead(f, src, mask))
+            return false;
+    }
+    // Hidden outputs are ORDER BY terms.
+    for (std::size_t k = core.visible; k < core.outputs.size(); ++k) {
+        if (!columnsRead(core.outputs[k], src, mask))
+            return false;
+    }
+    src.used = std::move(mask);
+    return true;
+}
+
 struct DeletePlan final : ExecPlan
 {
     std::unique_ptr<Writer> writer;
@@ -658,6 +716,8 @@ struct DeletePlan final : ExecPlan
     ScanPlan scan;
     Returning returning;
     std::string key;
+    /// The scan decodes only what finds and removes a row (keyColumns).
+    bool partialRows = false;
 
     std::int64_t run(Ctx& c, ResultBuilder* out) override
     {
@@ -669,6 +729,9 @@ struct DeletePlan final : ExecPlan
         const RowStore& rows = scan.sub->rows;
         if (!safeSingleWrite(*tp, Conflict::Default, rows.size(), c))
             c.session->ensureAtomic();
+        // Only a trigger or a foreign-key action can change a row this
+        // statement has yet to reach; they also read whole rows.
+        const bool reload = !tp->triggers.empty() || c.session->conn->foreignKeys;
         const std::size_t w = tp->table->width();
         for (std::size_t r = 0; r < rows.size(); ++r) {
             const Value* v = rows.row(r);
@@ -676,7 +739,8 @@ struct DeletePlan final : ExecPlan
                 c.slots[tp->oldBase + i] = v[i];
             if (!tp->view) {
                 writer->storageKey(*tp, c, tp->oldBase, key);
-                if (r > 0 && !writer->loadStored(*tp, c, key, tp->oldBase))
+                if (reload && (r > 0 || partialRows) &&
+                    !writer->loadStored(*tp, c, key, tp->oldBase))
                     continue;  // already gone (a trigger or cascade removed it)
             }
             if (writer->remove(*tp, c, key)) {
@@ -684,7 +748,6 @@ struct DeletePlan final : ExecPlan
                 emitReturning(returning, c, out);
             }
         }
-        c.session->catalog(tp->store).flush();
         checkImmediateFks(c);
         return changes;
     }
@@ -709,6 +772,7 @@ std::unique_ptr<ExecPlan> planDelete(Program& p, Session& s, Scope* outer)
     plan->scan = planScan(p, pl, *t, alias, none, st.where, nullptr, st.order, st.limit, st.offset, outer, store,
                           st.indexedBy, st.notIndexed, st.with);
     planReturning(pl, st.returning, *t, plan->tp->oldBase, alias, p.text, outer, plan->returning);
+    plan->partialRows = keyColumns(*plan->tp, *plan->scan.sub->select, st.returning.empty());
     return plan;
 }
 
@@ -848,10 +912,38 @@ struct FrameGuard
     }
 };
 
+/// Lets go of the store cursors the table sources hold once a run is over,
+/// so a prepared statement does not keep its finished transaction out of
+/// libnosql's pool until it runs again. Within the run they stay, so a
+/// join's next probe lands near the last.
+struct CursorGuard
+{
+    Program& p;
+    ~CursorGuard()
+    {
+        auto release = [](SelectPlan* sp) {
+            if (!sp)
+                return;
+            for (CorePlan& core : sp->cores) {
+                for (SourceNode& s : core.sources) {
+                    if (s.kind == SourceNode::Kind::Table)
+                        closeSource(s);
+                }
+            }
+        };
+        release(p.select.get());
+        for (const std::unique_ptr<SubqueryPlan>& sub : p.subqueries) {
+            release(sub->select.get());
+            release(sub->recursive.get());
+        }
+    }
+};
+
 }  // namespace
 
 void runProgram(Program& p, Session& s, const std::vector<Value>& params, ResultBuilder& out, FuncContext& fctx)
 {
+    CursorGuard cursors{p};
     if (p.frame.size() < p.frameSize)
         p.frame.resize(p.frameSize);
     Ctx c;

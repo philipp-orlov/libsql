@@ -171,6 +171,84 @@ TEST(outlivesTheDatabaseHandle)
     CHECK_THROWS(Statement().exec(), ErrorCode::InvalidArgument);
 }
 
+TEST(bindsBracedValuesInPlace)
+{
+    tst::Scratch s("prepare-braced");
+    Database db = seeded(s);
+    Statement insert = db.prepare("INSERT INTO t (name, n) VALUES (?, ?)");
+    const std::string longName(100, 'q');
+    {
+        Transaction txn = db.begin();
+        insert.exec(txn, {Value("a"), Value(1)});
+        // A borrowing value stays a borrow until the run is over.
+        insert.exec(txn, {Value::textRef(longName), Value(2)});
+        txn.commit();
+    }
+    insert.exec({Value(longName), Value()});
+    CHECK_THROWS(insert.exec({Value("x")}), ErrorCode::InvalidArgument);
+    CHECK_EQ(tst::flatten(db.exec("SELECT length(name), n FROM t ORDER BY id")),
+             std::string("1|1;100|2;100|NULL"));
+    // A named Params vector still binds the old way.
+    const Params params{Value("p"), Value(4)};
+    CHECK_EQ(insert.exec(params).changes(), std::uint64_t(1));
+}
+
+TEST(execIntoRefillsOneResult)
+{
+    tst::Scratch s("prepare-into");
+    Database db = seeded(s);
+    db.exec("INSERT INTO t (name, n) VALUES ('a', 1), ('bb', 2), ('ccc', 3), ('dddd', 4)");
+    Statement upTo =
+        db.prepare("SELECT id, name, n, n * 2, name || '!' FROM t WHERE n <= ? ORDER BY id");
+    Statement insert = db.prepare("INSERT INTO t (name, n) VALUES (?, ?)");
+    Result r;
+    Transaction txn = db.begin();
+    CHECK_EQ(tst::flatten(upTo.bind(1, Value(3)).execInto(txn, r)),
+             std::string("1|a|1|2|a!;2|bb|2|4|bb!;3|ccc|3|6|ccc!"));
+    CHECK_EQ(tst::flatten(upTo.bind(1, Value(1)).execInto(txn, r)), std::string("1|a|1|2|a!"));
+    CHECK_EQ(tst::flatten(upTo.bind(1, Value(9)).execInto(txn, r)),
+             std::string("1|a|1|2|a!;2|bb|2|4|bb!;3|ccc|3|6|ccc!;4|dddd|4|8|dddd!"));
+    CHECK_EQ(r.columns().size(), std::size_t(5));
+    // A write into the same Result reports its counters and no rows.
+    insert.bind(1, Value("e")).bind(2, Value(5)).execInto(txn, r);
+    CHECK(r.empty());
+    CHECK_EQ(r.changes(), std::uint64_t(1));
+    CHECK_EQ(r.lastInsertId(), std::int64_t(5));
+    CHECK_EQ(upTo.bind(1, Value(0)).execInto(txn, r).size(), std::size_t(0));
+    // A copy owns its rows; the original is refilled under it.
+    upTo.bind(1, Value(2)).execInto(txn, r);
+    const Result copy = r;
+    upTo.bind(1, Value(9)).execInto(txn, r);
+    txn.commit();
+    CHECK_EQ(tst::flatten(copy), std::string("1|a|1|2|a!;2|bb|2|4|bb!"));
+    CHECK_EQ(r.size(), std::size_t(5));
+}
+
+TEST(eachTakesAnyCallable)
+{
+    tst::Scratch s("prepare-each");
+    Database db = seeded(s);
+    db.exec("INSERT INTO t (name, n) VALUES ('a', 1), ('b', 2), ('c', 3)");
+    Statement all = db.prepare("SELECT name FROM t ORDER BY id");
+    std::string seen;
+    // A lambda that captures more than a std::function could hold inline.
+    std::string a, b, c, d;
+    auto wide = [&seen, &a, &b, &c, &d](const RowView& row) {
+        seen += row[0].text();
+        return !(a.empty() && b.empty() && c.empty() && d.empty()) || seen.size() < 2;
+    };
+    CHECK_EQ(all.each(wide), std::uint64_t(0));
+    CHECK_EQ(seen, std::string("ab"));
+    const RowCallback fn = [&](const RowView& row) {
+        seen += row[0].text();
+        return true;
+    };
+    Transaction txn = db.beginRead();
+    all.each(txn, fn);
+    all.each(txn, [&](const RowView&) { return false; });
+    CHECK_EQ(seen, std::string("ababc"));
+}
+
 int main()
 {
     return tst::runAll("prepare");

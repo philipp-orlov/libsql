@@ -105,6 +105,69 @@ TEST(maxSizeBoundsTheFile)
     CHECK(std::stol(tst::only(db.exec("SELECT COUNT(*) FROM t"))) > 0);
 }
 
+TEST(compoundLimitPlusOffsetDoesNotOverflow)
+{
+    tst::Scratch s("limits-compound");
+    Database db = seeded(s);
+    // LIMIT + OFFSET is past INT64_MAX: every row after the offset.
+    CHECK_EQ(tst::flatten(db.exec("SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 "
+                                  "LIMIT 9223372036854775807 OFFSET 1")),
+             std::string("2;3"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT n FROM t UNION SELECT 5 ORDER BY 1 "
+                                  "LIMIT 9223372036854775807 OFFSET 1")),
+             std::string("5"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT 1 UNION ALL SELECT 2 LIMIT 9223372036854775807 "
+                                  "OFFSET 9223372036854775807")),
+             std::string(""));
+}
+
+TEST(hugeWindowFrameOffsetsSaturate)
+{
+    tst::Scratch s("limits-frame");
+    Database db = seeded(s);
+    // 1e19 is past INT64_MAX: as far back as the partition goes.
+    CHECK_EQ(tst::flatten(db.exec(
+                 "SELECT sum(x) OVER (ORDER BY x ROWS BETWEEN 1e19 PRECEDING AND CURRENT ROW) "
+                 "FROM (SELECT 1 AS x UNION ALL SELECT 2 UNION ALL SELECT 3)")),
+             std::string("1;3;6"));
+}
+
+TEST(storeOptionsReachLibnosql)
+{
+    tst::Scratch s("limits-options");
+    {
+        Database db = Database::configure()
+                          .pageSize(8192)
+                          .initialSize(4u << 20)
+                          .growthStep(1u << 20)
+                          .bufferCache(1u << 20)
+                          .dirtyLimit(256u << 10)
+                          .durability(nosql::Durability::NoMetaSync)
+                          .syncInterval(std::chrono::milliseconds(50))
+                          .revalidateAfter(std::chrono::seconds(5))
+                          .open(s.file());
+        CHECK_EQ(db.env().stats().pageSize, std::uint32_t(8192));
+        CHECK(std::filesystem::file_size(s.file()) >= (4u << 20));
+        db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)");
+        db.exec("INSERT INTO t (s) VALUES ('kept')");
+        // One transaction may not dirty more than the limit.
+        bool refused = false;
+        try {
+            db.exec(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000) "
+                "INSERT INTO t (s) SELECT printf('%0500d', i) FROM n");
+        } catch (const nosql::Error& e) {
+            refused = e.code() == nosql::ErrorCode::OutOfMemory;
+        }
+        CHECK(refused);
+    }
+    // durability() wins over durable(); the page size is the store's own.
+    Database db =
+        Database::configure().durable(false).durability(nosql::Durability::Safe).open(s.file());
+    CHECK_EQ(tst::only(db.exec("SELECT s FROM t")), std::string("kept"));
+    CHECK_EQ(db.env().stats().pageSize, std::uint32_t(8192));
+}
+
 int main()
 {
     return tst::runAll("limits");

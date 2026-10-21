@@ -345,6 +345,12 @@ struct SourceNode
     bool started = false;
     bool exhausted = false;
     bool point = false;       ///< a single exact lookup
+    /// Walks the window from its last entry back (set by the planner for an
+    /// ORDER BY ... DESC that the key order serves).
+    bool reverse = false;
+    /// Every part of a UNIQUE index pinned: one entry at most, so the
+    /// source is done once it has yielded it.
+    bool single = false;
     std::size_t probeAt = 0;  ///< multi-probe position / Rows position
     std::vector<std::string> probes;
     /// Conjuncts this open's window guarantees for every row it yields, which
@@ -494,6 +500,11 @@ struct CorePlan
     /// window enforces every term, the store counts the window's entries
     /// (nosql::Db::countRange) without reading them.
     bool countWindow = false;
+    /// `SELECT min(c) (or max(c)) FROM t WHERE ...` and nothing else, where c
+    /// is the key or index part after the pinned ones: when the access window
+    /// enforces every term, one seek finds the row instead of a scan. 1 min,
+    /// 2 max.
+    std::uint8_t extremeSeek = 0;
     /// Set by runSelect for a plain one-table core under OFFSET: the offset
     /// still to drop, which the source may satisfy by skipping entries.
     std::int64_t* offsetLeft = nullptr;
@@ -566,6 +577,10 @@ struct SelectPlan
     std::vector<std::uint32_t> orderIndex;
 };
 
+/// Marks in `mask` the columns of `s` that `e` reads. False when `e` might
+/// read the row some other way (a sub-query may read any column).
+bool columnsRead(const Expr* e, const SourceNode& s, std::vector<std::uint8_t>& mask);
+
 /// Runs `p`, delivering visible rows to `sink`.
 void runSelect(SelectPlan& p, Ctx& c, RowSink& sink);
 /// Runs a sub-query plan as its kind requires, caching when uncorrelated.
@@ -590,6 +605,12 @@ void finishRow(SourceNode& s, Ctx& c);
 /// entries of its window without reading them (O(log n), by the store's
 /// entry counts). Returns how many it passed over.
 std::uint64_t skipEntries(SourceNode& s, Ctx& c, std::uint64_t n);
+/// After an open of a windowed table source: loads the row whose value of
+/// the part after the pinned ones is the smallest (or, with `max`, the
+/// largest) non-NULL one: among equal ones the first in key order for min()
+/// and the last for max(), as SQLite's seek finds them. False when no row has
+/// one.
+bool seekExtreme(SourceNode& s, Ctx& c, bool max);
 /// Sets the source's slots to NULL (outer join padding).
 void nullSource(SourceNode& s, Ctx& c);
 /// Which frame slots hold values when a source is opened: everything below
