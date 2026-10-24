@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # libnosql is built from source next to this checkout. Bump the pin together
+  # with any change that depends on a newer libnosql API.
+  LIBNOSQL_REPO: philipp-orlov/libnosql
+  LIBNOSQL_REF: 8737e3d7fbc639bb7979e4e512d43361ca628fd1
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc-release
+            cc: gcc
+            cxx: g++
+            build_type: Release
+            asan: OFF
+            werror: ON
+          - name: gcc-debug-asan-ubsan
+            cc: gcc
+            cxx: g++
+            build_type: Debug
+            asan: ON
+            werror: ON
+          # Clang reports unused-entity warnings in src/internal/dml.hpp
+          # (Writer::prog_) and src/internal/pragma.cpp (unused `this` capture).
+          # Flip to ON once those are fixed.
+          - name: clang-release
+            cc: clang
+            cxx: clang++
+            build_type: Release
+            asan: OFF
+            werror: OFF
+    steps:
+      - name: Check out libsql
+        uses: actions/checkout@v4
+        with:
+          path: libsql
+
+      - name: Check out libnosql
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LIBNOSQL_REPO }}
+          ref: ${{ env.LIBNOSQL_REF }}
+          path: libnosql
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build cmake
+          if [ "${{ matrix.cc }}" = "clang" ]; then
+            sudo apt-get install -y --no-install-recommends clang
+          fi
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -G Ninja -S libsql -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DSQL_NOSQL_DIR="$GITHUB_WORKSPACE/libnosql" \
+            -DSQL_ENABLE_ASAN=${{ matrix.asan }} \
+            -DSQL_BUILD_TESTS=ON \
+            -DSQL_BUILD_EXAMPLES=ON \
+            -DSQL_BUILD_TOOLS=ON \
+            -DSQL_TOOL_WEB=OFF \
+            -DCMAKE_CXX_FLAGS="${{ matrix.werror == 'ON' && '-Werror' || '' }}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure --parallel "$(nproc)"
+
+      - name: Smoke-run examples and the sql tool
+        run: |
+          build/examples/quickstart
+          build/examples/blobs
+          build/examples/json
+          build/tools/sql/sql --help
