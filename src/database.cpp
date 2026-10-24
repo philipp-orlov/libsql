@@ -95,6 +95,9 @@ std::unique_ptr<StoreHandle> openScratch(const std::string& name, const OpenOpti
                  .errorIfExists(true)
                  .preallocate(false)
                  .sync(nosql::Durability::None)
+                 // libnosql spills dirty pages by default; the documented limit
+                 // is OutOfMemory, and spilled slices may change under a reader.
+                 .spillDirtyPages(false)
                  .open(h->path);
     return h;
 }
@@ -120,7 +123,8 @@ std::unique_ptr<StoreHandle> openFile(const std::string& name, const std::filesy
                                  .createIfMissing(create)
                                  .sync(o.durability)
                                  .cacheReadChecksums(o.cacheReads)
-                                 .revalidateAfter(o.revalidate);
+                                 .revalidateAfter(o.revalidate)
+                                 .spillDirtyPages(false);
     if (o.syncInterval.count() >= 0)
         eo.syncInterval(o.syncInterval);
     if (o.pageSize != OpenOptions::kUnset)
