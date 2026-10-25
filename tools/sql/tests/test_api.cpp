@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "sql/wire/result_view.hpp"
 #include "sql_test.hpp"
 #include "web_api.hpp"
 
@@ -574,6 +575,75 @@ TEST(a_request_that_is_not_an_object_is_refused)
     CHECK_EQ(f.api.updateRow(parse("\"x\"")).status, 400);
     CHECK(!error(f.api.browse(parse("[1]"))).empty());
 }
+
+#if SQL_WITH_BUFS
+namespace {
+std::string header(const Reply& reply, const std::string& name)
+{
+    for (const auto& [key, value] : reply.headers)
+        if (key == name)
+            return value;
+    return {};
+}
+}  // namespace
+
+TEST(execute_answers_in_bufs_when_asked)
+{
+    Fixture f;
+    const std::string sql = "SELECT id, name, age, note FROM person ORDER BY id";
+    const Reply asJson = f.run(sql);
+    const Reply asBufs = f.api.execute(parse(R"({"sql": "SELECT id, name, age, note FROM person ORDER BY id", "format": "bufs"})"));
+    CHECK_EQ(asBufs.status, 200);
+    CHECK_EQ(asBufs.contentType, std::string("application/vnd.libsql.bufs"));
+    CHECK(!asBufs.binary.empty());
+    CHECK_EQ(header(asBufs, "X-Sql-In-Transaction"), std::string("false"));
+    CHECK(!header(asBufs, "X-Sql-Elapsed-Ms").empty());
+
+    const auto view = sql::wire::ResultView::open(asBufs.binary.data(), asBufs.binary.size());
+    const Json& rows = member(asJson.body, "rows");
+    CHECK_EQ(view.rowCount(), std::uint64_t(rows.asArray().size()));
+    for (std::size_t r = 0; r < rows.asArray().size(); ++r) {
+        const Json& row = rows.asArray()[r];
+        CHECK_EQ(view.value(r, 0).integer(), std::int64_t(row[0].asDouble()));
+        CHECK_EQ(std::string(view.value(r, 1).text()), row[1].asString());
+        CHECK_EQ(view.value(r, 2).integer(), std::int64_t(row[2].asDouble()));
+        if (row[3].isString())
+            CHECK_EQ(std::string(view.value(r, 3).text()), row[3].asString());
+        else
+            CHECK(view.value(r, 3).isNull());
+    }
+}
+
+TEST(execute_in_bufs_reports_truncation_changes_and_pending_transactions)
+{
+    Fixture f;
+    const Reply cut = f.api.execute(parse(R"({"sql": "SELECT id FROM person", "maxRows": 2, "format": "bufs"})"));
+    auto view = sql::wire::ResultView::open(cut.binary.data(), cut.binary.size());
+    CHECK_EQ(view.rowCount(), std::uint64_t(2));
+    CHECK(view.truncated());
+    CHECK_EQ(view.totalRows(), std::uint64_t(4));
+
+    // A statement without rows is one message that carries the change counters.
+    const Reply write = f.api.execute(parse(R"({"sql": "UPDATE person SET age = age + 1", "format": "bufs"})"));
+    auto written = sql::wire::ResultView::open(write.binary.data(), write.binary.size());
+    CHECK_EQ(written.columns().size(), std::size_t(0));
+    CHECK_EQ(written.changes(), std::uint64_t(4));
+    CHECK_EQ(header(write, "X-Sql-In-Transaction"), std::string("true"));
+    CHECK(f.db.inTransaction());
+}
+
+TEST(execute_in_bufs_keeps_errors_as_json)
+{
+    Fixture f;
+    const Reply bad = f.api.execute(parse(R"({"sql": "SELECT * FROM nope", "format": "bufs"})"));
+    CHECK_EQ(bad.status, 400);
+    CHECK(bad.binary.empty());
+    CHECK(!error(bad).empty());
+    CHECK_EQ(f.api.execute(parse(R"({"sql": "SELECT 1", "format": "xml"})")).status, 400);
+    CHECK_EQ(f.api.execute(parse(R"({"sql": "SELECT 1", "format": 3})")).status, 400);
+    CHECK(!f.db.inTransaction());
+}
+#endif
 
 int main()
 {

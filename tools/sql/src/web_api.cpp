@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <optional>
@@ -386,7 +387,10 @@ Reply failure(int status, const std::string& message, const char* code = nullptr
     Json body{{"error", message}};
     if (code)
         body["code"] = code;
-    return Reply{status, std::move(body)};
+    Reply reply;
+    reply.status = status;
+    reply.body = std::move(body);
+    return reply;
 }
 
 /// Runs `work`, which returns the JSON body, and turns whatever it throws into an error reply.
@@ -604,10 +608,25 @@ Reply WebApi::schema()
 
 Reply WebApi::execute(const Json& request)
 {
-    return guarded(db_, [&] {
+    std::vector<std::uint8_t> binary;
+    std::string elapsedHeader, transactionHeader;
+    Reply reply = guarded(db_, [&] {
         const std::string text = requireString(request, "sql");
         const std::int64_t maxRows =
             optionalInteger(request, "maxRows", kDefaultMaxRows, 1, kMaxRowsLimit);
+        std::string format = "json";
+        if (const Json* f = request.find("format")) {
+            if (!f->isString())
+                throw BadRequest("format must be \"json\" or \"bufs\"");
+            format = f->asString();
+        }
+        if (format != "json" && format != "bufs")
+            throw BadRequest("format must be \"json\" or \"bufs\"");
+        const bool wantBufs = format == "bufs";
+#if !SQL_WITH_BUFS
+        if (wantBufs)
+            throw BadRequest("this build has no binary results (SQL_WITH_BUFS)");
+#endif
 
         // Like the "Execute SQL" tab of DB Browser: whatever the statements change stays pending until
         // commit() or revert(); a run that changed nothing leaves nothing pending.
@@ -619,8 +638,20 @@ Reply WebApi::execute(const Json& request)
 
         const auto started = std::chrono::steady_clock::now();
         sql::Result result;
+#if SQL_WITH_BUFS
+        sql::BufsBytes bytes;
+#endif
         try {
-            result = db_.exec(text);
+#if SQL_WITH_BUFS
+            if (wantBufs) {
+                bufs_.options(sql::BufsOptions()
+                                  .blobPrefix(kBlobPreviewBytes)
+                                  .countAllRows()
+                                  .maxRows(static_cast<std::size_t>(maxRows)));
+                bytes = bufs_.exec(db_, text);
+            } else
+#endif
+                result = db_.exec(text);
         } catch (...) {
             if (managed && db_.inTransaction())
                 db_.exec("ROLLBACK");
@@ -633,6 +664,16 @@ Reply WebApi::execute(const Json& request)
             schemaVersion(db_) == schemaBefore)
             db_.exec("ROLLBACK");
 
+#if SQL_WITH_BUFS
+        if (wantBufs) {
+            binary.assign(bytes.begin(), bytes.end());
+            char buffer[32];
+            std::snprintf(buffer, sizeof buffer, "%.3f", elapsedMs);
+            elapsedHeader = buffer;
+            transactionHeader = db_.inTransaction() ? "true" : "false";
+            return Json{{"binary", true}};
+        }
+#endif
         Json columns = Json::array();
         for (const std::string& name : result.columns())
             columns.push_back(name);
@@ -653,6 +694,13 @@ Reply WebApi::execute(const Json& request)
                     {"changes", result.changes()},   {"lastInsertId", result.lastInsertId()},
                     {"elapsedMs", elapsedMs}};
     });
+    if (reply.status == 200 && !binary.empty()) {
+        reply.body = Json();
+        reply.binary = std::move(binary);
+        reply.contentType = "application/vnd.libsql.bufs";
+        reply.headers = {{"X-Sql-In-Transaction", transactionHeader}, {"X-Sql-Elapsed-Ms", elapsedHeader}};
+    }
+    return reply;
 }
 
 Reply WebApi::browse(const Json& request)

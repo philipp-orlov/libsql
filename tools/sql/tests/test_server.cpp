@@ -10,13 +10,16 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include "sql/wire/result_view.hpp"
 #include "sql_test.hpp"
 #include "web_server.hpp"
 
@@ -164,6 +167,22 @@ TEST(a_query_goes_through_the_worker_and_back)
     CHECK_EQ(reply.status, 200);
     CHECK(reply.body.find("\"rows\":[[\"a\"],[\"b\"]]") != std::string::npos);
 }
+
+#if SQL_WITH_BUFS
+TEST(a_query_can_come_back_as_bufs)
+{
+    Running s;
+    const Response reply = s.post("/api/sql", R"({"sql": "SELECT id, v FROM t ORDER BY id", "format": "bufs"})");
+    CHECK_EQ(reply.status, 200);
+    CHECK_EQ(reply.header("content-type"), std::string("application/vnd.libsql.bufs"));
+    CHECK_EQ(reply.header("x-sql-in-transaction"), std::string("false"));
+    std::vector<std::uint64_t> aligned((reply.body.size() + 7) / 8);
+    std::memcpy(aligned.data(), reply.body.data(), reply.body.size());
+    const auto view = sql::wire::ResultView::open(aligned.data(), reply.body.size());
+    CHECK_EQ(view.rowCount(), std::uint64_t(2));
+    CHECK_EQ(std::string(view.value(1, 1).text()), std::string("b"));
+}
+#endif
 
 TEST(an_edit_over_http_is_pending_until_commit)
 {

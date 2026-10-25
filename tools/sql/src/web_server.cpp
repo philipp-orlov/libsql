@@ -124,7 +124,15 @@ struct WebServer::Impl
                                                       call = std::move(call)]() mutable {
             Reply reply = call();
             loop.tryPost([&context, done, reply = std::move(reply)]() mutable {
-                context.status(reply.status).header("Cache-Control", "no-store").json(reply.body);
+                context.status(reply.status).header("Cache-Control", "no-store");
+                if (!reply.binary.empty()) {
+                    for (const auto& [name, value] : reply.headers)
+                        context.header(name, value);
+                    context.header("X-Content-Type-Options", "nosniff");
+                    context.bytes(reply.binary.data(), reply.binary.size(), reply.contentType);
+                } else {
+                    context.json(reply.body);
+                }
                 done();
             });
         });
