@@ -140,6 +140,34 @@ own -- a response body, say -- and `write(result, paths)` renders a query under
 different property paths without rewriting it.
 [examples/json.cpp](examples/json.cpp) runs through all of it.
 
+**Binary results**
+
+`sql::BufsWriter` ([include/sql/bufs.hpp](include/sql/bufs.hpp), built with
+`SQL_WITH_BUFS`, on by default, needs the sibling `../libbufs`) runs plain SQL
+and returns a binary, column-oriented [libbufs](../libbufs) message ready to
+put on the wire. There is no SQL extension: the format is chosen by the API you
+call.
+
+```cpp
+sql::BufsWriter writer;   // keep one per thread and reuse it
+auto bytes = writer.exec(db, "SELECT id, name, price FROM orders WHERE price < ?", {sql::Value(20.0)});
+send(bytes.data(), bytes.size());
+```
+
+Rows go straight into per-column staging (no `Result`), and each column is
+narrowed when the batch is complete: integers become a base plus a 1-, 2- or
+4-byte delta, reals become `float32` when that is lossless, datetimes count in
+days or seconds when they have no fraction, repeated text becomes dictionary
+codes. Each column is one contiguous array, so a client can wrap the bytes it
+received without parsing them. A warmed-up writer allocates nothing.
+`BufsOptions` sets rows per message (`batchRows`), a row cap (`maxRows`,
+`countAllRows`), a BLOB prefix, and turns the dictionary and narrowing off;
+`onBatch` hands each message over as it is built. The schema is
+[include/sql/wire/resultset.bufs](include/sql/wire/resultset.bufs).
+`sql::wire::ResultView` ([include/sql/wire/result_view.hpp](include/sql/wire/result_view.hpp))
+reads a result back column by column or as `sql::Value`s. See
+[examples/bufs.cpp](examples/bufs.cpp).
+
 **Types**
 
 Ordinary tables use SQLite's flexible typing: a column's declared type gives it

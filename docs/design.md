@@ -1762,6 +1762,24 @@ nested grouping.
 
 ---
 
+### 17.1 Binary results (`BufsWriter`)
+
+`sql::BufsWriter` is a `ResultConsumer` (§18) that encodes the last statement's
+rows as libbufs messages (`sql/wire/resultset.bufs`). `row()` copies each cell
+into per-column staging -- a `RowView` may borrow from the database file -- and
+keeps running statistics (classes seen, integer and datetime ranges, whether
+every real survives `float`, a capped dictionary of distinct texts). When a
+batch is complete each column picks its encoding from the statistics and the
+message is packed into a block sized by an upper bound
+(`bufs::vectorBytes` and friends), so the builder never grows. Integers and
+datetimes are stored as `base + delta` in the narrowest of u8/u16/u32 (datetimes
+first dividing out the largest of day/second/millisecond that fits every
+value); a NULL keeps its slot in every encoding but `Mixed`, whose per-row tag
+replaces the null bitmap. Staged state lives in `Impl` and is cleared, never
+freed, so a warm writer allocates nothing. `ResultView` implements the cell
+rules of the format and trusts the writer: it verifies message structure, not
+that a writer's offsets and codes agree with each other.
+
 ## 18. Public C++ API
 
 Public headers live under [`../include/sql/`](../include/sql/).
