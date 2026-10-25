@@ -1,0 +1,66 @@
+/// libsql query results for the wire (sql::BufsWriter).
+namespace sql.wire;
+
+/// How a column's cells are stored. One encoding per column per batch.
+enum Encoding : ubyte {
+    Empty,        // every cell NULL (or no rows): no value vectors
+    Int,          // INTEGER: base + delta in u8/u16/u32, or i64 as is
+    Real,         // REAL: f32 when every value round-trips, else f64
+    Datetime,     // DATETIME: base + delta like Int, microseconds UTC
+    Text,         // TEXT: offsets + bytes
+    TextDict,     // TEXT: codes into dictionary offsets + bytes
+    Blob,         // BLOB: offsets + bytes (possibly cut to a prefix)
+    Mixed         // several storage classes: per-row tags
+}
+
+/// The storage class of a cell in a Mixed column (sql::Type order).
+enum Tag : ubyte { Null, Integer, Real, Datetime, Text, Blob }
+
+/// Width of the integer vector that holds deltas or dictionary codes.
+enum Width : ubyte { None, U8, U16, U32, I64 }
+
+/// Datetime deltas count in this unit: value = base + delta * unit.
+enum Scale : ubyte { Micro, Milli, Second, Day }
+
+table ColumnInfo {
+    name:string;
+    qualified:string;     // alias.column for a plain column reference, else empty
+    decl_type:string;     // declared type, empty for expressions
+}
+
+table Column {
+    encoding:Encoding = Empty;
+    width:Width = None;
+    null_count:uint;
+    base:long;            // Int/Datetime: value = base + delta (* scale)
+    scale:Scale = Micro;  // Datetime only
+    nulls:[ubyte];        // bitmap, bit set = NULL, LSB first; empty when null_count = 0
+    u8:[ubyte];
+    u16:[ushort];
+    u32:[uint];
+    i64:[long];
+    f32:[float];
+    f64:[double];
+    offsets:[uint];       // Text/Blob: n+1 entries (Mixed: k+1), cell i is bytes[offsets[i]..offsets[i+1])
+    bytes:[ubyte];
+    dict_offsets:[uint];  // TextDict: d+1 entries
+    dict_bytes:[ubyte];
+    tags:[ubyte];         // Mixed: one Tag per row
+    blob_sizes:[uint];    // Blob with a prefix limit: full sizes, empty otherwise
+}
+
+/// One message per batch; the first carries columns, the last has more = false.
+table ResultSet {
+    version:ushort;         // 1
+    columns:[ColumnInfo];   // first batch only
+    row_offset:ulong;       // index of this batch's first row in the whole result
+    row_count:uint;         // rows in this batch
+    data:[Column];          // one per column, same order as columns
+    more:bool;              // true: another batch follows
+    total_rows:ulong;       // last batch: rows the statement produced (see countAllRows)
+    truncated:bool;
+    changes:ulong;
+    last_insert_id:long;
+}
+
+root_type ResultSet;

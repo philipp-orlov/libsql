@@ -18,6 +18,9 @@ env:
   # with any change that depends on a newer libnosql API.
   LIBNOSQL_REPO: philipp-orlov/libnosql
   LIBNOSQL_REF: 8737e3d7fbc639bb7979e4e512d43361ca628fd1
+  # libbufs, likewise: the binary result format (SQL_WITH_BUFS) builds from source.
+  LIBBUFS_REPO: philipp-orlov/libbufs
+  LIBBUFS_REF: bf7e487
 
 jobs:
   test:
@@ -61,6 +64,13 @@ jobs:
           repository: ${{ env.LIBNOSQL_REPO }}
           ref: ${{ env.LIBNOSQL_REF }}
           path: libnosql
+
+      - name: Check out libbufs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LIBBUFS_REPO }}
+          ref: ${{ env.LIBBUFS_REF }}
+          path: libbufs
 
       - name: Install build tools
         run: |

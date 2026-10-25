@@ -5,6 +5,7 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "libsql requires a 64-bit target")
 endif()
 
+option(SQL_WITH_BUFS "sql::BufsWriter binary results (needs libbufs)" ON)
 option(SQL_BUILD_TESTS "Build the test suite" ON)
 option(SQL_BUILD_EXAMPLES "Build the examples" ON)
 option(SQL_BUILD_TOOLS "Build the sql command line tool" ON)
@@ -17,6 +18,8 @@ option(SQL_BUILD_PYTHON "Build the Python binding (see python/README.md)" OFF)
 
 set(SQL_NOSQL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libnosql"
     CACHE PATH "Source directory of libnosql, when it is not already installed")
+
+set(SQL_BUFS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libbufs" CACHE PATH "Source directory of libbufs")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -86,6 +89,19 @@ if(NOT TARGET nosql::nosql)
     add_subdirectory("${SQL_NOSQL_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/nosql")
 endif()
 
+# --- binary results -------------------------------------------------------
+# libbufs is header-only plus the bufsc schema compiler, built from the sibling
+# checkout. Its tests and benchmarks stay out of this build.
+if(SQL_WITH_BUFS AND NOT TARGET bufs::bufs)
+    if(NOT EXISTS "${SQL_BUFS_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "libbufs not found. Point -DSQL_BUFS_DIR at it, or set -DSQL_WITH_BUFS=OFF.")
+    endif()
+    set(BUFS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUFS_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${SQL_BUFS_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/bufs")
+endif()
+
 add_library(sql
     src/value.cpp
     src/database.cpp
@@ -123,6 +139,19 @@ target_include_directories(sql
 target_compile_features(sql PUBLIC cxx_std_17)
 target_link_libraries(sql PUBLIC nosql::nosql)
 
+if(SQL_WITH_BUFS)
+    target_sources(sql PRIVATE src/bufs.cpp)
+    bufs_generate(sql SCHEMAS include/sql/wire/resultset.bufs
+                  OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen/sql/wire)
+    target_include_directories(sql PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/gen>)
+    # bufs_generate links libbufs PRIVATE, and a static library re-exports that as LINK_ONLY, which an
+    # install export would have to resolve. Readers of the generated header need libbufs PUBLIC
+    # anyway. It has no install rules yet, so it is a build-tree dependency: an installed libsql
+    # expects libbufs on the include path.
+    set_property(TARGET sql PROPERTY INTERFACE_LINK_LIBRARIES nosql::nosql $<BUILD_INTERFACE:bufs::bufs>)
+    target_compile_definitions(sql PUBLIC SQL_WITH_BUFS=1)
+endif()
+
 if(MSVC)
     target_compile_options(sql PRIVATE /W4 /permissive- /Zc:__cplusplus)
     target_compile_definitions(sql PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -149,6 +178,10 @@ install(TARGETS sql EXPORT sql-targets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/sql DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+if(SQL_WITH_BUFS)
+    install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/gen/sql/wire
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/sql FILES_MATCHING PATTERN "*.hpp")
+endif()
 install(EXPORT sql-targets NAMESPACE sql:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/sql)
 
 write_basic_package_version_file(
