@@ -1,4 +1,4 @@
-import { BlobCell, Cell, ColumnInfo, IntegerCell } from '../models/api.models';
+import { BlobCell, Cell, ColumnInfo, IntegerCell, SqlResult } from '../models/api.models';
 import type { GridColumn } from '../shared/data-grid/data-grid.models';
 
 export type CellKind = 'null' | 'integer' | 'real' | 'text' | 'blob';
@@ -82,6 +82,19 @@ export function cellColumn(field: string, title: string, index: number): GridCol
   return { field, title, value: row => row[index], text: value => cellText(value as Cell), compare: compareCells };
 }
 
+/**
+ * A grid column over the rows of a SqlResult, where a grid row is the index of the row in the result: the cells stay
+ * in whatever form the server sent them, JSON arrays or typed arrays, and are read when the grid asks.
+ */
+export function cellColumnOf(result: SqlResult, field: string, title: string, index: number): GridColumn<number> {
+  return { field, title, value: row => result.cell(row, index), text: value => cellText(value as Cell), compare: compareCells };
+}
+
+/** `[0, 1, ..., rowCount - 1]`, the data of a grid over a SqlResult. */
+export function rowIndexes(result: SqlResult): number[] {
+  return Array.from({ length: result.rowCount }, (_, i) => i);
+}
+
 const SAFE_INTEGER = /^[+-]?\d{1,15}$/;
 const INTEGER = /^[+-]?\d+$/;
 const REAL = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
@@ -109,11 +122,19 @@ function csvField(text: string): string {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-/** RFC 4180 text; NULL is an empty field. */
-export function toCsv(columns: string[], rows: Cell[][]): string {
+/** RFC 4180 text for `rowCount` rows read through `cell`; NULL is an empty field. */
+export function toCsvOf(columns: string[], rowCount: number, cell: (row: number, column: number) => Cell): string {
   const lines = [columns.map(csvField).join(',')];
-  for (const row of rows) {
-    lines.push(row.map(cell => (cell === null ? '' : csvField(cellText(cell)))).join(','));
+  for (let r = 0; r < rowCount; r++) {
+    lines.push(columns.map((_, c) => {
+      const value = cell(r, c);
+      return value === null ? '' : csvField(cellText(value));
+    }).join(','));
   }
   return lines.join('\r\n') + '\r\n';
+}
+
+/** RFC 4180 text; NULL is an empty field. */
+export function toCsv(columns: string[], rows: Cell[][]): string {
+  return toCsvOf(columns, rows.length, (r, c) => rows[r][c]);
 }

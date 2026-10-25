@@ -4,7 +4,8 @@ import { of } from 'rxjs';
 
 import { MatDialog } from '@angular/material/dialog';
 
-import { BrowseReply, ColumnInfo, DatabaseInfo, PragmaInfo, Schema, SqlReply } from '../models/api.models';
+import { BrowseReply, ColumnInfo, DatabaseInfo, PragmaInfo, Schema, SqlReply, SqlResult } from '../models/api.models';
+import { fromReply } from '../utils/sql-result';
 import { DatabaseService } from '../services/database.service';
 import { NoticeService } from '../services/notice.service';
 
@@ -63,6 +64,11 @@ export function personPage(overrides: Partial<BrowseReply> = {}): BrowseReply {
 
 export function sqlReply(overrides: Partial<SqlReply> = {}): SqlReply {
   return { inTransaction: false, columns: [], rows: [], rowCount: 0, truncated: false, changes: 0, lastInsertId: 0, elapsedMs: 1.2, ...overrides };
+}
+
+/** The same as a SqlResult, the form Execute SQL consumes. */
+export function sqlResult(overrides: Partial<SqlReply> = {}): SqlResult {
+  return fromReply(sqlReply(overrides));
 }
 
 export function fakeInfo(overrides: Partial<DatabaseInfo> = {}): DatabaseInfo {

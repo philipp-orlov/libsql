@@ -114,6 +114,24 @@ export interface SqlReply extends Pending {
   elapsedMs: number;
 }
 
+/**
+ * The result of one run in the form the Execute SQL tab uses, whichever format the server answered in: a JSON reply
+ * keeps its rows as arrays of cells, a bufs reply reads them out of typed arrays when a cell is asked for.
+ */
+export interface SqlResult {
+  columns: string[];
+  /** Rows available to show (a run cut at maxRows holds fewer than it produced). */
+  rowCount: number;
+  /** Rows the statement produced. */
+  totalRows: number;
+  truncated: boolean;
+  changes: number;
+  lastInsertId: number;
+  elapsedMs: number;
+  inTransaction: boolean;
+  cell(row: number, column: number): Cell;
+}
+
 export interface ChangeReply extends Pending {
   changes: number;
   lastInsertId?: number;

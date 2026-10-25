@@ -30,5 +30,17 @@ bytes) however large the result; a single-message writer holds the staging plus 
 Per row of the 7-column set the message is about 35 bytes (id 4, name text + offset about 14, status 1, price 8 --
 two-decimal values do not round-trip through float --, qty 2, created 4, note about 0.5), against about 115 for JSON.
 
-Not measured here: client-side decode in the browser (`JSON.parse` against `ResultSetView`); the TypeScript reader and
-the UI integration are not part of this build.
+### Client decode (Node 22, `tools/sql/ui/scripts/bench-decode.mjs`)
+
+Against a live `sql --listen`, 100,000 rows x 7 columns (here `created` is text, so the wire gain is smaller than
+above: JSON 6,985,069 bytes, bufs 5,702,608). Median of 15:
+
+| What the client does | Time |
+| --- | ---: |
+| `JSON.parse` (the grid then holds `Cell[][]`) | 60.3 ms |
+| `ResultSetView.open` + read the 50 rows the grid shows | 1.22 ms |
+| `ResultSetView.open` + read every cell as a `Cell` | 146.9 ms |
+
+The grid renders only the visible rows, so the first-paint cost drops about 50x. Materializing every cell (CSV
+export, sorting a column) is slower than `JSON.parse`, because each cell is built on demand where the JSON path paid
+up front.

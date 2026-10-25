@@ -3,9 +3,14 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 
+import { GOLDEN } from '../bufs/golden';
 import { ApiError, DatabaseService } from './database.service';
 
 describe('DatabaseService', () => {
+  // The specs below read plain JSON replies; the bufs ones are further down.
+  beforeEach(() => localStorage.setItem('sql.format', 'json'));
+  afterEach(() => localStorage.removeItem('sql.format'));
+
   let service: DatabaseService;
   let http: HttpTestingController;
 
@@ -63,7 +68,9 @@ describe('DatabaseService', () => {
     expect(request.request.method).toBe('POST');
     expect(request.request.body).toEqual({ sql: 'SELECT 1' });
     request.flush({ inTransaction: false, columns: ['1'], rows: [[1]], rowCount: 1, truncated: false, changes: 0, lastInsertId: 0, elapsedMs: 0 });
-    expect((await run).rows).toEqual([[1]]);
+    const result = await run;
+    expect(result.rowCount).toBe(1);
+    expect(result.cell(0, 0)).toBe(1);
   });
 
   it('does not reload the schema after a read that left nothing pending', async () => {
@@ -137,5 +144,86 @@ describe('DatabaseService', () => {
     const dump = service.dump();
     http.expectOne('/api/dump').flush({ inTransaction: false, sql: 'BEGIN TRANSACTION;\nCOMMIT;\n' });
     expect(await dump).toBe('BEGIN TRANSACTION;\nCOMMIT;\n');
+  });
+});
+
+
+describe('DatabaseService.execute over libbufs', () => {
+  let service: DatabaseService;
+  let http: HttpTestingController;
+
+  const base64 = (text: string): ArrayBuffer => Uint8Array.from(atob(text), c => c.charCodeAt(0)).buffer;
+  const text = (value: unknown): ArrayBuffer => new TextEncoder().encode(JSON.stringify(value)).buffer as ArrayBuffer;
+  const BUFS = { 'Content-Type': 'application/vnd.libsql.bufs', 'X-Sql-In-Transaction': 'false', 'X-Sql-Elapsed-Ms': '1.500' };
+
+  beforeEach(() => {
+    localStorage.removeItem('sql.format');
+    TestBed.configureTestingModule({
+      providers: [provideZonelessChangeDetection(), provideHttpClient(), provideHttpClientTesting()],
+    });
+    service = TestBed.inject(DatabaseService);
+    http = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => http.verify());
+
+  it('asks for libbufs by default and reads the cells out of the bytes', async () => {
+    const golden = GOLDEN.find(g => g.name === 'text_dict')!;
+    const run = service.execute('SELECT status FROM t');
+    const request = http.expectOne('/api/sql');
+    expect(request.request.body).toEqual({ sql: 'SELECT status FROM t', format: 'bufs' });
+    expect(request.request.responseType).toBe('arraybuffer');
+    request.flush(base64(golden.bufs), { headers: BUFS });
+    const result = await run;
+    expect(result.columns).toEqual(['status']);
+    expect(result.rowCount).toBe(golden.rows.length);
+    expect(result.totalRows).toBe(golden.rows.length);
+    expect(result.elapsedMs).toBeCloseTo(1.5);
+    expect(result.inTransaction).toBeFalse();
+    for (let r = 0; r < golden.rows.length; r++) {
+      expect(result.cell(r, 0)).toEqual(golden.rows[r][0] as never);
+    }
+    http.expectNone('/api/schema');
+  });
+
+  it('follows the pending state from the headers and reloads the schema', async () => {
+    const golden = GOLDEN.find(g => g.name === 'no_columns')!;
+    const run = service.execute('UPDATE t SET a = a');
+    http.expectOne('/api/sql').flush(base64(golden.bufs), { headers: { ...BUFS, 'X-Sql-In-Transaction': 'true' } });
+    let schema = http.match('/api/schema');
+    for (let attempt = 0; attempt < 50 && schema.length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve));
+      schema = http.match('/api/schema');
+    }
+    expect(schema.length).toBe(1);
+    schema[0].flush({ inTransaction: true, tables: [], views: [], indexes: [], triggers: [] });
+    const result = await run;
+    expect(service.inTransaction()).toBeTrue();
+    expect(result.changes).toBe(1);
+    expect(result.columns).toEqual([]);
+  });
+
+  it('still reads JSON when the server does not know the format', async () => {
+    const run = service.execute('SELECT 1');
+    http.expectOne('/api/sql').flush(text({ inTransaction: false, columns: ['1'], rows: [[1]], rowCount: 1, truncated: false, changes: 0, lastInsertId: 0, elapsedMs: 2 }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const result = await run;
+    expect(result.cell(0, 0)).toBe(1);
+    expect(result.totalRows).toBe(1);
+  });
+
+  it('turns a JSON error into an ApiError even though bytes were asked for', async () => {
+    service.inTransaction.set(false);
+    const run = service.execute('SELECT * FROM nope');
+    http.expectOne('/api/sql').flush(text({ error: 'no such table: nope', inTransaction: true }), { status: 400, statusText: 'Bad Request' });
+    await expectAsync(run).toBeRejectedWith(jasmine.objectContaining({ message: 'no such table: nope', status: 400 }));
+    expect(service.inTransaction()).toBeTrue();
+  });
+
+  it('rejects bytes that are not a result', async () => {
+    const run = service.execute('SELECT 1');
+    http.expectOne('/api/sql').flush(new ArrayBuffer(16), { headers: BUFS });
+    await expectAsync(run).toBeRejectedWith(jasmine.any(ApiError));
   });
 });

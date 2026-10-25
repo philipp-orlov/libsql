@@ -4,10 +4,10 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
-import { Cell, SqlReply } from '../../models/api.models';
+import { Cell, SqlResult } from '../../models/api.models';
 import { DatabaseService } from '../../services/database.service';
 import { DataGridComponent, GridCellDirective, GridColumn } from '../../shared/data-grid';
-import { cellColumn, cellKind, toCsv } from '../../utils/cell';
+import { cellColumnOf, cellKind, rowIndexes, toCsvOf } from '../../utils/cell';
 import { downloadText } from '../../utils/download';
 import { SqlEditorComponent } from '../sql-editor/sql-editor.component';
 
@@ -16,17 +16,17 @@ export interface Editor {
   title: string;
   sql: string;
   running: boolean;
-  result: SqlReply | null;
+  result: SqlResult | null;
   /** What the message pane says; an error when `failed`. */
   message: string;
   failed: boolean;
 }
 
-export function describeRun(reply: SqlReply): string {
+export function describeRun(reply: SqlResult): string {
   const took = `${Math.round(reply.elapsedMs)}ms`;
   if (reply.columns.length > 0) {
-    const shown = reply.truncated ? `, the first ${reply.rows.length} are shown` : '';
-    return `${reply.rowCount} ${reply.rowCount === 1 ? 'row' : 'rows'} returned in ${took}${shown}`;
+    const shown = reply.truncated ? `, the first ${reply.rowCount} are shown` : '';
+    return `${reply.totalRows} ${reply.totalRows === 1 ? 'row' : 'rows'} returned in ${took}${shown}`;
   }
   return `Query executed successfully, ${reply.changes} ${reply.changes === 1 ? 'row' : 'rows'} affected. Took ${took}`;
 }
@@ -51,7 +51,9 @@ export class ExecuteSqlComponent {
   protected readonly selected = signal(0);
   private nextId = 2;
   /** One set of columns per result, so the grid sees the same columns until the next run. */
-  private readonly gridColumns = new WeakMap<SqlReply, GridColumn<Cell[]>[]>();
+  private readonly gridColumns = new WeakMap<SqlResult, GridColumn<number>[]>();
+  /** The grid's data: a row is its index in the result, so cells are read only when shown. */
+  private readonly gridRows = new WeakMap<SqlResult, number[]>();
 
   protected addEditor(): void {
     this.editors.update(editors => [...editors, newEditor(this.nextId++)]);
@@ -86,19 +88,28 @@ export class ExecuteSqlComponent {
     }
   }
 
-  protected columnsOf(result: SqlReply): GridColumn<Cell[]>[] {
+  protected columnsOf(result: SqlResult): GridColumn<number>[] {
     let columns = this.gridColumns.get(result);
     if (!columns) {
       // Result columns may share a name.
-      columns = result.columns.map((name, i) => cellColumn(`c${i}`, name, i));
+      columns = result.columns.map((name, i) => cellColumnOf(result, `c${i}`, name, i));
       this.gridColumns.set(result, columns);
     }
     return columns;
   }
 
+  protected rowsOf(result: SqlResult): number[] {
+    let rows = this.gridRows.get(result);
+    if (!rows) {
+      rows = rowIndexes(result);
+      this.gridRows.set(result, rows);
+    }
+    return rows;
+  }
+
   protected exportCsv(editor: Editor): void {
     if (editor.result) {
-      downloadText(`${editor.title.replace(/\s+/g, '-').toLowerCase()}.csv`, toCsv(editor.result.columns, editor.result.rows), 'text/csv');
+      downloadText(`${editor.title.replace(/\s+/g, '-').toLowerCase()}.csv`, toCsvOf(editor.result.columns, editor.result.rowCount, (r, c) => editor.result!.cell(r, c)), 'text/csv');
     }
   }
 

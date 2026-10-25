@@ -1,4 +1,4 @@
-import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpResponse } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
 import { Observable, firstValueFrom } from 'rxjs';
 
@@ -14,7 +14,10 @@ import {
   Schema,
   SchemaReply,
   SqlReply,
+  SqlResult,
 } from '../models/api.models';
+import { BufsError, ResultSetView } from '../bufs';
+import { fromBufs, fromReply } from '../utils/sql-result';
 
 export class ApiError extends Error {
   constructor(
@@ -25,8 +28,29 @@ export class ApiError extends Error {
   }
 }
 
+/** An error body, which is JSON even when the reply asked for was binary (it then arrives as bytes). */
+function errorBody(failure: HttpErrorResponse): { error?: unknown; inTransaction?: unknown } | null {
+  if (failure.error instanceof ArrayBuffer) {
+    try {
+      return JSON.parse(new TextDecoder().decode(failure.error)) as { error?: unknown };
+    } catch {
+      return null;
+    }
+  }
+  return failure.error as { error?: unknown } | null;
+}
+
+/** The result format for Execute SQL: libbufs unless `localStorage['sql.format']` says 'json' (A/B timing, old servers). */
+export function preferredFormat(): 'bufs' | 'json' {
+  try {
+    return localStorage.getItem('sql.format') === 'json' ? 'json' : 'bufs';
+  } catch {
+    return 'bufs';
+  }
+}
+
 function describeFailure(failure: HttpErrorResponse): string {
-  const body = failure.error as { error?: unknown } | null;
+  const body = errorBody(failure);
   if (body && typeof body.error === 'string') {
     return body.error;
   }
@@ -81,15 +105,38 @@ export class DatabaseService {
     this.changed();
   }
 
-  async execute(sql: string): Promise<SqlReply> {
+  async execute(sql: string): Promise<SqlResult> {
     const wasPending = this.inTransaction();
-    const reply = await this.post<SqlReply>('/api/sql', { sql });
+    const result = preferredFormat() === 'bufs' ? await this.executeBufs(sql) : fromReply(await this.post<SqlReply>('/api/sql', { sql }));
     // A run that left nothing pending changed nothing.
-    if (wasPending || reply.inTransaction) {
+    if (wasPending || result.inTransaction) {
       this.changed();
       await this.loadSchema();
     }
-    return reply;
+    return result;
+  }
+
+  /**
+   * Asks for libbufs. A server that does not know the format answers JSON, and so does any error, so the content
+   * type decides how the body is read.
+   */
+  private async executeBufs(sql: string): Promise<SqlResult> {
+    const response = await this.settleResponse(
+      this.http.post('/api/sql', { sql, format: 'bufs' }, { observe: 'response', responseType: 'arraybuffer' }),
+    );
+    const body = response.body as ArrayBuffer;
+    if (!(response.headers.get('Content-Type') ?? '').startsWith('application/vnd.libsql.bufs')) {
+      const reply = JSON.parse(new TextDecoder().decode(body)) as SqlReply;
+      this.inTransaction.set(reply.inTransaction);
+      return fromReply(reply);
+    }
+    const inTransaction = response.headers.get('X-Sql-In-Transaction') === 'true';
+    this.inTransaction.set(inTransaction);
+    try {
+      return fromBufs(ResultSetView.open(body), Number(response.headers.get('X-Sql-Elapsed-Ms')) || 0, inTransaction);
+    } catch (failure) {
+      throw failure instanceof BufsError ? new ApiError(failure.message, 200) : failure;
+    }
   }
 
   async commit(): Promise<void> {
@@ -125,6 +172,21 @@ export class DatabaseService {
     return this.settle(this.http.post<T>(url, body));
   }
 
+  private async settleResponse(call: Observable<HttpResponse<ArrayBuffer>>): Promise<HttpResponse<ArrayBuffer>> {
+    try {
+      return await firstValueFrom(call);
+    } catch (failure) {
+      if (!(failure instanceof HttpErrorResponse)) {
+        throw failure;
+      }
+      const body = errorBody(failure);
+      if (body && typeof body.inTransaction === 'boolean') {
+        this.inTransaction.set(body.inTransaction);
+      }
+      throw new ApiError(describeFailure(failure), failure.status);
+    }
+  }
+
   private async settle<T extends Pending>(call: Observable<T>): Promise<T> {
     try {
       const reply = await firstValueFrom(call);
@@ -134,7 +196,7 @@ export class DatabaseService {
       if (!(failure instanceof HttpErrorResponse)) {
         throw failure;
       }
-      const body = failure.error as Partial<Pending> | null;
+      const body = errorBody(failure);
       if (body && typeof body.inTransaction === 'boolean') {
         this.inTransaction.set(body.inTransaction);
       }

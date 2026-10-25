@@ -43,7 +43,7 @@
           <div class="results">
             @if (editor.result; as result) {
               @if (result.columns.length > 0) {
-                <app-data-grid class="grid" [data]="result.rows" [columns]="columnsOf(result)" [filterable]="true" [rowNumbers]="true">
+                <app-data-grid class="grid" [data]="rowsOf(result)" [columns]="columnsOf(result)" [filterable]="true" [rowNumbers]="true">
                   <ng-template gridCell let-value let-text="text">
                     @switch (kindOf(value)) {
                       @case ('null') {
