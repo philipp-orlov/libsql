@@ -40,16 +40,18 @@ struct ResultBuilder
         n->qualified = std::move(qualified);
         dropSpares();
         result.names_ = std::move(n);
+        announce();
     }
     void columns(std::shared_ptr<const ColumnNames> names)
     {
         if (names != previous)
             dropSpares();
         result.names_ = std::move(names);
+        announce();
     }
     void row(std::vector<Value> values)
     {
-        if (each) {
+        if (each || consumer) {
             add(values.data(), values.size(), true);
             return;
         }
@@ -68,10 +70,17 @@ struct ResultBuilder
     Result& result = own;
     /// Statement::each: rows go here instead of into `result`.
     const RowVisitor* each = nullptr;
+    /// Database::exec(text, params, consumer): the same, with begin() when the
+    /// columns are known. end() is the caller's, once the statement is done.
+    ResultConsumer* consumer = nullptr;
+    /// The declared types of the columns, when the statement is a SELECT.
+    const std::vector<std::string>* declTypes = nullptr;
     bool stopped = false;  ///< the callback asked for no more rows
     std::shared_ptr<const ColumnNames> previous;  ///< the columns of the spares
 
 private:
+    bool begun = false;                   ///< the consumer has been told the columns
+    std::vector<std::string> blankTypes;  ///< declared types of a statement that has none
     /// Spare rows only fit the statement whose columns they carry.
     void dropSpares()
     {
@@ -82,8 +91,29 @@ private:
         }
     }
 
+    /// Tells the consumer the columns, once.
+    void announce()
+    {
+        if (!consumer || begun || !result.names_)
+            return;
+        begun = true;
+        const ColumnNames& n = *result.names_;
+        const std::vector<std::string>* types = declTypes;
+        if (!types || types->size() != n.names.size()) {
+            blankTypes.assign(n.names.size(), std::string());
+            types = &blankTypes;
+        }
+        consumer->begin(ResultShape{n.names, n.qualified, *types});
+    }
+
     void add(Value* values, std::size_t count, bool move)
     {
+        if (consumer) {
+            announce();
+            if (!stopped && !consumer->row(RowView(values, count, &result.names_)))
+                stopped = true;
+            return;
+        }
         if (each) {
             if (!stopped && !(*each)(RowView(values, count, &result.names_)))
                 stopped = true;

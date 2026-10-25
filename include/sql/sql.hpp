@@ -226,6 +226,41 @@ private:
     bool (*call_)(void*, const RowView&);
 };
 
+/// What a statement's result looks like, before any row arrives. The
+/// references are valid during ResultConsumer::begin only; copy what you keep.
+struct ResultShape
+{
+    /// Result column names, as Result::columns().
+    const std::vector<std::string>& names;
+    /// `alias.column` for a plain column reference, else empty, as
+    /// Result::qualifiedColumns(): the vector may be empty (none qualified) or
+    /// hold one entry per column.
+    const std::vector<std::string>& qualified;
+    /// The declared type of each column ("INTEGER", "DATETIME", ...); empty
+    /// for an expression. One entry per column.
+    const std::vector<std::string>& declTypes;
+};
+
+/// Receives the result of the last statement of an exec(), as it is produced,
+/// instead of a Result: a writer can encode rows into its own format without
+/// a Value per cell in between. See Database::exec(text, params, consumer).
+class ResultConsumer
+{
+public:
+    virtual ~ResultConsumer() = default;
+    /// Once, before the first row, also when there are no rows. Not called when
+    /// the last statement returns no columns (INSERT without RETURNING, DDL, ...).
+    virtual void begin(const ResultShape& shape) = 0;
+    /// Each row; the RowView is valid during the call only, and its text and
+    /// blob cells may borrow from the database file: copy what you keep.
+    /// Return false to stop the statement there.
+    virtual bool row(const RowView& row) = 0;
+    /// Once, after the statement finished (also after row() returned false).
+    /// Not called when the statement throws. `changes` and `lastInsertId` are
+    /// what Result::changes() and Result::lastInsertId() would have been.
+    virtual void end(std::uint64_t changes, std::int64_t lastInsertId) = 0;
+};
+
 /// What a statement produced: rows for SELECT, counters for everything else.
 class Result
 {
@@ -303,6 +338,11 @@ public:
     /// the last one.
     Result exec(std::string_view text, const Params& params = {});
     Result exec(std::string_view text, const NamedParams& params);
+    /// Like exec(text, params), but the rows of the last statement go to
+    /// `consumer` instead of into a Result (see Database::exec). Returns the
+    /// rows changed by the last statement.
+    std::uint64_t exec(std::string_view text, const Params& params, ResultConsumer& consumer);
+    std::uint64_t exec(std::string_view text, const NamedParams& params, ResultConsumer& consumer);
 
     void commit();
     void rollback();
@@ -316,6 +356,7 @@ public:
 private:
     friend class Database;
     friend class Statement;
+    Result run(std::string_view text, const Params& params, ResultConsumer* consumer);
     explicit Transaction(std::shared_ptr<internal::TxnImpl> impl) noexcept : impl_(std::move(impl))
     {}
     std::shared_ptr<internal::TxnImpl> impl_;
@@ -386,6 +427,11 @@ public:
     Result exec(std::initializer_list<Value> params);
     Result exec(Transaction& txn, std::initializer_list<Value> params);
 
+    /// Run with the bindings in place, the rows of the last statement going to
+    /// `consumer` (see Database::exec). Returns the rows changed.
+    std::uint64_t exec(ResultConsumer& consumer);
+    std::uint64_t exec(Transaction& txn, ResultConsumer& consumer);
+
     /// Runs inside `txn` into `out`, reusing it: the rows `out` holds from
     /// its last run of this statement are refilled in place, each cell
     /// keeping its buffer, so a warm run allocates nothing. `out` keeps the
@@ -412,7 +458,8 @@ public:
 
 private:
     std::uint64_t eachRow(Transaction* txn, RowVisitor fn);
-    Result run(Transaction& txn, const RowVisitor* each, Result* into = nullptr);
+    Result run(Transaction& txn, const RowVisitor* each, Result* into = nullptr,
+               ResultConsumer* consumer = nullptr);
     friend class Database;
     explicit Statement(std::shared_ptr<internal::StatementImpl> impl) noexcept
         : impl_(std::move(impl))
@@ -653,6 +700,17 @@ public:
     /// with BEGIN stays open across calls until COMMIT or ROLLBACK.
     Result exec(std::string_view text, const Params& params = {});
     Result exec(std::string_view text, const NamedParams& params);
+    /// Runs like exec(text, params): the same statements, transactions and
+    /// errors. But the rows of the last statement go to `consumer` as they are
+    /// produced instead of into a Result, so a writer can encode them into its
+    /// own format (JSON, CSV, sql::BufsWriter) without a Value per cell in
+    /// between. Earlier statements of the text run as usual and their rows are
+    /// dropped. `consumer` sees begin() (when the statement has columns), each
+    /// row, then end(); an exception from the statement or from the consumer
+    /// propagates, and end() is not called. Returns the rows changed by the
+    /// last statement.
+    std::uint64_t exec(std::string_view text, const Params& params, ResultConsumer& consumer);
+    std::uint64_t exec(std::string_view text, const NamedParams& params, ResultConsumer& consumer);
 
     /// Parse `text` now so that running it later costs no parsing. Worth it for
     /// anything that runs in a loop; `exec` is fine for one-offs.

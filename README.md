@@ -309,6 +309,17 @@ sorted runs to a temporary file and merges them; with `LIMIT` it only ever
 holds the rows that can still make the cut. `PRAGMA temp_store = MEMORY` keeps
 every sort in memory.
 
+### Streaming a result to your own writer
+
+`db.exec(text, params, consumer)` (also on `Transaction` and `Statement`) runs
+like `exec`, with the same transactions and errors, but hands the rows of the
+last statement to a `sql::ResultConsumer` instead of building a `Result`:
+`begin(shape)` with column names, `alias.column` names and declared types (not
+called when the statement returns no columns), `row(RowView)` per row (return
+false to stop; copy what you keep, the cells may borrow from the file), then
+`end(changes, lastInsertId)`. A warm call with a consumer that allocates
+nothing allocates nothing per row.
+
 ## The store underneath
 
 `Database::env()` returns the `nosql::Env` the tables live in, and

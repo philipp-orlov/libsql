@@ -584,7 +584,7 @@ void checkWritable(DatabaseImpl& db, const StatementMeta& m, const TxnImpl* t)
 /// a nested level of its own so that a failure undoes it alone; DML opens
 /// that level only when it has to (see Session::beginAtomic).
 Result runOne(Batch& b, std::size_t k, TxnImpl& t, const std::vector<Value>& params, bool atomic,
-              const RowVisitor* each = nullptr, Result* into = nullptr)
+              const RowVisitor* each = nullptr, Result* into = nullptr, ResultConsumer* consumer = nullptr)
 {
     DatabaseImpl& db = *t.db;
     const StatementMeta& m = b.meta[k];
@@ -597,6 +597,7 @@ Result runOne(Batch& b, std::size_t k, TxnImpl& t, const std::vector<Value>& par
     Result fresh;
     ResultBuilder out(into ? *into : fresh);
     out.each = each;
+    out.consumer = consumer;
     const bool guarded = atomic && (m.mutating || m.writesPragma) && t.writer;
     bool nested = false;
     if (guarded) {
@@ -857,9 +858,21 @@ Result connectionStatement(DatabaseImpl& db, StatementNode& node, const std::vec
     return Result();
 }
 
+/// Tells a consumer its statement is done. A last statement that never reached
+/// it (transaction control, ATTACH) still ends it, so it always sees an end().
+void finish(ResultConsumer* consumer, const Result& last)
+{
+    if (consumer)
+        consumer->end(last.changes(), last.lastInsertId());
+}
+
 /// Runs a whole batch the way Database::exec and Statement::exec do.
+///
+/// With a `consumer`, the last statement's rows go to it and it is told when
+/// the batch is done; `each` is for every statement.
 Result execBatch(const std::shared_ptr<DatabaseImpl>& dbp, Batch& b,
-                 const std::vector<Value>& params, const RowVisitor* each = nullptr)
+                 const std::vector<Value>& params, const RowVisitor* each = nullptr,
+                 ResultConsumer* consumer = nullptr)
 {
     DatabaseImpl& db = *dbp;
     Result last;
@@ -872,8 +885,9 @@ Result execBatch(const std::shared_ptr<DatabaseImpl>& dbp, Batch& b,
         std::shared_ptr<TxnImpl>& t = held.t;
         start(*t, b.needsWrite);
         for (std::size_t k = 0; k < n; ++k)
-            last = runOne(b, k, *t, params, false, each);
+            last = runOne(b, k, *t, params, false, each, nullptr, k + 1 == n ? consumer : nullptr);
         commit(*t);
+        finish(consumer, last);
         return last;
     }
     for (std::size_t k = 0; k < n; ++k) {
@@ -943,7 +957,7 @@ Result execBatch(const std::shared_ptr<DatabaseImpl>& dbp, Batch& b,
         if (db.sqlTxn) {
             std::shared_ptr<TxnImpl> t = db.sqlTxn;
             try {
-                last = runOne(b, k, *t, params, true, each);
+                last = runOne(b, k, *t, params, true, each, nullptr, k + 1 == n ? consumer : nullptr);
             } catch (...) {
                 if (t->doomed)
                     park(std::move(db.sqlTxn));
@@ -953,9 +967,10 @@ Result execBatch(const std::shared_ptr<DatabaseImpl>& dbp, Batch& b,
         }
         Parked held{newTxn(dbp, db.readOnly)};
         start(*held.t, m.mutating || m.writesPragma);
-        last = runOne(b, k, *held.t, params, false, each);
+        last = runOne(b, k, *held.t, params, false, each, nullptr, k + 1 == n ? consumer : nullptr);
         commit(*held.t);
     }
+    finish(consumer, last);
     return last;
 }
 
@@ -1294,6 +1309,22 @@ Result Transaction::exec(std::string_view text, const NamedParams& params)
 
 Result Transaction::exec(std::string_view text, const Params& params)
 {
+    return run(text, params, nullptr);
+}
+
+std::uint64_t Transaction::exec(std::string_view text, const Params& params, ResultConsumer& consumer)
+{
+    return run(text, params, &consumer).changes();
+}
+
+std::uint64_t Transaction::exec(std::string_view text, const NamedParams& params, ResultConsumer& consumer)
+{
+    internal::TxnImpl& t = internal::live(impl_);
+    return run(text, internal::bindNamed(*t.cache.get(text), params), &consumer).changes();
+}
+
+Result Transaction::run(std::string_view text, const Params& params, ResultConsumer* consumer)
+{
     internal::TxnImpl& t = internal::live(impl_);
     const std::shared_ptr<internal::Batch> held = t.cache.get(text);
     internal::Batch& b = *held;
@@ -1317,13 +1348,15 @@ Result Transaction::exec(std::string_view text, const Params& params)
             continue;
         }
         try {
-            last = internal::runOne(b, k, t, params, true);
+            last = internal::runOne(b, k, t, params, true, nullptr, nullptr,
+                                    k + 1 == b.meta.size() ? consumer : nullptr);
         } catch (...) {
             if (t.doomed)
                 internal::park(std::move(impl_));
             throw;
         }
     }
+    internal::finish(consumer, last);
     return last;
 }
 
@@ -1526,7 +1559,18 @@ std::uint64_t Statement::eachRow(Transaction* txn, RowVisitor fn)
     return internal::execBatch(s.db, *s.batch, s.bound, &fn).changes();
 }
 
-Result Statement::run(Transaction& txn, const RowVisitor* each, Result* into)
+std::uint64_t Statement::exec(ResultConsumer& consumer)
+{
+    internal::StatementImpl& s = live(impl_);
+    return internal::execBatch(s.db, *s.batch, s.bound, nullptr, &consumer).changes();
+}
+
+std::uint64_t Statement::exec(Transaction& txn, ResultConsumer& consumer)
+{
+    return run(txn, nullptr, nullptr, &consumer).changes();
+}
+
+Result Statement::run(Transaction& txn, const RowVisitor* each, Result* into, ResultConsumer* consumer)
 {
     internal::StatementImpl& s = live(impl_);
     internal::TxnImpl& t = internal::live(txn.impl_);
@@ -1536,13 +1580,15 @@ Result Statement::run(Transaction& txn, const RowVisitor* each, Result* into)
     Result last;
     for (std::size_t k = 0; k < b.meta.size(); ++k) {
         try {
-            last = internal::runOne(b, k, t, s.bound, true, each, into);
+            last = internal::runOne(b, k, t, s.bound, true, each, into,
+                                    k + 1 == b.meta.size() ? consumer : nullptr);
         } catch (...) {
             if (t.doomed)
                 internal::park(std::move(txn.impl_));
             throw;
         }
     }
+    internal::finish(consumer, last);
     return last;
 }
 
@@ -1608,6 +1654,21 @@ Result Database::exec(std::string_view text, const NamedParams& params)
     internal::DatabaseImpl& db = internal::open(impl_);
     const std::shared_ptr<internal::Batch> b = db.cached(text);
     return internal::execBatch(impl_, *b, internal::bindNamed(*b, params));
+}
+
+std::uint64_t Database::exec(std::string_view text, const Params& params, ResultConsumer& consumer)
+{
+    internal::DatabaseImpl& db = internal::open(impl_);
+    const std::shared_ptr<internal::Batch> b = db.cached(text);
+    internal::checkCount(*b, params);
+    return internal::execBatch(impl_, *b, params, nullptr, &consumer).changes();
+}
+
+std::uint64_t Database::exec(std::string_view text, const NamedParams& params, ResultConsumer& consumer)
+{
+    internal::DatabaseImpl& db = internal::open(impl_);
+    const std::shared_ptr<internal::Batch> b = db.cached(text);
+    return internal::execBatch(impl_, *b, internal::bindNamed(*b, params), nullptr, &consumer).changes();
 }
 
 Statement Database::prepare(std::string_view text)

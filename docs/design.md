@@ -1827,6 +1827,13 @@ nested transaction.
   `RowView` -- valid only during the call -- without building a `Result`.
   Its text and blob cells may borrow bytes from the database pages (§4);
   copy a cell, or call `RowView::row()`, to keep it.
+- `exec(consumer)` / `exec(txn, consumer)` and `Database::exec(text, params,
+  consumer)`, which stream the rows of the *last* statement to a
+  `ResultConsumer` (`begin(shape)`, `row(RowView)`, `end(changes,
+  lastInsertId)`). `ResultBuilder` forwards to it where it forwards to an
+  `each` callback; `begin` fires when the builder learns its columns, so a
+  zero-row SELECT still gets one, and `end` fires from the batch driver after
+  the last statement, also when that statement is transaction control.
 
 A statement is not re-entrant: running it from its own `each` callback raises
 `InvalidArgument` (`"statement is already running"`).

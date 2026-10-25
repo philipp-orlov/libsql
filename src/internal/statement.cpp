@@ -957,7 +957,7 @@ void runProgram(Program& p, Session& s, const std::vector<Value>& params, Result
     if (p.select) {
         // A row callback may write through this transaction, and a write may
         // change pages in place.
-        c.borrow = !(out.each && s.writable);
+        c.borrow = !((out.each || out.consumer) && s.writable);
         FrameGuard guard{p.frame};
         SelectPlan& sp = *p.select;
         if (!sp.sharedNames) {
@@ -966,6 +966,7 @@ void runProgram(Program& p, Session& s, const std::vector<Value>& params, Result
             names->qualified = sp.qualified;
             sp.sharedNames = std::move(names);
         }
+        out.declTypes = &sp.columnTypes;
         out.columns(sp.sharedNames);
         // Size the result like the last run's, so a statement that keeps
         // returning about as many rows does not regrow it row by row.

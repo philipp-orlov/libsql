@@ -547,6 +547,8 @@ struct SelectPlan
     std::vector<std::string> names;      ///< result names (declared names for columns)
     std::vector<std::string> subNames;   ///< names when used as a sub-query's columns
     std::vector<std::string> qualified;  ///< alias.column for plain column outputs, else ""
+    /// The declared type, as written, of plain column outputs of a table; else "".
+    std::vector<std::string> columnTypes;
     std::vector<Affinity> affinity;      ///< for sub-query columns
     std::vector<Collation> collation;
     std::vector<std::uint8_t> collationStrength;

@@ -1734,6 +1734,7 @@ void Planner::expandStar(const ResultColumn& rc, CorePlan& plan, SelectPlan& sp,
                     sp.names.push_back(s.columns[k]);
                     sp.subNames.push_back(s.columns[k]);
                     sp.qualified.push_back(s.alias + "." + s.columns[k]);
+                    sp.columnTypes.emplace_back();
                 }
                 plan.synthetic.push_back(std::move(co));
                 continue;
@@ -1756,6 +1757,8 @@ void Planner::expandStar(const ResultColumn& rc, CorePlan& plan, SelectPlan& sp,
                 sp.names.push_back(s.columns[k]);
                 sp.subNames.push_back(s.columns[k]);
                 sp.qualified.push_back(s.alias + "." + s.columns[k]);
+                sp.columnTypes.push_back(s.table && k < s.table->columns.size() ? s.table->columns[k].declType
+                                                                         : std::string());
             }
             plan.synthetic.push_back(std::move(col));
         }
@@ -1793,6 +1796,7 @@ void Planner::planCore(SelectCore& core, CorePlan& plan, Scope& scope, SelectPla
                 sp.names.push_back("column" + std::to_string(i + 1));
                 sp.subNames.push_back(sp.names.back());
                 sp.qualified.emplace_back();
+                sp.columnTypes.emplace_back();
             }
         }
         plan.levelFilters.assign(1, {});
@@ -1824,15 +1828,20 @@ void Planner::planCore(SelectCore& core, CorePlan& plan, Scope& scope, SelectPla
                 sp.subNames.push_back(outputName(*rc.expr, plan, scope.text, true));
             }
             if (rc.expr->kind == ExprKind::Column) {
-                std::string q;
+                std::string q, type;
                 for (const SourceNode& s : plan.sources) {
                     if (std::size_t(rc.expr->slot) >= s.base &&
-                        std::size_t(rc.expr->slot) < s.base + s.width)
+                        std::size_t(rc.expr->slot) < s.base + s.width) {
                         q = s.alias + "." + rc.expr->name;
+                        const std::size_t k = std::size_t(rc.expr->slot) - s.base;
+                        type = s.table && k < s.table->columns.size() ? s.table->columns[k].declType : std::string();
+                    }
                 }
                 sp.qualified.push_back(q);
+                sp.columnTypes.push_back(type);
             } else {
                 sp.qualified.emplace_back();
+                sp.columnTypes.emplace_back();
             }
         }
     }
@@ -2275,6 +2284,7 @@ void presentAsJson(SelectPlan& sp, const JsonOptions& options)
     sp.names = {"json"};
     sp.subNames = {"json"};
     sp.qualified = {std::string()};
+    sp.columnTypes = {std::string()};
     sp.affinity = {Affinity::Blob};
     sp.hasAffinity = {false};
     sp.collation = {Collation::Binary};
