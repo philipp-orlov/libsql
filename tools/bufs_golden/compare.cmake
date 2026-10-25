@@ -1,0 +1,8 @@
+execute_process(COMMAND ${GENERATOR} OUTPUT_FILE ${OUTPUT} RESULT_VARIABLE status)
+if(NOT status EQUAL 0)
+    message(FATAL_ERROR "sql_bufs_golden failed: ${status}")
+endif()
+execute_process(COMMAND ${CMAKE_COMMAND} -E compare_files ${OUTPUT} ${EXPECTED} RESULT_VARIABLE same)
+if(NOT same EQUAL 0)
+    message(FATAL_ERROR "${EXPECTED} is out of date; regenerate it with sql_bufs_golden")
+endif()

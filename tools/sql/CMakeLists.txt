@@ -45,5 +45,8 @@ if(SQL_TOOL_WEB)
 
     if(SQL_BUILD_TESTS AND NOT WIN32)
         add_subdirectory(tests)
+        if(SQL_WITH_BUFS)
+            add_subdirectory(../bufs_golden bufs_golden)
+        endif()
     endif()
 endif()

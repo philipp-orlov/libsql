@@ -48,6 +48,9 @@ struct Reply
     std::vector<std::pair<std::string, std::string>> headers;
 };
 
+/// One value as the JSON API sends it (see the top of this file).
+json::Json encodeCell(const sql::Value& value);
+
 class WebApi
 {
 public:

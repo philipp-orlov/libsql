@@ -606,6 +606,11 @@ Reply WebApi::schema()
     });
 }
 
+Json encodeCell(const sql::Value& value)
+{
+    return encodeValue(value);
+}
+
 Reply WebApi::execute(const Json& request)
 {
     std::vector<std::uint8_t> binary;
