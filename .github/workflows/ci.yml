@@ -17,7 +17,7 @@ env:
   # libnosql is built from source next to this checkout. Bump the pin together
   # with any change that depends on a newer libnosql API.
   LIBNOSQL_REPO: philipp-orlov/libnosql
-  LIBNOSQL_REF: 8737e3d7fbc639bb7979e4e512d43361ca628fd1
+  LIBNOSQL_REF: 7b0f89fa196bfcfe4e823d0760a271a80810a27a
   # libbufs, likewise: the binary result format (SQL_WITH_BUFS) builds from source.
   LIBBUFS_REPO: philipp-orlov/libbufs
   LIBBUFS_REF: be14e8bb4dfb74bfd12371fa9313dfec725fd3a6
