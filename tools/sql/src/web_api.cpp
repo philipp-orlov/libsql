@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "json/utf8.hpp"
+#include "managed.hpp"
 
 namespace sqlweb {
 namespace {
@@ -207,56 +208,6 @@ std::string quote(const std::string& name)
         out += c;
     }
     return out + "\"";
-}
-
-/// True when the statement manages the transaction itself, or cannot run inside one.
-bool controlsTransaction(std::string_view text)
-{
-    std::size_t i = 0;
-    for (;;) {
-        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i])))
-            ++i;
-        if (text.substr(i, 2) == "--") {
-            while (i < text.size() && text[i] != '\n')
-                ++i;
-        } else if (text.substr(i, 2) == "/*") {
-            const std::size_t end = text.find("*/", i + 2);
-            i = end == std::string_view::npos ? text.size() : end + 2;
-        } else {
-            break;
-        }
-    }
-    std::size_t end = i;
-    while (end < text.size() && std::isalpha(static_cast<unsigned char>(text[end])))
-        ++end;
-    const std::string_view word = text.substr(i, end - i);
-    for (const char* keyword : {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE",
-                                "PRAGMA", "VACUUM", "ATTACH", "DETACH"}) {
-        if (equalsNoCase(word, keyword))
-            return true;
-    }
-    return false;
-}
-
-/// Opens the pending transaction when there is none. A failure undoes only a transaction opened here.
-template <class F>
-auto inPendingTransaction(sql::Database& db, F&& work)
-{
-    const bool opened = !db.inTransaction();
-    if (opened)
-        db.exec("BEGIN");
-    try {
-        return work();
-    } catch (...) {
-        if (opened && db.inTransaction())
-            db.exec("ROLLBACK");
-        throw;
-    }
-}
-
-std::int64_t schemaVersion(sql::Database& db)
-{
-    return db.exec("PRAGMA schema_version")[0][0].toInteger();
 }
 
 /// A table or view, as far as browsing and editing need to know it.
@@ -516,7 +467,9 @@ Reply WebApi::info()
         return Json{{"path", db_.path().string()},
                     {"version", sql::version()},
                     {"readOnly", readOnly_},
-                    {"functions", std::move(functions)}};
+                    {"functions", std::move(functions)},
+                    {"sqlSocket", socketPath_.empty() ? Json() : Json(socketPath_)},
+                    {"sqlSocketNeedsToken", socketNeedsToken_}};
     });
 }
 

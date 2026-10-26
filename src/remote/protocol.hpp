@@ -9,8 +9,10 @@
 #include <exception>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "bufs/bufs.hpp"
 #include "http/buffer.hpp"
 #include "sql/sql.hpp"
 #include "sql/wire/remote.bufs.hpp"
@@ -56,6 +58,41 @@ std::size_t buildReply(void* memory, std::size_t capacity, const ReplyFields& fi
 
 /// A pooled block holding the Reply followed by `trailer` (a sql.wire.ResultSet message, say).
 http::Buffer makeReply(http::BufferPool& pool, const ReplyFields& fields, std::string_view trailer = {});
+
+/// Every field a Request can carry. buildRequest() fixes the order they are written in, which is the layout the
+/// TypeScript encoder (tools/sql/ui/src/app/remote/request.ts) reproduces byte for byte.
+struct RequestFields
+{
+    std::uint32_t id = 0;
+    Op op = Op::None;
+    std::string_view sql;
+    std::uint32_t statement = 0;
+    std::uint32_t txn = 0;
+    std::uint32_t target = 0;
+    std::uint64_t credit = 0;
+    bool readOnly = false;
+    Catalog what = Catalog::Tables;
+    std::string_view name;
+    std::uint16_t protocol = 0;
+    std::string_view client;
+    std::string_view token;
+    std::uint64_t window = 0;
+    std::uint32_t maxMessage = 0;
+    std::uint32_t hints = 0;
+    // Parameters: positional values, or named ones (which win when given).
+    const Value* params = nullptr;
+    std::size_t paramCount = 0;
+    const NamedParams* named = nullptr;
+    // ResultOptions, written only when `options` is set.
+    bool options = false;
+    std::uint32_t batchRows = 0, batchBytes = 0, blobPrefix = 0;
+    std::uint64_t maxRows = 0;
+    bool countAllRows = false, noDictionary = false, noNarrowing = false;
+};
+
+/// Builds the Request into `builder` (cleared first) and returns its bytes, valid until the next use of `builder`.
+/// Order: id, op and every scalar, then the strings and tables: sql, params, options, name, client, token.
+std::pair<const std::uint8_t*, std::size_t> buildRequest(bufs::MessageBuilder& builder, const RequestFields& fields);
 
 /// Window accounting: a Rows frame counts at least this much against the flow-control window, so many
 /// tiny frames cannot overrun the connection's queue of frames.

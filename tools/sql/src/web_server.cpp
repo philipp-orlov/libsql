@@ -14,6 +14,8 @@
 #include "http/http_context.hpp"
 #include "http/server.hpp"
 #include "json/json.hpp"
+#include "managed.hpp"
+#include "sql/remote/sql_socket.hpp"
 #include "web_api.hpp"
 
 #ifdef SQL_EMBEDDED_INDEX_HTML
@@ -80,8 +82,12 @@ http::ServerConfig makeConfig(const WebOptions& options)
     config.maxBodyBytes = kMaxBodyBytes;
     config.serverHeader = "sql";
     // A page from another site must not reach an API that listens on a private address (DNS rebinding).
-    if (isLoopback(options.host))
+    if (isLoopback(options.host)) {
         config.allowedHosts = {"127.0.0.1", "localhost", "[::1]"};
+        // The same for WebSockets, which browsers do not confine by origin: only this page may open one.
+        const std::string port = std::to_string(options.port);
+        config.allowedOrigins = {"http://127.0.0.1:" + port, "http://localhost:" + port, "http://[::1]:" + port};
+    }
     return config;
 }
 
@@ -112,7 +118,49 @@ struct WebServer::Impl
         : options(std::move(o)), api(db, options.readOnly), server(makeConfig(options))
     {
         registerApi();
+        registerSocket(db);
         registerFrontEnd();
+    }
+
+    // The database over a WebSocket route, run on the same one worker as the JSON API: every session shares the
+    // one Database handle, so changes pending through either are the same transaction.
+    void registerSocket(sql::Database& db)
+    {
+        if (!options.socket)
+            return;
+        sql::remote::SqlSocketOptions socketOptions;
+        socketOptions.isolation(sql::remote::Isolation::Shared)
+            .readOnly(options.readOnly)
+            .interceptor(std::make_shared<ManagedExec>())
+            .executor([this](std::function<void()> task) { return server.pool().tryEnqueue(std::move(task)); })
+            .serverName(std::string("sql/") + sql::version());
+        if (!options.token.empty()) {
+            const std::string token = options.token;
+            socketOptions
+                .authorize([token](const sql::remote::Handshake& h) -> sql::remote::SqlSocketOptions::AuthorizeResult {
+                    const std::string_view header = h.header("Authorization");
+                    if (header.empty())
+                        return 0;  // a browser: the token comes in the first message
+                    if (header == "Bearer " + token)
+                        return sql::remote::Principal{"token", false, nullptr};
+                    return 401;
+                })
+                .authenticate([token](std::string_view given) -> std::optional<sql::remote::Principal> {
+                    if (given == token)
+                        return sql::remote::Principal{"token", false, nullptr};
+                    return std::nullopt;
+                })
+                .requireAuth();
+        }
+        sqlSocket = std::make_unique<sql::remote::SqlSocket>(db, std::move(socketOptions));
+        sqlSocket->attach(server, options.socketPath);
+        api.setSocket(options.socketPath, !options.token.empty());
+    }
+
+    void shutdownSocket()
+    {
+        if (sqlSocket)
+            sqlSocket->shutdown(std::chrono::milliseconds(1000));
     }
 
     // Runs `call` on the worker and writes its reply from the connection's own loop.
@@ -242,13 +290,18 @@ struct WebServer::Impl
     WebOptions options;
     WebApi api;
     http::Server server;
+    std::unique_ptr<sql::remote::SqlSocket> sqlSocket;  // after the server: it goes first, after shutdownSocket()
 };
 
 WebServer::WebServer(sql::Database& db, WebOptions options)
     : impl_(std::make_unique<Impl>(db, std::move(options)))
 {}
 
-WebServer::~WebServer() = default;
+WebServer::~WebServer()
+{
+    if (impl_)
+        impl_->shutdownSocket();
+}
 
 void WebServer::run(std::function<bool()> shouldStop)
 {
@@ -257,6 +310,7 @@ void WebServer::run(std::function<bool()> shouldStop)
 
 void WebServer::stop()
 {
+    impl_->shutdownSocket();
     impl_->server.stop();
 }
 

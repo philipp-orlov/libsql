@@ -99,6 +99,7 @@ struct Running
             "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t(v) VALUES ('a'), ('b')");
         server = std::make_unique<sqlweb::WebServer>(db, options);
         thread = std::thread([this] { server->run([this] { return stop.load(); }); });
+        ::close(connectTo(options.port));  // returns once it listens
     }
 
     ~Running()
@@ -183,6 +184,64 @@ TEST(a_query_can_come_back_as_bufs)
     CHECK_EQ(std::string(view.value(1, 1).text()), std::string("b"));
 }
 #endif
+
+TEST(the_database_is_also_served_over_a_websocket)
+{
+    Running s;
+    const std::string url = "ws://127.0.0.1:" + std::to_string(s.options.port) + "/api/v1/ws/sql";
+    sql::Database remote = sql::Database::connect(url);
+    CHECK_EQ(tst::only(remote.exec("SELECT count(*) FROM t")), std::string("2"));
+    // The page learns where the route is.
+    const Response info = s.get("/api/info");
+    CHECK(info.body.find("\"sqlSocket\":\"/api/v1/ws/sql\"") != std::string::npos);
+    CHECK(info.body.find("\"sqlSocketNeedsToken\":false") != std::string::npos);
+    // The socket and the JSON API are one database and one pending transaction: a change made over the socket
+    // stays pending, and the JSON API's Write Changes commits it.
+    remote.exec("BEGIN");
+    remote.exec("INSERT INTO t(v) VALUES ('over the socket')");
+    CHECK(s.post("/api/browse", R"({"table": "t"})").body.find("over the socket") != std::string::npos);
+    CHECK(s.post("/api/browse", R"({"table": "t"})").body.find("\"inTransaction\":true") != std::string::npos);
+    CHECK_EQ(s.post("/api/commit", "{}").status, 200);
+    CHECK_EQ(tst::only(s.db.exec("SELECT count(*) FROM t")), std::string("3"));
+}
+
+TEST(a_token_protects_the_websocket_route)
+{
+    sqlweb::WebOptions options;
+    options.token = "s3cret";
+    Running s(options);
+    const std::string url = "ws://127.0.0.1:" + std::to_string(s.options.port) + "/api/v1/ws/sql";
+    CHECK_THROWS(sql::Database::connect(url), sql::ErrorCode::PermissionDenied);
+    CHECK_THROWS(sql::Database::connect(url, sql::RemoteOptions().token("nope")), sql::ErrorCode::PermissionDenied);
+    CHECK_THROWS(sql::Database::connect(url, sql::RemoteOptions().authorization("Bearer nope")), sql::ErrorCode::PermissionDenied);
+    sql::Database viaHeader = sql::Database::connect(url, sql::RemoteOptions().authorization("Bearer s3cret"));
+    CHECK_EQ(tst::only(viaHeader.exec("SELECT 1")), std::string("1"));
+    sql::Database viaToken = sql::Database::connect(url, sql::RemoteOptions().token("s3cret"));
+    CHECK_EQ(tst::only(viaToken.exec("SELECT 2")), std::string("2"));
+    CHECK(s.get("/api/info").body.find("\"sqlSocketNeedsToken\":true") != std::string::npos);
+}
+
+TEST(the_websocket_route_can_be_left_out)
+{
+    sqlweb::WebOptions options;
+    options.socket = false;
+    Running s(options);
+    const std::string url = "ws://127.0.0.1:" + std::to_string(s.options.port) + "/api/v1/ws/sql";
+    CHECK_THROWS(sql::Database::connect(url), sql::ErrorCode::Connection);
+    CHECK(s.get("/api/info").body.find("\"sqlSocket\":null") != std::string::npos);
+}
+
+TEST(a_page_of_another_origin_cannot_open_the_websocket)
+{
+    Running s;
+    const std::string url = "ws://127.0.0.1:" + std::to_string(s.options.port) + "/api/v1/ws/sql";
+    // A browser sends an Origin; only this server's own is let through.
+    sql::Database other;
+    CHECK_THROWS(sql::Database::connect(url, sql::RemoteOptions().header("Origin", "https://evil.example")), sql::ErrorCode::PermissionDenied);
+    sql::Database same = sql::Database::connect(
+        url, sql::RemoteOptions().header("Origin", "http://127.0.0.1:" + std::to_string(s.options.port)));
+    CHECK_EQ(tst::only(same.exec("SELECT 1")), std::string("1"));
+}
 
 TEST(an_edit_over_http_is_pending_until_commit)
 {

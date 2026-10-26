@@ -690,8 +690,11 @@ private:
             done.id = slot.id;
             detail::errorFields(done, e, scratch);
             result = detail::errorCodeFrom(done.code);
-            if (interruptRunning_ && result == ErrorCode::Interrupted)
-                done.message = "interrupted";
+            if (result == ErrorCode::Interrupted) {
+                std::lock_guard<std::mutex> lock(mutex_);  // written by the loop thread under this lock
+                if (interruptRunning_)
+                    done.message = "interrupted";
+            }
         }
         if (done.kind == Kind::Error)
             impl_->errors.fetch_add(1);

@@ -77,6 +77,13 @@ public:
     Reply commit();
     Reply revert();
 
+    /// Tells the front end where the WebSocket route is (see info()) and whether it needs a token.
+    void setSocket(std::string path, bool needsToken)
+    {
+        socketPath_ = std::move(path);
+        socketNeedsToken_ = needsToken;
+    }
+
     Reply pragmas();
     /// {"name", "value"}
     Reply setPragma(const json::Json& request);
@@ -84,6 +91,8 @@ public:
 private:
     sql::Database& db_;
     bool readOnly_;
+    std::string socketPath_;
+    bool socketNeedsToken_ = false;
 #if SQL_WITH_BUFS
     sql::BufsWriter bufs_;  // one request runs at a time, so one writer is enough
 #endif

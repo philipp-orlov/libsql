@@ -43,6 +43,7 @@ constexpr const char* kUsage =
     "\n"
     "usage:\n"
     "  sql <database> [options]\n"
+    "  sql ws://host:port/path [options]     a database served by another program\n"
     "\n"
     "options:\n"
     "  -c SQL        run SQL, then exit; may be repeated\n"
@@ -54,6 +55,11 @@ constexpr const char* kUsage =
     "  --listen PORT serve a web interface on PORT, after any -c or -f\n"
     "  --host ADDR   with --listen, bind to ADDR (default 127.0.0.1; there is no login)\n"
     "  --public DIR  with --listen, serve the files of DIR instead of the built-in page\n"
+    "  --token T     with --listen, the WebSocket route (/api/v1/ws/sql) needs T; with a ws:// URL, the\n"
+    "                token to present\n"
+    "  --auth VALUE  with a ws:// URL, sent as the Authorization header (\"Bearer abc\")\n"
+    "  --ws-path P   with --listen, the WebSocket route (default /api/v1/ws/sql)\n"
+    "  --no-socket   with --listen, serve the JSON API only\n"
     "  -h, --help    this text\n"
     "\n"
     "dot commands, when reading statements from stdin:\n"
@@ -436,6 +442,8 @@ int main(int argc, char** argv)
     int listenPort = 0;
     std::string host = "127.0.0.1";
     std::string publicDir;
+    std::string token, authorization, socketPath = "/api/v1/ws/sql";
+    bool socket = true;
 
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -491,6 +499,14 @@ int main(int argc, char** argv)
             host = value("--host");
         } else if (arg == "--public") {
             publicDir = value("--public");
+        } else if (arg == "--token") {
+            token = value("--token");
+        } else if (arg == "--auth") {
+            authorization = value("--auth");
+        } else if (arg == "--ws-path") {
+            socketPath = value("--ws-path");
+        } else if (arg == "--no-socket") {
+            socket = false;
         } else if (!arg.empty() && arg[0] == '-') {
             std::fprintf(stderr, "sql: unknown option: %s\n\n", argv[i]);
             std::fputs(kUsage, stderr);
@@ -517,9 +533,20 @@ int main(int argc, char** argv)
     if (!modeGiven && !batches.empty())
         settings.mode = Mode::List;
 
+    const bool remote = path.rfind("ws://", 0) == 0 || path.rfind("wss://", 0) == 0;
+    if (remote && listenPort != 0) {
+        std::fprintf(stderr, "sql: --listen serves a database file; %s is a remote database\n", path.c_str());
+        return kUsageError;
+    }
     Database db;
     try {
-        db = Database::configure().readOnly(readOnly).createIfMissing(!readOnly).open(path);
+        if (remote) {
+            RemoteOptions options;
+            options.readOnly(readOnly).token(token).authorization(authorization);
+            db = Database::connect(path, options);
+        } else {
+            db = Database::configure().readOnly(readOnly).createIfMissing(!readOnly).open(path);
+        }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "sql: %s\n", e.what());
         return kStatementError;
@@ -536,6 +563,9 @@ int main(int argc, char** argv)
         options.host = host;
         options.port = static_cast<std::uint16_t>(listenPort);
         options.readOnly = readOnly;
+        options.socket = socket;
+        options.socketPath = socketPath;
+        options.token = token;
         if (!publicDir.empty()) {
             options.publicDir = publicDir;
             options.publicDirOverridden = true;

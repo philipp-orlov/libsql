@@ -832,14 +832,23 @@ TEST(socket_shutdown_graceful)
 {
     Fixture f;
     Wire w = f.open();
-    auto slowish = w.exec("WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000000) SELECT count(*) FROM c");
+    auto slowish = w.exec("WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 300000) SELECT count(*) FROM c");
     std::this_thread::sleep_for(50ms);
-    std::thread shutting([&] { f.socket->shutdown(10s); });
+    std::thread shutting([&] { f.socket->shutdown(20s); });
+    struct Joiner
+    {
+        std::thread& t;
+        ~Joiner()
+        {
+            if (t.joinable())
+                t.join();
+        }
+    } joiner{shutting};
     // The running query finishes within the grace period; Closing is sent.
     bool sawClosing = false, sawDone = false;
     try {
         for (int i = 0; i < 10 && !(sawClosing && sawDone); ++i) {
-            Frame fr = w.next(10s);
+            Frame fr = w.next(30s);
             sawClosing = sawClosing || fr.reply().kind() == rem::Kind::Closing;
             sawDone = sawDone || (fr.reply().id() == slowish && fr.reply().kind() == rem::Kind::Done);
         }

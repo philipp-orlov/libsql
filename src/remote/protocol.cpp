@@ -10,6 +10,92 @@
 
 namespace sql::remote::detail {
 
+namespace {
+
+void encodeValue(Param::Builder p, const Value& v)
+{
+    switch (v.type()) {
+        case Type::Integer:
+            p.setType(ParamType::Integer);
+            p.setInteger(v.integer());
+            break;
+        case Type::Real:
+            p.setType(ParamType::Real);
+            p.setReal(v.real());
+            break;
+        case Type::Datetime:
+            p.setType(ParamType::Datetime);
+            p.setInteger(v.datetime().usec);
+            break;
+        case Type::Text: {
+            p.setType(ParamType::Text);
+            const std::string_view t = v.text();
+            p.setBytes(reinterpret_cast<const std::uint8_t*>(t.data()), t.size());
+            break;
+        }
+        case Type::Blob: {
+            p.setType(ParamType::Blob);
+            const BlobView b = v.blob();
+            p.setBytes(reinterpret_cast<const std::uint8_t*>(b.data()), b.size());
+            break;
+        }
+        default: break;
+    }
+}
+
+}  // namespace
+
+std::pair<const std::uint8_t*, std::size_t> buildRequest(bufs::MessageBuilder& builder, const RequestFields& f)
+{
+    auto q = builder.initRoot<Request>();
+    q.setId(f.id);
+    q.setOp(f.op);
+    q.setStatement(f.statement);
+    q.setTxn(f.txn);
+    q.setTarget(f.target);
+    q.setCredit(f.credit);
+    q.setReadOnly(f.readOnly);
+    q.setWhat(f.what);
+    q.setProtocol(f.protocol);
+    q.setWindow(f.window);
+    q.setMaxMessage(f.maxMessage);
+    q.setHints(f.hints);
+    if (!f.sql.empty())
+        q.setSql(f.sql);
+    if (f.named) {
+        if (!f.named->empty()) {
+            auto list = q.initParams(f.named->size());
+            std::size_t i = 0;
+            for (const auto& [name, v] : *f.named) {
+                auto p = list.init(i++);
+                p.setName(name);
+                encodeValue(p, v);
+            }
+        }
+    } else if (f.paramCount) {
+        auto list = q.initParams(f.paramCount);
+        for (std::size_t i = 0; i < f.paramCount; ++i)
+            encodeValue(list.init(i), f.params[i]);
+    }
+    if (f.options) {
+        auto o = q.initOptions();
+        o.setMaxRows(f.maxRows);
+        o.setBatchRows(f.batchRows);
+        o.setBatchBytes(f.batchBytes);
+        o.setBlobPrefix(f.blobPrefix);
+        o.setCountAllRows(f.countAllRows);
+        o.setNoDictionary(f.noDictionary);
+        o.setNoNarrowing(f.noNarrowing);
+    }
+    if (!f.name.empty())
+        q.setName(f.name);
+    if (!f.client.empty())
+        q.setClient(f.client);
+    if (!f.token.empty())
+        q.setToken(f.token);
+    return builder.finish();
+}
+
 std::size_t replyBound(const ReplyFields& f)
 {
     std::size_t bytes = bufs::kHeaderBytes + bufs::tableBytes(Reply::kDataBytes, Reply::kRefCount) + 16;
@@ -85,20 +171,19 @@ http::Buffer makeReply(http::BufferPool& pool, const ReplyFields& f, std::string
 void errorFields(ReplyFields& f, const std::exception& e, std::string& scratch)
 {
     f.kind = Kind::Error;
+    // The message is copied: the caller builds the reply after the exception object is gone.
+    scratch = e.what();
+    f.message = scratch;
     if (const auto* sqlError = dynamic_cast<const Error*>(&e)) {
         f.code = wireCode(sqlError->code());
         f.constraint = static_cast<std::uint8_t>(sqlError->constraint());
-        f.message = sqlError->what();
         return;
     }
     if (const auto* nosqlError = dynamic_cast<const nosql::Error*>(&e)) {
         f.code = wireCode(nosqlError->code() == nosql::ErrorCode::Busy ? ErrorCode::Busy : ErrorCode::Internal);
-        f.message = nosqlError->what();
         return;
     }
     f.code = wireCode(ErrorCode::Internal);
-    scratch = e.what();
-    f.message = scratch;
 }
 
 }  // namespace sql::remote::detail

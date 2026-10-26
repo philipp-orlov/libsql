@@ -127,10 +127,10 @@ public:
         auto txn = std::make_shared<RemoteTxn>();
         txn->session = shared_from_this();
         txn->id = nextTxn_++;
-        const std::uint32_t id = send(r::Op::Begin, [&](r::Request::Builder q) {
-            q.setTxn(txn->id);
-            q.setReadOnly(readOnly);
-        });
+        detail::RequestFields fields;
+        fields.txn = txn->id;
+        fields.readOnly = readOnly;
+        const std::uint32_t id = send(r::Op::Begin, fields);
         awaitTerminal(id);
         txn->open = true;
         txn->epoch = epoch_;
@@ -145,7 +145,9 @@ public:
         beginCall(true);
         txn.open = false;
         --openTxns_;
-        const std::uint32_t id = send(commit ? r::Op::Commit : r::Op::Rollback, [&](r::Request::Builder q) { q.setTxn(txn.id); });
+        detail::RequestFields fields;
+        fields.txn = txn.id;
+        const std::uint32_t id = send(commit ? r::Op::Commit : r::Op::Rollback, fields);
         awaitTerminal(id);
     }
 
@@ -273,7 +275,7 @@ public:
         try {
             if (ws_.isOpen()) {
                 if (wait) {
-                    const std::uint32_t id = send(r::Op::Goodbye, [](r::Request::Builder) {});
+                    const std::uint32_t id = send(r::Op::Goodbye, {});
                     try {
                         awaitTerminalBounded(id, std::chrono::seconds(5));
                     } catch (...) {
@@ -349,15 +351,16 @@ private:
     void hello()
     {
         consumed_ = 0;
-        const std::uint32_t id = send(r::Op::Hello, [&](r::Request::Builder q) {
-            q.setProtocol(detail::kProtocolVersion);
-            q.setClient(options_.clientName().empty() ? std::string("libsql/") + version() + " C++" : options_.clientName());
-            if (!options_.token().empty())
-                q.setToken(options_.token());
-            q.setReadOnly(options_.isReadOnly());
-            q.setWindow(options_.window());
-            q.setMaxMessage(static_cast<std::uint32_t>(options_.maxMessage()));
-        }, /*queued*/ false);
+        const std::string client = options_.clientName().empty() ? std::string("libsql/") + version() + " C++"
+                                                                  : options_.clientName();
+        detail::RequestFields fields;
+        fields.protocol = detail::kProtocolVersion;
+        fields.client = client;
+        fields.token = options_.token();
+        fields.readOnly = options_.isReadOnly();
+        fields.window = options_.window();
+        fields.maxMessage = static_cast<std::uint32_t>(options_.maxMessage());
+        const std::uint32_t id = send(r::Op::Hello, fields);
         Terminal t = awaitTerminal(id);
         if (t.kind != r::Kind::Welcome)
             throw Error(ErrorCode::Protocol, "the server did not answer hello with welcome");
@@ -412,20 +415,17 @@ private:
 
     // ----------------------------------------------------------------------------------- sending ---
 
-    template <class Fill>
-    std::uint32_t send(r::Op op, Fill&& fill, bool queued = true)
+    /// Sends a request built from `fields` (id and op are set here); returns its id.
+    std::uint32_t send(r::Op op, detail::RequestFields fields)
     {
-        (void)queued;
         std::uint32_t id = nextId_++;
         if (id == 0 || id >= 0x80000000u) {
             nextId_ = 2;
             id = 1;
         }
-        auto q = builder_.initRoot<r::Request>();
-        q.setId(id);
-        q.setOp(op);
-        fill(q);
-        const auto [data, size] = builder_.finish();
+        fields.id = id;
+        fields.op = op;
+        const auto [data, size] = detail::buildRequest(builder_, fields);
         try {
             ws_.sendBinary(data, size);
         } catch (const http::WebSocketError& e) {
@@ -440,7 +440,9 @@ private:
             return;
         const std::uint64_t c = consumed_;
         consumed_ = 0;
-        send(r::Op::Credit, [c](r::Request::Builder q) { q.setCredit(c); });
+        detail::RequestFields fields;
+        fields.credit = c;
+        send(r::Op::Credit, fields);
     }
 
     void fireAndForget(r::Op op, std::uint32_t statement, std::uint32_t txn) noexcept
@@ -459,11 +461,10 @@ private:
 
     void sendFireAndForget(r::Op op, std::uint32_t statement, std::uint32_t txn)
     {
-        const std::uint32_t id = send(op, [&](r::Request::Builder q) {
-            q.setStatement(statement);
-            q.setTxn(txn);
-        });
-        discard_.push_back(id);
+        detail::RequestFields fields;
+        fields.statement = statement;
+        fields.txn = txn;
+        discard_.push_back(send(op, fields));
     }
 
     void flushDeferred()
@@ -716,14 +717,21 @@ private:
         RowSink sink;
         sink.builder = &rb;
         sink.consumer = consumer;
-        const std::uint32_t id = send(op, [&](r::Request::Builder q) {
-            if (!text.empty())
-                q.setSql(text);
-            q.setStatement(statement);
-            q.setTxn(txn);
-            encodeParams(q, params, count, named);
-            encodeOptions(q);
-        });
+        detail::RequestFields fields;
+        fields.sql = text;
+        fields.statement = statement;
+        fields.txn = txn;
+        fields.params = params;
+        fields.paramCount = count;
+        fields.named = named;
+        fields.options = !(!options_.batchRows() && !options_.batchBytes() && !options_.blobPrefix() &&
+                           options_.dictionary() && options_.narrowing());
+        fields.batchRows = static_cast<std::uint32_t>(options_.batchRows());
+        fields.batchBytes = static_cast<std::uint32_t>(options_.batchBytes());
+        fields.blobPrefix = static_cast<std::uint32_t>(options_.blobPrefix());
+        fields.noDictionary = !options_.dictionary();
+        fields.noNarrowing = !options_.narrowing();
+        const std::uint32_t id = send(op, fields);
         Terminal t;
         try {
             t = await(id, sink, Clock::time_point::max());
@@ -753,77 +761,12 @@ private:
         inTransaction_ = t.inTransaction;
     }
 
-    void encodeOptions(r::Request::Builder& q)
-    {
-        if (!options_.batchRows() && !options_.batchBytes() && !options_.blobPrefix() && options_.dictionary() &&
-            options_.narrowing())
-            return;
-        auto o = q.initOptions();
-        o.setBatchRows(static_cast<std::uint32_t>(options_.batchRows()));
-        o.setBatchBytes(static_cast<std::uint32_t>(options_.batchBytes()));
-        o.setBlobPrefix(static_cast<std::uint32_t>(options_.blobPrefix()));
-        o.setNoDictionary(!options_.dictionary());
-        o.setNoNarrowing(!options_.narrowing());
-    }
-
-    static void encodeValue(r::Param::Builder p, const Value& v)
-    {
-        switch (v.type()) {
-            case Type::Integer:
-                p.setType(r::ParamType::Integer);
-                p.setInteger(v.integer());
-                break;
-            case Type::Real:
-                p.setType(r::ParamType::Real);
-                p.setReal(v.real());
-                break;
-            case Type::Datetime:
-                p.setType(r::ParamType::Datetime);
-                p.setInteger(v.datetime().usec);
-                break;
-            case Type::Text: {
-                p.setType(r::ParamType::Text);
-                const std::string_view t = v.text();
-                p.setBytes(reinterpret_cast<const std::uint8_t*>(t.data()), t.size());
-                break;
-            }
-            case Type::Blob: {
-                p.setType(r::ParamType::Blob);
-                const BlobView b = v.blob();
-                p.setBytes(reinterpret_cast<const std::uint8_t*>(b.data()), b.size());
-                break;
-            }
-            default: break;
-        }
-    }
-
-    static void encodeParams(r::Request::Builder& q, const Value* params, std::size_t count, const NamedParams* named)
-    {
-        if (named) {
-            if (named->empty())
-                return;
-            auto list = q.initParams(named->size());
-            std::size_t i = 0;
-            for (const auto& [name, v] : *named) {
-                auto p = list.init(i++);
-                p.setName(name);
-                encodeValue(p, v);
-            }
-            return;
-        }
-        if (count == 0)
-            return;
-        auto list = q.initParams(count);
-        for (std::size_t i = 0; i < count; ++i)
-            encodeValue(list.init(i), params[i]);
-    }
-
     void sendPrepare(RemoteStatement& st)
     {
-        const std::uint32_t id = send(r::Op::Prepare, [&](r::Request::Builder q) {
-            q.setStatement(st.id);
-            q.setSql(st.info.sql);
-        });
+        detail::RequestFields fields;
+        fields.statement = st.id;
+        fields.sql = st.info.sql;
+        const std::uint32_t id = send(r::Op::Prepare, fields);
         Terminal t = awaitTerminal(id);
         if (t.kind != r::Kind::Prepared)
             throw Error(ErrorCode::Protocol, "the server did not answer prepare with prepared");
@@ -850,11 +793,10 @@ private:
         ResultBuilder rb;
         RowSink sink;
         sink.builder = &rb;
-        const std::uint32_t id = send(r::Op::Describe, [&](r::Request::Builder q) {
-            q.setWhat(what);
-            if (!name.empty())
-                q.setName(name);
-        });
+        detail::RequestFields fields;
+        fields.what = what;
+        fields.name = name;
+        const std::uint32_t id = send(r::Op::Describe, fields);
         Terminal t;
         try {
             t = await(id, sink, Clock::time_point::max());

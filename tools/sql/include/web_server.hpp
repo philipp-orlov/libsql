@@ -29,6 +29,13 @@ struct WebOptions
     bool publicDirOverridden = false;
     /// Tells the front end to disable editing.
     bool readOnly = false;
+    /// Also serve the database over a WebSocket route (sql::remote::SqlSocket): other programs connect with
+    /// sql::Database::connect, and the front end runs its queries through it.
+    bool socket = true;
+    std::string socketPath = "/api/v1/ws/sql";
+    /// When not empty the WebSocket route needs it ("Authorization: Bearer <token>" in the handshake, or the
+    /// token in the first message). The JSON API and the page stay open: this protects the socket only.
+    std::string token;
 };
 
 /// True when the binary carries its own index.html.
