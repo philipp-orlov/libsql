@@ -412,6 +412,62 @@ TEST(bufs_on_batch)
     CHECK(got == expected);
 }
 
+TEST(bufs_batch_bytes)
+{
+    tst::Scratch s("bufs");
+    Database db = fresh(s);
+    db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, body TEXT)");
+    {
+        Transaction txn = db.begin();
+        for (int i = 0; i < 1000; ++i)
+            txn.exec("INSERT INTO t VALUES (?, ?)", Params{Value(i), Value(std::string(100 + i % 50, char('a' + i % 26)))});
+        txn.commit();
+    }
+    BufsWriter writer(BufsOptions().batchBytes(8192));
+    const BufsBytes bytes = writer.exec(db, "SELECT id, body FROM t ORDER BY id");
+    auto view = w::ResultView::open(bytes.data(), bytes.size());
+    CHECK(view.batchCount() > 10);
+    CHECK_EQ(view.rowCount(), std::uint64_t(1000));
+    // No batch is much bigger than the limit (one row over, plus the packing overhead of the narrowed columns).
+    ::bufs::MessageStream walk(bytes.data(), bytes.size());
+    const std::uint8_t* m = nullptr;
+    std::size_t size = 0;
+    std::size_t largest = 0;
+    while (walk.next(m, size))
+        largest = std::max(largest, size);
+    CHECK(largest < 8192 + 1024);
+    for (std::uint64_t r = 0; r < 1000; r += 37) {
+        CHECK_EQ(view.value(r, 0).integer(), std::int64_t(r));
+        CHECK_EQ(view.value(r, 1).text().size(), std::size_t(100 + r % 50));
+    }
+    // With batchRows as well, whichever comes first.
+    BufsWriter both(BufsOptions().batchBytes(1 << 20).batchRows(100));
+    auto b2 = both.exec(db, "SELECT id FROM t");
+    CHECK_EQ(w::ResultView::open(b2.data(), b2.size()).batchCount(), std::size_t(10));
+}
+
+TEST(bufs_row_api_equals_write)
+{
+    tst::Scratch s("bufs");
+    Database db = fresh(s);
+    db.exec("CREATE TABLE t(a INTEGER, b TEXT, c REAL)");
+    for (int i = 0; i < 30; ++i)
+        db.exec("INSERT INTO t VALUES (?, ?, ?)", Params{Value(i), i % 3 ? Value("s" + std::to_string(i % 4)) : Value(), Value(i * 0.25)});
+    const Result r = db.exec("SELECT a, b, c FROM t ORDER BY a");
+    BufsWriter viaWrite;
+    const BufsBytes expected = viaWrite.write(r);
+    const std::vector<std::uint8_t> expectedBytes(expected.begin(), expected.end());
+
+    BufsWriter byHand;
+    const std::vector<std::string> blank(3);
+    byHand.begin(ResultShape{r.columns(), r.qualifiedColumns(), blank});
+    for (const Row& row : r)
+        CHECK(byHand.row(row.begin(), row.size()));
+    byHand.end(r.changes(), r.lastInsertId());
+    const BufsBytes got = byHand.bytes();
+    CHECK(std::vector<std::uint8_t>(got.begin(), got.end()) == expectedBytes);
+}
+
 TEST(bufs_max_rows)
 {
     tst::Scratch s("bufs");

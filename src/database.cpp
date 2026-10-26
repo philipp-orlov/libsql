@@ -1705,24 +1705,44 @@ Transaction Database::beginRead() const
     return Transaction(std::move(t));
 }
 
-Database Database::openReader() const
+namespace {
+/// Another handle on the store `source` has open: shares the file, mapping and
+/// lock (no second open) but has its own schema cache, statements, transactions
+/// and counters.
+Database siblingOf(internal::DatabaseImpl& source, bool readOnly, std::shared_ptr<internal::DatabaseImpl>& out)
 {
-    internal::DatabaseImpl& source = internal::open(impl_);
     auto impl = std::make_shared<internal::DatabaseImpl>();
     impl->options = source.options;
     impl->conn.sortMemory = source.conn.sortMemory.load(std::memory_order_relaxed);
     impl->conn.scratchRetain = source.conn.scratchRetain.load(std::memory_order_relaxed);
+    impl->conn.busyTimeout = source.conn.busyTimeout.load(std::memory_order_relaxed);
     impl->cache.configure(impl->options);
-    impl->readOnly = true;
+    impl->readOnly = readOnly || source.readOnly;
     auto main = std::make_unique<internal::StoreHandle>();
     main->name = "main";
     main->path = source.stores[0]->path;
     main->displayPath = source.stores[0]->displayPath;
     main->env = source.stores[0]->env.share();
-    main->readOnly = true;
+    main->readOnly = readOnly || source.stores[0]->readOnly;
     impl->stores.push_back(std::move(main));
     impl->stores.emplace_back();
-    Database db;
+    out = std::move(impl);
+    return Database();
+}
+}  // namespace
+
+Database Database::openReader() const
+{
+    std::shared_ptr<internal::DatabaseImpl> impl;
+    Database db = siblingOf(internal::open(impl_), true, impl);
+    db.impl_ = std::move(impl);
+    return db;
+}
+
+Database Database::openHandle() const
+{
+    std::shared_ptr<internal::DatabaseImpl> impl;
+    Database db = siblingOf(internal::open(impl_), false, impl);
     db.impl_ = std::move(impl);
     return db;
 }

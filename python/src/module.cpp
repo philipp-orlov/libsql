@@ -60,6 +60,9 @@ const char* codeName(sql::ErrorCode c)
     case sql::ErrorCode::Runtime: return "Runtime";
     case sql::ErrorCode::Busy: return "Busy";
     case sql::ErrorCode::Interrupted: return "Interrupted";
+    case sql::ErrorCode::Connection: return "Connection";
+    case sql::ErrorCode::Protocol: return "Protocol";
+    case sql::ErrorCode::PermissionDenied: return "PermissionDenied";
     }
     return "Unknown";
 }

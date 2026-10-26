@@ -41,6 +41,15 @@ public:
         batchRows_ = n;
         return *this;
     }
+    /// Close a batch once its staged data reaches about n bytes (0 = no byte
+    /// limit, the default), whichever of batchRows and batchBytes comes first.
+    /// A batch never exceeds n by more than one row. For streaming over a
+    /// transport with a message size limit.
+    BufsOptions& batchBytes(std::size_t n) noexcept
+    {
+        batchBytes_ = n;
+        return *this;
+    }
     /// Keep at most n rows (0 = all, the default). The rest are not encoded and
     /// the result is marked truncated.
     BufsOptions& maxRows(std::size_t n) noexcept
@@ -78,6 +87,7 @@ public:
     }
 
     std::size_t batchRows() const noexcept { return batchRows_; }
+    std::size_t batchBytes() const noexcept { return batchBytes_; }
     std::size_t maxRows() const noexcept { return maxRows_; }
     /// (Named apart from the setter, whose `on` defaults to true.)
     bool countsAllRows() const noexcept { return countAllRows_; }
@@ -87,6 +97,7 @@ public:
 
 private:
     std::size_t batchRows_ = 0;
+    std::size_t batchBytes_ = 0;
     std::size_t maxRows_ = 0;
     std::size_t blobPrefix_ = 0;
     bool countAllRows_ = false;
@@ -156,6 +167,10 @@ public:
     // ResultConsumer: usable directly with Database::exec(text, params, writer).
     void begin(const ResultShape& shape) override;
     bool row(const RowView& row) override;
+    /// The same for values the caller holds (rows built by hand, or read from
+    /// elsewhere): `count` cells, one per column. False once the writer wants
+    /// no more rows (maxRows reached).
+    bool row(const Value* values, std::size_t count);
     void end(std::uint64_t changes, std::int64_t lastInsertId) override;
 
 private:

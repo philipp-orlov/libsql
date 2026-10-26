@@ -679,7 +679,9 @@ sql::Database db = sql::Database::configure()
   file.
 - `arenaBlockSize`: the block size of each parsed statement's arena.
 
-A reader from `openReader()` keeps the figures of the `Database` it came from.
+A reader from `openReader()` keeps the figures of the `Database` it came from. `openHandle()` is the same for a
+writable handle: another connection to the open store, with its own transactions, statements and counters, that takes
+turns with the others on the writer slot (waiting up to `busyTimeout`).
 
 The soak also re-checks, at every sample point, that each index returns exactly
 what a full scan finds. A stale index entry is the failure mode that a long run
@@ -691,7 +693,8 @@ Everything the SQL layer rejects throws `sql::Error`, carrying a
 `sql::ErrorCode`: `SyntaxError`, `Unsupported`, `InvalidArgument`,
 `NoSuchTable`, `TableExists`, `NoSuchColumn`, `AmbiguousColumn`, `NoSuchIndex`,
 `IndexExists`, `TypeMismatch`, `ConstraintViolation`, `BadTransaction`,
-`ReadOnly`, `Runtime`, `Busy`, `Interrupted`, `Internal`. A
+`ReadOnly`, `Runtime`, `Busy`, `Interrupted`, `Internal`, and, for remote
+databases, `Connection`, `Protocol` and `PermissionDenied`. A
 `ConstraintViolation` also says which kind through `Error::constraint()`
 (`PrimaryKey`, `Unique`, `NotNull`, `Check`, `ForeignKey`, `Trigger`, ...).
 Messages are SQLite's where SQLite has one ("UNIQUE constraint failed: t.a",

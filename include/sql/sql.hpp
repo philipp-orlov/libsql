@@ -737,6 +737,14 @@ public:
     /// threads at once; hand each thread its own reader.
     Database openReader() const;
 
+    /// A writable handle on the same open store, for another thread or session:
+    /// it shares the file, mapping and lock like openReader(), but may write.
+    /// Writers on all handles take turns on the store's writer slot (a writer
+    /// waits up to busy_timeout, then fails with ErrorCode::Busy); readers never
+    /// wait. A handle of a read-only database is read-only. Safe to call from
+    /// any thread while other threads use this Database.
+    Database openHandle() const;
+
     /// Rows changed by the most recent INSERT, UPDATE or DELETE on this handle.
     std::int64_t changes() const;
     /// Rows changed since the handle was opened, triggers included.

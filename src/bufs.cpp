@@ -582,6 +582,7 @@ struct BufsWriter::Impl
     std::size_t staged = 0;
     std::uint64_t seen = 0;
     std::uint64_t emitted = 0;
+    std::size_t stagedBytes = 0;  ///< estimate of the staged batch, for batchBytes
     bool truncated = false, begun = false, columnsWritten = false;
     AlignedBuffer out, scratch;
     std::size_t outSize = 0;
@@ -592,6 +593,7 @@ struct BufsWriter::Impl
         for (ColumnStage& c : columns)
             c.clear(options.dictionary());
         ncols = staged = 0;
+        stagedBytes = 0;
         seen = emitted = 0;
         outSize = 0;
         truncated = begun = columnsWritten = false;
@@ -619,9 +621,20 @@ struct BufsWriter::Impl
             truncated = true;
             return options.countsAllRows();
         }
-        if (options.batchRows() && staged == options.batchRows())
+        if (staged > 0 && ((options.batchRows() && staged == options.batchRows()) ||
+                           (options.batchBytes() && stagedBytes >= options.batchBytes())))
             packBatch(true, 0, 0);
         const std::size_t n = std::min(count, ncols);
+        if (options.batchBytes()) {
+            for (std::size_t c = 0; c < n; ++c) {
+                stagedBytes += 9;
+                const Value& v = values[c];
+                if (v.type() == Type::Text)
+                    stagedBytes += v.text().size();
+                else if (v.type() == Type::Blob)
+                    stagedBytes += options.blobPrefix() ? std::min(v.blob().size(), options.blobPrefix()) : v.blob().size();
+            }
+        }
         for (std::size_t c = 0; c < n; ++c)
             columns[c].add(values[c], options);
         ++staged;
@@ -694,6 +707,7 @@ struct BufsWriter::Impl
             outSize += size;
         emitted += n;
         staged = 0;
+        stagedBytes = 0;
         if (ncols)
             columnsWritten = true;
         for (std::size_t i = 0; i < ncols; ++i)
@@ -814,6 +828,11 @@ void BufsWriter::begin(const ResultShape& shape)
 bool BufsWriter::row(const RowView& row)
 {
     return impl_->addRow(row.begin(), row.size());
+}
+
+bool BufsWriter::row(const Value* values, std::size_t count)
+{
+    return impl_->addRow(values, count);
 }
 
 void BufsWriter::end(std::uint64_t changes, std::int64_t lastInsertId)

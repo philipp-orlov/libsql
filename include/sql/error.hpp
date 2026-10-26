@@ -29,6 +29,10 @@ enum class ErrorCode
     Runtime,      ///< an error raised while running: integer overflow, malformed JSON, RAISE
     Busy,         ///< a deferred transaction could not become a writer, or a store is in use
     Interrupted,  ///< Database::interrupt() stopped the statement
+    // Remote databases (Database::connect):
+    Connection,        ///< the server could not be reached, or the connection dropped
+    Protocol,          ///< a malformed or unexpected message, from either side
+    PermissionDenied,  ///< the server refused the credentials, or the principal may not do this
 };
 
 /// Which constraint a ConstraintViolation came from, as SQLite's extended

@@ -41,6 +41,9 @@ const char* toString(ErrorCode c) noexcept
         case ErrorCode::Runtime: return "runtime error";
         case ErrorCode::Busy: return "database is locked";
         case ErrorCode::Interrupted: return "interrupted";
+        case ErrorCode::Connection: return "connection error";
+        case ErrorCode::Protocol: return "protocol error";
+        case ErrorCode::PermissionDenied: return "permission denied";
     }
     return "unknown error";
 }

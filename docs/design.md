@@ -1895,8 +1895,13 @@ arriving as libnosql errors.
 Ok, SyntaxError, Unsupported, InvalidArgument, NoSuchTable, TableExists,
 NoSuchColumn, AmbiguousColumn, NoSuchIndex, IndexExists, TypeMismatch,
 ConstraintViolation, BadTransaction, ReadOnly, Internal, Runtime, Busy,
-Interrupted
+Interrupted, Connection, Protocol, PermissionDenied
 ```
+
+`Connection`, `Protocol` and `PermissionDenied` come from remote databases
+(`Database::connect`): the server could not be reached or the connection
+dropped, a message was malformed or unexpected, and the server refused the
+credentials.
 
 Constraint failures also carry a `Constraint`:
 
