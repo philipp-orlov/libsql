@@ -21,6 +21,7 @@
 #include "sql/remote/sql_socket.hpp"
 #include "sql/wire/remote.bufs.hpp"
 #include "sql/wire/result_view.hpp"
+#include "remote_fixture.hpp"
 #include "sql_test.hpp"
 
 using namespace sql;
@@ -261,7 +262,7 @@ struct Fixture
             tweak(config);
         // Find a free port by trying until the server accepts it.
         for (int attempt = 0; attempt < 50; ++attempt) {
-            config.port = static_cast<std::uint16_t>(20000 + (std::hash<std::string>()(scratch.file().string()) + attempt * 7919) % 30000);
+            config.port = remote_test::freePort();
             try {
                 server = std::make_unique<http::Server>(config);
                 socket = std::make_unique<rem::SqlSocket>(db, options);

@@ -198,12 +198,17 @@ private:
 class BatchView
 {
 public:
-    /// Verifies the message first; empty when it is not a ResultSet.
-    static std::optional<BatchView> open(const std::uint8_t* message, std::size_t size)
+    /// Verifies the message first; empty when it is not a ResultSet. `slots`, if given, is where the
+    /// per-column index of Mixed columns is built (kept by the caller between batches, so reading a
+    /// stream of batches allocates nothing once warm); the caller clears it for each new batch.
+    static std::optional<BatchView> open(const std::uint8_t* message, std::size_t size,
+                                         std::vector<std::vector<std::uint32_t>>* slots = nullptr)
     {
         if (!::bufs::verify<ResultSet>(message, size))
             return std::nullopt;
-        return BatchView(message);
+        BatchView view(message);
+        view.external_ = slots;
+        return view;
     }
 
     std::uint64_t rowOffset() const { return r_.rowOffset(); }
@@ -212,9 +217,10 @@ public:
     std::size_t columnCount() const { return r_.data().size(); }
     ColumnView column(std::size_t i) const
     {
-        if (slots_.size() < columnCount())
-            slots_.resize(columnCount());
-        return ColumnView(r_.data()[i], r_.rowCount(), &slots_[i]);
+        auto& slots = external_ ? *external_ : slots_;
+        if (slots.size() < columnCount())
+            slots.resize(columnCount());
+        return ColumnView(r_.data()[i], r_.rowCount(), &slots[i]);
     }
     ResultSet::Reader reader() const { return r_; }
 
@@ -222,6 +228,7 @@ private:
     explicit BatchView(const std::uint8_t* message) : r_(::bufs::root<ResultSet>(message)) {}
     ResultSet::Reader r_;
     mutable std::vector<std::vector<std::uint32_t>> slots_;  ///< Mixed slot indexes, built on first use
+    std::vector<std::vector<std::uint32_t>>* external_ = nullptr;  ///< the caller's, when it keeps them
 };
 
 /// All batches of a stream, with the column descriptions of the first.
@@ -251,9 +258,13 @@ public:
             v.batches_.push_back(std::move(*batch));
         }
         const auto first = v.batches_.front().reader();
+        bool anyQualified = false;
+        for (auto info : first.columns())
+            anyQualified = anyQualified || info.hasQualified();
         for (auto info : first.columns()) {
             v.columns_.emplace_back(info.name());
-            v.qualified_.emplace_back(info.qualified());
+            if (anyQualified)
+                v.qualified_.emplace_back(info.qualified());
             v.declTypes_.emplace_back(info.declType());
         }
         const auto last = v.batches_.back().reader();

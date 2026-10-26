@@ -50,6 +50,8 @@ std::size_t buildReply(void* memory, std::size_t capacity, const ReplyFields& f)
     r.setMaxPipeline(f.maxPipeline);
     r.setStrict(f.strict);
     r.setWithoutRowid(f.withoutRowid);
+    r.setHandleChanges(f.handleChanges);
+    r.setHandleLastInsertId(f.handleLastInsertId);
     if (!f.message.empty())
         r.setMessage(f.message);
     if (!f.server.empty())

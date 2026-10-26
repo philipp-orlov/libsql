@@ -44,6 +44,8 @@ struct ReplyFields
     std::string_view sql;
     bool strict = false;
     bool withoutRowid = false;
+    std::int64_t handleChanges = 0;
+    std::int64_t handleLastInsertId = 0;
 };
 
 /// An upper bound of the bytes a Reply with these fields takes.

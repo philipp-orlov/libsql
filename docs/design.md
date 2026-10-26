@@ -1780,6 +1780,41 @@ freed, so a warm writer allocates nothing. `ResultView` implements the cell
 rules of the format and trusts the writer: it verifies message structure, not
 that a writer's offsets and codes agree with each other.
 
+### 17.2 Remote access
+
+`sql::remote::SqlSocket` (`src/remote/sql_socket.cpp`) and `Database::connect` (`src/remote/client.cpp`) put a
+Database behind one WebSocket route of an `http::Server`. One WebSocket message is one libbufs message: a `Request`
+from the client, or a `Reply` (and, for rows, the `sql.wire.ResultSet` batch right behind it) from the server
+(`include/sql/wire/remote.bufs`).
+
+**Server.** The loop thread (libhttp's reactor) copies each request into a pooled slot, verifies it and queues it;
+it never touches a Database and never waits. A session runs one request at a time, in order, on a worker (the
+SqlSocket's own pool, or an executor the application gives it). Workers encode rows with a per-worker `BufsWriter`
+whose `onBatch` hands each batch to the session, which wraps it in a `Rows` reply and queues it in an outbox; the
+loop flushes the outbox with `WebSocketConnection::send(Buffer&&)`, so a frame is written from its pooled block
+without a copy. Tasks posted between threads capture one raw pointer (std::function stores it inline; a captured
+shared_ptr would allocate) and a pin count keeps the session alive while any are pending.
+
+**Flow control.** The connection of libhttp closes when its queued output passes a frame or byte limit, so the
+server never queues more than a window of rows: a `Rows` frame counts `max(size, 8 KiB)` against the window and the
+client credits what it has read. The window is held below half the queue's byte limit and below its frame limit.
+A worker waits for credit up to `stallTimeout`, then the request ends with an error and the session closes.
+
+**Interrupts.** The engine clears a handle's interrupt flag when a statement starts, so one aimed at a statement
+that has not started yet would vanish. A watchdog thread therefore repeats the interrupt of a request that was told
+to stop until it does, and enforces the statement timeout. A request is marked finished *before* its final reply is
+queued, so a client may reuse the request id as soon as it has read the answer.
+
+**Long runs.** Request slots, frames and encoder buffers come from the server's BufferPool or are kept per worker;
+queues are fixed-size rings sized by the limits; the watchdog keeps its list between turns. The tests assert zero
+heap allocations on a warm server session and a warm client, and flat resident memory over tens of thousands of
+requests.
+
+**Client.** A remote Database holds a `RemoteSession`: a WebSocket client and the state of the connection. Every call
+runs on the caller's thread: it writes the request and reads frames until its final reply, feeding rows to the
+caller's consumer or Result through the same `ResultBuilder` local statements use. A consumer that stops, or throws,
+gets an interrupt sent and the rest of that request's frames read and dropped (still credited).
+
 ## 18. Public C++ API
 
 Public headers live under [`../include/sql/`](../include/sql/).

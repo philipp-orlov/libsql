@@ -168,6 +168,45 @@ received without parsing them. A warmed-up writer allocates nothing.
 reads a result back column by column or as `sql::Value`s. See
 [examples/bufs.cpp](examples/bufs.cpp).
 
+**Remote databases**
+
+A `sql::Database` can live in another process. `sql::remote::SqlSocket` serves one over a WebSocket route of the
+application's own `http::Server`, beside its pages and other routes, and `Database::connect` returns a database that
+behaves like a local one -- `exec`, `prepare`, `begin`, `Statement`, `Transaction`, `ResultConsumer` and `BufsWriter`
+all work unchanged -- the way the client libraries of DB2 or SQL Server do. Rows travel as the binary batches above.
+Needs `SQL_WITH_REMOTE` (on by default, with the sibling `../libhttp`).
+
+```cpp
+// The server: next to the application's own routes.
+http::Server server(config);
+server.onGet("/", servePage);
+sql::remote::SqlSocket sql(db, sql::remote::SqlSocketOptions()
+    .authorize([](const sql::remote::Handshake& h) -> sql::remote::SqlSocketOptions::AuthorizeResult {
+        return h.header("Authorization") == "Bearer " + secret ? sql::remote::Principal{"admin"} : 401;
+    })
+    .requireAuth());
+sql.attach(server, "/api/v1/ws/sql");
+server.run(stop);
+sql.shutdown(std::chrono::seconds(5));
+
+// A client, anywhere:
+sql::Database db = sql::Database::connect("ws://host:8080/api/v1/ws/sql",
+                                          sql::RemoteOptions().authorization("Bearer " + secret));
+auto rows = db.exec("SELECT id, name FROM customer WHERE region = ?", {sql::Value("north")});
+```
+
+Each session has its own handle on the store (`Database::openHandle`, or `openReader` for a read-only one), so its
+transactions and prepared statements are its own and writers take turns on the writer slot; `Isolation::Shared` runs
+every session on one serial handle instead, as the `sql` tool does. A result streams in batches under a credit
+window -- the client acknowledges what it has read -- so neither side holds more than a window of rows whatever the
+result size; a client that stops reading is cut off after `stallTimeout`. A warm session answers a prepared query
+without a heap allocation, on the server and on the client, and memory stays flat over long runs (both are tested).
+Calls on the client run on the caller's thread; `interrupt()` may come from another, requests can have a timeout, a
+connection the server closed while idle is replaced on the next call (unless a transaction was open), and
+`env()` and `Transaction::txn()` are the only members that throw `Unsupported`. Without an `authorize` or
+`authenticate` hook the route serves the database to anyone who can reach it. The protocol is
+[include/sql/wire/remote.bufs](include/sql/wire/remote.bufs).
+
 **Types**
 
 Ordinary tables use SQLite's flexible typing: a column's declared type gives it

@@ -653,7 +653,7 @@ struct BufsWriter::Impl
             bound += bufs::vectorBytes(ncols, 4, 4);
             for (std::size_t i = 0; i < ncols; ++i) {
                 bound += bufs::tableBytes(Info::kDataBytes, Info::kRefCount) + bufs::stringBytes(names[i].size()) +
-                         bufs::stringBytes(i < qualified.size() ? qualified[i].size() : 0) +
+                         (i < qualified.size() ? bufs::stringBytes(qualified[i].size()) : 0) +
                          bufs::stringBytes(i < declTypes.size() ? declTypes[i].size() : 0);
             }
         }
@@ -688,7 +688,10 @@ struct BufsWriter::Impl
                 for (std::size_t i = 0; i < ncols; ++i) {
                     auto info = infos.init(i);
                     info.setName(names[i]);
-                    info.setQualified(i < qualified.size() ? std::string_view(qualified[i]) : std::string_view());
+                    // A statement with no qualified names leaves the field absent, so a reader can tell
+                    // "none" (an empty vector) from "empty for this column".
+                    if (i < qualified.size())
+                        info.setQualified(qualified[i]);
                     info.setDeclType(i < declTypes.size() ? std::string_view(declTypes[i]) : std::string_view());
                 }
             }

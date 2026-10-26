@@ -112,6 +112,10 @@ table Reply {
     sql:string;
     strict:bool;
     without_rowid:bool;
+    // Done: the handle's own counters (Database::changes() / lastInsertRowid()), which a statement that
+    // changes nothing leaves as they were.
+    handle_changes:long;
+    handle_last_insert_id:long;
 }
 
 root_type Request;

@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -318,8 +319,10 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             closing_ = true;
-            if (running_ != 0 && handle_)
+            if (running_ != 0 && handle_) {
+                interruptRunning_ = true;
                 handle_->interrupt();
+            }
             cv_.notify_all();
             if (!workerActive_) {
                 workerActive_ = true;
@@ -398,13 +401,20 @@ public:
         postLoop(Action::CloseGoingAway);
     }
 
-    /// The watchdog's check of the statement timeout.
-    void checkTimeout(Clock::time_point now, std::chrono::milliseconds limit)
+    /// The watchdog's turn over this session. An interrupt that arrives just as a statement starts is erased by
+    /// the engine (it clears the flag at the start of each statement, so one aimed at nothing cannot leak into the
+    /// next), so a request that was told to stop is interrupted again until it does. Also enforces the statement
+    /// timeout. Everything happens under the session's lock: the request that is running cannot change meanwhile.
+    void tick(Clock::time_point now, std::chrono::milliseconds limit)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (running_ == 0 || !handle_ || interruptRunning_)
+        if (running_ == 0 || !handle_)
             return;
-        if (now - runStarted_ > limit) {
+        if (interruptRunning_) {
+            handle_->interrupt();
+            return;
+        }
+        if (limit.count() > 0 && now - runStarted_ > limit) {
             interruptRunning_ = true;
             handle_->interrupt();
             impl_->interrupts.fetch_add(1);
@@ -507,7 +517,7 @@ private:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (running_ == target) {
-                interruptRunning_ = true;
+                interruptRunning_ = true;  // the watchdog repeats the interrupt until the request stops
                 if (handle_)
                     handle_->interrupt();
                 cv_.notify_all();
@@ -685,11 +695,19 @@ private:
         }
         if (done.kind == Kind::Error)
             impl_->errors.fetch_add(1);
+        {
+            // The request is over before its answer goes out: a client may reuse the id the moment it has read it.
+            std::lock_guard<std::mutex> lock(mutex_);
+            running_ = 0;
+            interruptRunning_ = false;
+        }
         done.elapsedUs = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - started).count());
         if (done.kind == Kind::Done && handle_) {
             done.totalChanges = handle_->totalChanges();
             done.inTransaction = handle_->inTransaction();
+            done.handleChanges = handle_->changes();
+            done.handleLastInsertId = handle_->lastInsertRowid();
         }
         emit(detail::makeReply(*pool_, done), false);
         impl_->requests.fetch_add(1);
@@ -1141,12 +1159,16 @@ SqlSocket::SqlSocket(Database& db, SqlSocketOptions options) : impl_(std::make_s
         http::ThreadPool* pool = impl_->ownPool.get();
         impl_->post = [pool](std::function<void()> task) { return pool->tryEnqueue(std::move(task)); };
     }
-    if (impl_->o.statementTimeout_.count() > 0) {
+    {
         Impl* impl = impl_.get();
         impl_->watchdog = std::thread([impl] {
+            // The list is kept between turns: a watchdog that allocates every 20 ms is heap churn in a server
+            // that is meant to run for months.
+            std::vector<std::shared_ptr<detail::Session>> live;
+            live.reserve(64);
             while (!impl->stopWatchdog.load()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                std::vector<std::shared_ptr<detail::Session>> live;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                live.clear();
                 {
                     std::lock_guard<std::mutex> lock(impl->mutex);
                     for (auto& w : impl->sessions)
@@ -1155,7 +1177,8 @@ SqlSocket::SqlSocket(Database& db, SqlSocketOptions options) : impl_(std::make_s
                 }
                 const auto now = Clock::now();
                 for (auto& s : live)
-                    s->checkTimeout(now, impl->o.statementTimeout_);
+                    s->tick(now, impl->o.statementTimeout_);
+                live.clear();
             }
         });
     }
@@ -1323,7 +1346,8 @@ void SqlSocket::shutdown(std::chrono::milliseconds grace)
             s->forceClose();
         // The workers finish what they were told to stop.
         std::unique_lock<std::mutex> lock(impl.drainMutex);
-        impl.drained.wait_for(lock, std::chrono::seconds(10), [&] { return impl.tasks.load() == 0; });
+        if (!impl.drained.wait_for(lock, std::chrono::seconds(10), [&] { return impl.tasks.load() == 0; }))
+            std::fprintf(stderr, "SqlSocket::shutdown: %zu task(s) still running after 10s\n", impl.tasks.load());
     }
     impl.stopWatchdog = true;
     if (impl.watchdog.joinable())

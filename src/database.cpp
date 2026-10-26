@@ -15,7 +15,9 @@
 
 #include "internal/catalog.hpp"
 #include "internal/lexer.hpp"
+#include "internal/params.hpp"
 #include "internal/parser.hpp"
+#include "remote/client.hpp"
 #include "internal/raise.hpp"
 #include "internal/stmt.hpp"
 #include "internal/util.hpp"
@@ -984,18 +986,6 @@ void checkCount(const Batch& b, const std::vector<Value>& params)
                                                     " were bound");
 }
 
-/// `name` spelled with its prefix (":id") matches exactly; spelled without
-/// one ("id") it matches :id, @id or $id.
-bool parameterMatches(const std::string& spelled, std::string_view name) noexcept
-{
-    if (spelled == name)
-        return true;
-    if (name.empty() || name[0] == ':' || name[0] == '@' || name[0] == '$' || name[0] == '?')
-        return false;
-    return spelled.size() == name.size() + 1 && spelled[0] != '?' &&
-           std::string_view(spelled).substr(1) == name;
-}
-
 std::vector<Value> bindNamed(const Batch& b, const NamedParams& named)
 {
     std::vector<Value> out(b.parameters);
@@ -1303,6 +1293,8 @@ Transaction::~Transaction()
 
 Result Transaction::exec(std::string_view text, const NamedParams& params)
 {
+    if (remote_)
+        return internal::remoteExec(*remote_->session, text, nullptr, &params, remote_.get(), nullptr, nullptr);
     internal::TxnImpl& t = internal::live(impl_);
     return exec(text, internal::bindNamed(*t.cache.get(text), params));
 }
@@ -1319,12 +1311,16 @@ std::uint64_t Transaction::exec(std::string_view text, const Params& params, Res
 
 std::uint64_t Transaction::exec(std::string_view text, const NamedParams& params, ResultConsumer& consumer)
 {
+    if (remote_)
+        return internal::remoteExec(*remote_->session, text, nullptr, &params, remote_.get(), &consumer, nullptr).changes();
     internal::TxnImpl& t = internal::live(impl_);
     return run(text, internal::bindNamed(*t.cache.get(text), params), &consumer).changes();
 }
 
 Result Transaction::run(std::string_view text, const Params& params, ResultConsumer* consumer)
 {
+    if (remote_)
+        return internal::remoteExec(*remote_->session, text, &params, nullptr, remote_.get(), consumer, nullptr);
     internal::TxnImpl& t = internal::live(impl_);
     const std::shared_ptr<internal::Batch> held = t.cache.get(text);
     internal::Batch& b = *held;
@@ -1362,6 +1358,10 @@ Result Transaction::run(std::string_view text, const Params& params, ResultConsu
 
 void Transaction::commit()
 {
+    if (remote_) {
+        internal::remoteFinishTxn(*remote_, true);
+        return;
+    }
     internal::TxnImpl& t = internal::live(impl_);
     internal::commit(t);
     internal::park(std::move(impl_));
@@ -1369,11 +1369,17 @@ void Transaction::commit()
 
 void Transaction::rollback()
 {
+    if (remote_) {
+        internal::remoteFinishTxn(*remote_, false);
+        return;
+    }
     internal::park(std::move(impl_));
 }
 
 nosql::Txn& Transaction::txn()
 {
+    if (remote_)
+        throw Error(ErrorCode::Unsupported, "txn() is local-only: a remote transaction has no libnosql transaction here");
     internal::TxnImpl& t = internal::live(impl_);
     if (!t.levels.empty()) {
         for (auto it = t.levels.rbegin(); it != t.levels.rend(); ++it) {
@@ -1413,6 +1419,28 @@ void bindInPlace(internal::StatementImpl& s, std::initializer_list<Value> params
     }
 }
 
+/// bindInPlace for a remote statement.
+void bindRemote(internal::RemoteStatement& s, std::initializer_list<Value> params)
+{
+    if (params.size() != s.bound.size())
+        throw Error(ErrorCode::InvalidArgument,
+                    "statement takes " + std::to_string(s.bound.size()) + " parameters, " +
+                        std::to_string(params.size()) + " were given");
+    std::size_t i = 0;
+    for (const Value& v : params)
+        s.bound[i++] = v;
+}
+
+/// Statement::each over a remote statement: the callback as a consumer.
+struct VisitorConsumer final : ResultConsumer
+{
+    explicit VisitorConsumer(const RowVisitor& f) : fn(f) {}
+    void begin(const ResultShape&) override {}
+    bool row(const RowView& r) override { return fn(r); }
+    void end(std::uint64_t, std::int64_t) override {}
+    const RowVisitor& fn;
+};
+
 }  // namespace
 
 Statement::Statement(Statement&&) noexcept = default;
@@ -1421,16 +1449,26 @@ Statement::~Statement() = default;
 
 const std::string& Statement::sql() const
 {
+    if (remote_)
+        return remote_->info.sql;
     return live(impl_).batch->text;
 }
 
 std::size_t Statement::parameters() const
 {
+    if (remote_)
+        return remote_->bound.size();
     return live(impl_).bound.size();
 }
 
 std::size_t Statement::parameterIndex(std::string_view name) const
 {
+    if (remote_) {
+        for (std::size_t i = 0; i < remote_->info.names.size(); ++i)
+            if (internal::parameterMatches(remote_->info.names[i], name))
+                return i + 1;
+        return 0;
+    }
     const internal::Batch& b = *live(impl_).batch;
     for (std::size_t i = 0; i < b.parameterNames.size(); ++i) {
         if (internal::parameterMatches(b.parameterNames[i], name))
@@ -1441,6 +1479,11 @@ std::size_t Statement::parameterIndex(std::string_view name) const
 
 std::string Statement::parameterName(std::size_t index) const
 {
+    if (remote_) {
+        if (index < 1 || index > remote_->info.names.size())
+            return {};
+        return remote_->info.names[index - 1];
+    }
     const internal::Batch& b = *live(impl_).batch;
     if (index < 1 || index > b.parameterNames.size())
         return {};
@@ -1449,11 +1492,15 @@ std::string Statement::parameterName(std::size_t index) const
 
 bool Statement::writes() const
 {
+    if (remote_)
+        return remote_->info.writes;
     return live(impl_).batch->needsWrite;
 }
 
 std::vector<std::string> Statement::columnNames()
 {
+    if (remote_)
+        return remote_->info.columns;
     internal::StatementImpl& s = live(impl_);
     internal::Batch& b = *s.batch;
     if (b.meta.empty() || b.meta.back().control || b.meta.back().connection)
@@ -1471,6 +1518,13 @@ std::vector<std::string> Statement::columnNames()
 
 Statement& Statement::bind(std::size_t index, Value value)
 {
+    if (remote_) {
+        if (index < 1 || index > remote_->bound.size())
+            throw Error(ErrorCode::InvalidArgument, "no parameter " + std::to_string(index) + "; the statement has " +
+                                                        std::to_string(remote_->bound.size()));
+        remote_->bound[index - 1] = std::move(value);
+        return *this;
+    }
     internal::StatementImpl& s = live(impl_);
     if (index < 1 || index > s.bound.size())
         throw Error(ErrorCode::InvalidArgument, "no parameter " + std::to_string(index) + "; the statement has " +
@@ -1489,6 +1543,13 @@ Statement& Statement::bind(std::string_view name, Value value)
 
 Statement& Statement::bind(const Params& params)
 {
+    if (remote_) {
+        if (params.size() != remote_->bound.size())
+            throw Error(ErrorCode::InvalidArgument, "statement takes " + std::to_string(remote_->bound.size()) +
+                                                        " parameters, " + std::to_string(params.size()) + " were given");
+        remote_->bound = params;
+        return *this;
+    }
     internal::StatementImpl& s = live(impl_);
     if (params.size() != s.bound.size())
         throw Error(ErrorCode::InvalidArgument, "statement takes " + std::to_string(s.bound.size()) +
@@ -1507,6 +1568,10 @@ Statement& Statement::bind(const NamedParams& params)
 
 Statement& Statement::clear()
 {
+    if (remote_) {
+        remote_->bound.assign(remote_->bound.size(), Value());
+        return *this;
+    }
     internal::StatementImpl& s = live(impl_);
     s.bound.assign(s.bound.size(), Value());
     return *this;
@@ -1514,29 +1579,45 @@ Statement& Statement::clear()
 
 Result Statement::exec()
 {
+    if (remote_)
+        return internal::remoteExecStatement(*remote_, nullptr, nullptr, nullptr);
     internal::StatementImpl& s = live(impl_);
     return internal::execBatch(s.db, *s.batch, s.bound);
 }
 
 Result Statement::exec(Transaction& txn)
 {
+    if (remote_)
+        return internal::remoteExecStatement(*remote_, txn.remote_.get(), nullptr, nullptr);
     return run(txn, nullptr);
 }
 
 Result Statement::exec(std::initializer_list<Value> params)
 {
+    if (remote_) {
+        bindRemote(*remote_, params);
+        return exec();
+    }
     bindInPlace(live(impl_), params);
     return exec();
 }
 
 Result Statement::exec(Transaction& txn, std::initializer_list<Value> params)
 {
+    if (remote_) {
+        bindRemote(*remote_, params);
+        return exec(txn);
+    }
     bindInPlace(live(impl_), params);
     return exec(txn);
 }
 
 Result& Statement::execInto(Transaction& txn, Result& out)
 {
+    if (remote_) {
+        internal::remoteExecStatement(*remote_, txn.remote_.get(), nullptr, &out);
+        return out;
+    }
     run(txn, nullptr, &out);
     return out;
 }
@@ -1553,6 +1634,10 @@ std::uint64_t Statement::each(Transaction& txn, const RowCallback& fn)
 
 std::uint64_t Statement::eachRow(Transaction* txn, RowVisitor fn)
 {
+    if (remote_) {
+        VisitorConsumer consumer{fn};
+        return internal::remoteExecStatement(*remote_, txn ? txn->remote_.get() : nullptr, &consumer, nullptr).changes();
+    }
     if (txn)
         return run(*txn, &fn).changes();
     internal::StatementImpl& s = live(impl_);
@@ -1561,12 +1646,16 @@ std::uint64_t Statement::eachRow(Transaction* txn, RowVisitor fn)
 
 std::uint64_t Statement::exec(ResultConsumer& consumer)
 {
+    if (remote_)
+        return internal::remoteExecStatement(*remote_, nullptr, &consumer, nullptr).changes();
     internal::StatementImpl& s = live(impl_);
     return internal::execBatch(s.db, *s.batch, s.bound, nullptr, &consumer).changes();
 }
 
 std::uint64_t Statement::exec(Transaction& txn, ResultConsumer& consumer)
 {
+    if (remote_)
+        return internal::remoteExecStatement(*remote_, txn.remote_.get(), &consumer, nullptr).changes();
     return run(txn, nullptr, nullptr, &consumer).changes();
 }
 
@@ -1638,11 +1727,15 @@ Database::~Database() = default;
 
 const std::filesystem::path& Database::path() const
 {
+    if (remote_)
+        return internal::remotePath(*remote_);
     return internal::open(impl_).stores[0]->path;
 }
 
 Result Database::exec(std::string_view text, const Params& params)
 {
+    if (remote_)
+        return internal::remoteExec(*remote_, text, &params, nullptr, nullptr, nullptr, nullptr);
     internal::DatabaseImpl& db = internal::open(impl_);
     const std::shared_ptr<internal::Batch> b = db.cached(text);
     internal::checkCount(*b, params);
@@ -1651,6 +1744,8 @@ Result Database::exec(std::string_view text, const Params& params)
 
 Result Database::exec(std::string_view text, const NamedParams& params)
 {
+    if (remote_)
+        return internal::remoteExec(*remote_, text, nullptr, &params, nullptr, nullptr, nullptr);
     internal::DatabaseImpl& db = internal::open(impl_);
     const std::shared_ptr<internal::Batch> b = db.cached(text);
     return internal::execBatch(impl_, *b, internal::bindNamed(*b, params));
@@ -1658,6 +1753,8 @@ Result Database::exec(std::string_view text, const NamedParams& params)
 
 std::uint64_t Database::exec(std::string_view text, const Params& params, ResultConsumer& consumer)
 {
+    if (remote_)
+        return internal::remoteExec(*remote_, text, &params, nullptr, nullptr, &consumer, nullptr).changes();
     internal::DatabaseImpl& db = internal::open(impl_);
     const std::shared_ptr<internal::Batch> b = db.cached(text);
     internal::checkCount(*b, params);
@@ -1666,6 +1763,8 @@ std::uint64_t Database::exec(std::string_view text, const Params& params, Result
 
 std::uint64_t Database::exec(std::string_view text, const NamedParams& params, ResultConsumer& consumer)
 {
+    if (remote_)
+        return internal::remoteExec(*remote_, text, nullptr, &params, nullptr, &consumer, nullptr).changes();
     internal::DatabaseImpl& db = internal::open(impl_);
     const std::shared_ptr<internal::Batch> b = db.cached(text);
     return internal::execBatch(impl_, *b, internal::bindNamed(*b, params), nullptr, &consumer).changes();
@@ -1673,6 +1772,8 @@ std::uint64_t Database::exec(std::string_view text, const NamedParams& params, R
 
 Statement Database::prepare(std::string_view text)
 {
+    if (remote_)
+        return Statement(internal::remotePrepare(remote_, text));
     internal::DatabaseImpl& db = internal::open(impl_);
     auto stmt = std::make_shared<internal::StatementImpl>();
     stmt->db = impl_;
@@ -1687,6 +1788,8 @@ Statement Database::prepare(std::string_view text)
 
 Transaction Database::begin()
 {
+    if (remote_)
+        return Transaction(internal::remoteBegin(remote_, false));
     internal::DatabaseImpl& db = internal::open(impl_);
     if (db.sqlTxn)
         throw Error(ErrorCode::BadTransaction, "a transaction opened with BEGIN is active");
@@ -1697,6 +1800,8 @@ Transaction Database::begin()
 
 Transaction Database::beginRead() const
 {
+    if (remote_)
+        return Transaction(internal::remoteBegin(remote_, true));
     internal::DatabaseImpl& db = internal::open(impl_);
     if (db.sqlTxn)
         throw Error(ErrorCode::BadTransaction, "a transaction opened with BEGIN is active");
@@ -1733,6 +1838,11 @@ Database siblingOf(internal::DatabaseImpl& source, bool readOnly, std::shared_pt
 
 Database Database::openReader() const
 {
+    if (remote_) {
+        Database db;
+        db.remote_ = internal::remoteSibling(*remote_, true);
+        return db;
+    }
     std::shared_ptr<internal::DatabaseImpl> impl;
     Database db = siblingOf(internal::open(impl_), true, impl);
     db.impl_ = std::move(impl);
@@ -1741,6 +1851,11 @@ Database Database::openReader() const
 
 Database Database::openHandle() const
 {
+    if (remote_) {
+        Database db;
+        db.remote_ = internal::remoteSibling(*remote_, false);
+        return db;
+    }
     std::shared_ptr<internal::DatabaseImpl> impl;
     Database db = siblingOf(internal::open(impl_), false, impl);
     db.impl_ = std::move(impl);
@@ -1749,26 +1864,38 @@ Database Database::openHandle() const
 
 std::int64_t Database::changes() const
 {
+    if (remote_)
+        return internal::remoteChanges(*remote_);
     return internal::open(impl_).conn.changes;
 }
 
 std::int64_t Database::totalChanges() const
 {
+    if (remote_)
+        return internal::remoteTotalChanges(*remote_);
     return internal::open(impl_).conn.totalChanges;
 }
 
 std::int64_t Database::lastInsertRowid() const
 {
+    if (remote_)
+        return internal::remoteLastInsertRowid(*remote_);
     return internal::open(impl_).conn.lastInsertRowid;
 }
 
 bool Database::inTransaction() const
 {
+    if (remote_)
+        return internal::remoteInTransaction(*remote_);
     return internal::open(impl_).sqlTxn != nullptr;
 }
 
 void Database::interrupt()
 {
+    if (remote_) {
+        internal::remoteInterrupt(*remote_);
+        return;
+    }
     internal::open(impl_).interrupted.store(true, std::memory_order_relaxed);
 }
 
@@ -1823,6 +1950,8 @@ ColumnInfo columnInfo(const internal::Table& t, std::size_t i)
 
 std::vector<std::string> Database::tables() const
 {
+    if (remote_)
+        return internal::remoteTables(*remote_);
     return withSchema(impl_, [](internal::Catalog& cat) {
         std::vector<std::string> out;
         for (const auto& t : cat.schema().tables) {
@@ -1836,6 +1965,8 @@ std::vector<std::string> Database::tables() const
 
 TableInfo Database::table(std::string_view name) const
 {
+    if (remote_)
+        return internal::remoteTable(*remote_, name);
     const std::string wanted(name);
     return withSchema(impl_, [&](internal::Catalog& cat) {
         const internal::Table* t = cat.findTable(wanted);
@@ -1855,6 +1986,8 @@ TableInfo Database::table(std::string_view name) const
 
 std::vector<IndexInfo> Database::indexes(std::string_view table) const
 {
+    if (remote_)
+        return internal::remoteIndexes(*remote_, table);
     const std::string wanted(table);
     return withSchema(impl_, [&](internal::Catalog& cat) {
         std::vector<IndexInfo> out;
@@ -1884,11 +2017,25 @@ std::vector<IndexInfo> Database::indexes(std::string_view table) const
 
 nosql::Env& Database::env() const
 {
+    if (remote_)
+        throw Error(ErrorCode::Unsupported, "env() is local-only: a remote database has no libnosql store here");
     return internal::open(impl_).stores[0]->env;
+}
+
+Database Database::connect(std::string_view url, const RemoteOptions& options)
+{
+    Database db;
+    db.remote_ = internal::remoteConnect(url, options);
+    return db;
 }
 
 void Database::close()
 {
+    if (remote_) {
+        internal::remoteClose(*remote_);
+        remote_.reset();
+        return;
+    }
     impl_.reset();
 }
 

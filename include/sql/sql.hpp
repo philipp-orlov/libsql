@@ -37,6 +37,9 @@ struct DatabaseImpl;
 struct TxnImpl;
 struct StatementImpl;
 struct ResultBuilder;
+struct RemoteSession;
+struct RemoteTxn;
+struct RemoteStatement;
 }  // namespace internal
 
 class Database;
@@ -331,7 +334,7 @@ public:
     Transaction& operator=(const Transaction&) = delete;
     ~Transaction();
 
-    bool valid() const noexcept { return impl_ != nullptr; }
+    bool valid() const noexcept { return impl_ != nullptr || remote_ != nullptr; }
     explicit operator bool() const noexcept { return valid(); }
 
     /// Runs every `;`-separated statement in `text` and returns the result of
@@ -350,7 +353,8 @@ public:
     /// The libnosql transaction underneath, for reading or writing something
     /// that lives beside the tables in the same store -- a
     /// nosql::BlobStorage index, say -- under this transaction's snapshot and
-    /// commit. Borrowed: valid until this transaction finishes.
+    /// commit. Borrowed: valid until this transaction finishes. Local
+    /// transactions only: a remote one throws ErrorCode::Unsupported.
     nosql::Txn& txn();
 
 private:
@@ -359,7 +363,10 @@ private:
     Result run(std::string_view text, const Params& params, ResultConsumer* consumer);
     explicit Transaction(std::shared_ptr<internal::TxnImpl> impl) noexcept : impl_(std::move(impl))
     {}
+    explicit Transaction(std::shared_ptr<internal::RemoteTxn> remote) noexcept : remote_(std::move(remote))
+    {}
     std::shared_ptr<internal::TxnImpl> impl_;
+    std::shared_ptr<internal::RemoteTxn> remote_;  ///< Database::connect: the transaction on the server
 };
 
 // ----------------------------------------------------- prepared statement --
@@ -383,7 +390,7 @@ public:
     Statement& operator=(const Statement&) = delete;
     ~Statement();
 
-    bool valid() const noexcept { return impl_ != nullptr; }
+    bool valid() const noexcept { return impl_ != nullptr || remote_ != nullptr; }
     explicit operator bool() const noexcept { return valid(); }
 
     /// The text this was prepared from.
@@ -464,10 +471,145 @@ private:
     explicit Statement(std::shared_ptr<internal::StatementImpl> impl) noexcept
         : impl_(std::move(impl))
     {}
+    explicit Statement(std::shared_ptr<internal::RemoteStatement> remote) noexcept
+        : remote_(std::move(remote))
+    {}
     std::shared_ptr<internal::StatementImpl> impl_;
+    std::shared_ptr<internal::RemoteStatement> remote_;  ///< Database::connect: the statement on the server
 };
 
 // ------------------------------------------------------------ database ----
+
+// ------------------------------------------------------- remote options ----
+
+/// How a remote database is reached (Database::connect).
+class RemoteOptions
+{
+public:
+    /// Sent as "Authorization: <value>" in the handshake, e.g. "Bearer abc".
+    RemoteOptions& authorization(std::string value)
+    {
+        authorization_ = std::move(value);
+        return *this;
+    }
+    /// Sent in the first message when the handshake cannot carry credentials.
+    RemoteOptions& token(std::string value)
+    {
+        token_ = std::move(value);
+        return *this;
+    }
+    /// An extra handshake header (Cookie, X-Tenant, ...).
+    RemoteOptions& header(std::string name, std::string value)
+    {
+        headers_.emplace_back(std::move(name), std::move(value));
+        return *this;
+    }
+    /// A read-only session: every write fails with ErrorCode::ReadOnly.
+    RemoteOptions& readOnly(bool on = true)
+    {
+        readOnly_ = on;
+        return *this;
+    }
+    RemoteOptions& connectTimeout(std::chrono::milliseconds t)
+    {
+        connectTimeout_ = t;
+        return *this;
+    }
+    /// A request running longer is interrupted and fails with ErrorCode::Interrupted. 0 (default) = no limit.
+    RemoteOptions& requestTimeout(std::chrono::milliseconds t)
+    {
+        requestTimeout_ = t;
+        return *this;
+    }
+    /// How often a call that waits sends a WebSocket ping, so an idle-timeout on the way does not cut it.
+    RemoteOptions& pingInterval(std::chrono::milliseconds t)
+    {
+        pingInterval_ = t;
+        return *this;
+    }
+    /// Bytes of result rows the server may have in flight before this client has read them.
+    RemoteOptions& window(std::size_t bytes)
+    {
+        window_ = bytes;
+        return *this;
+    }
+    /// The largest WebSocket message this client accepts.
+    RemoteOptions& maxMessage(std::size_t bytes)
+    {
+        maxMessage_ = bytes;
+        return *this;
+    }
+    /// Reconnect by itself, before a request, when the server closed an idle connection and no transaction
+    /// was open (prepared statements are prepared again on their next use). Default true.
+    RemoteOptions& reconnect(bool on)
+    {
+        reconnect_ = on;
+        return *this;
+    }
+    // How the server batches the rows it sends back (sql::BufsOptions of its encoder); 0 = its default.
+    RemoteOptions& batchRows(std::size_t n)
+    {
+        batchRows_ = n;
+        return *this;
+    }
+    RemoteOptions& batchBytes(std::size_t n)
+    {
+        batchBytes_ = n;
+        return *this;
+    }
+    RemoteOptions& blobPrefix(std::size_t n)
+    {
+        blobPrefix_ = n;
+        return *this;
+    }
+    RemoteOptions& dictionary(bool on)
+    {
+        dictionary_ = on;
+        return *this;
+    }
+    RemoteOptions& narrowing(bool on)
+    {
+        narrowing_ = on;
+        return *this;
+    }
+    /// Reported to the server in the first message; default "libsql/<version> C++".
+    RemoteOptions& clientName(std::string name)
+    {
+        clientName_ = std::move(name);
+        return *this;
+    }
+
+    const std::string& authorization() const noexcept { return authorization_; }
+    const std::string& token() const noexcept { return token_; }
+    const std::vector<std::pair<std::string, std::string>>& headers() const noexcept { return headers_; }
+    bool isReadOnly() const noexcept { return readOnly_; }
+    std::chrono::milliseconds connectTimeout() const noexcept { return connectTimeout_; }
+    std::chrono::milliseconds requestTimeout() const noexcept { return requestTimeout_; }
+    std::chrono::milliseconds pingInterval() const noexcept { return pingInterval_; }
+    std::size_t window() const noexcept { return window_; }
+    std::size_t maxMessage() const noexcept { return maxMessage_; }
+    bool reconnects() const noexcept { return reconnect_; }
+    std::size_t batchRows() const noexcept { return batchRows_; }
+    std::size_t batchBytes() const noexcept { return batchBytes_; }
+    std::size_t blobPrefix() const noexcept { return blobPrefix_; }
+    bool dictionary() const noexcept { return dictionary_; }
+    bool narrowing() const noexcept { return narrowing_; }
+    const std::string& clientName() const noexcept { return clientName_; }
+
+private:
+    std::string authorization_, token_, clientName_;
+    std::vector<std::pair<std::string, std::string>> headers_;
+    bool readOnly_ = false;
+    bool reconnect_ = true;
+    bool dictionary_ = true;
+    bool narrowing_ = true;
+    std::chrono::milliseconds connectTimeout_{10000};
+    std::chrono::milliseconds requestTimeout_{0};
+    std::chrono::milliseconds pingInterval_{20000};
+    std::size_t window_ = 1 << 20;
+    std::size_t maxMessage_ = 16 << 20;
+    std::size_t batchRows_ = 0, batchBytes_ = 0, blobPrefix_ = 0;
+};
 
 /// How much memory a Database keeps between statements so that the next
 /// statement need not allocate it again. Every figure can also be set on its
@@ -688,9 +830,22 @@ public:
     /// Convenience: open with all defaults.
     explicit Database(const std::filesystem::path& path) { *this = configure().open(path); }
 
-    bool valid() const noexcept { return impl_ != nullptr; }
+    bool valid() const noexcept { return impl_ != nullptr || remote_ != nullptr; }
     explicit operator bool() const noexcept { return valid(); }
+    /// The file of a local database; the URL of a remote one.
     const std::filesystem::path& path() const;
+
+    /// Opens a remote database served by a sql::remote::SqlSocket (sql-remote.md)
+    /// at `url`, "ws://host:port/path". The result behaves like a local
+    /// Database: exec, prepare, begin, Statement, Transaction, ResultConsumer
+    /// and BufsWriter work unchanged, and errors carry the server's codes and
+    /// messages. Only env() and Transaction::txn() are local-only and throw
+    /// ErrorCode::Unsupported. Throws ErrorCode::Connection when the server
+    /// cannot be reached, PermissionDenied when it refuses the credentials,
+    /// and Unsupported when libsql was built without SQL_WITH_REMOTE.
+    static Database connect(std::string_view url, const RemoteOptions& options = RemoteOptions());
+    /// True for a database opened with connect().
+    bool remote() const noexcept { return remote_ != nullptr; }
 
     /// Runs every `;`-separated statement in `text` in one transaction and
     /// returns the result of the last one. Committed on return, rolled back if
@@ -770,10 +925,14 @@ public:
     /// used by libsql itself are reserved; pick your own.
     nosql::Env& env() const;
 
+    /// A local database closes its store; a remote one says goodbye to the
+    /// server and closes the connection (its statements and transactions
+    /// become unusable).
     void close();
 
 private:
     std::shared_ptr<internal::DatabaseImpl> impl_;
+    std::shared_ptr<internal::RemoteSession> remote_;  ///< connect(): the session
 };
 
 /// Library version, as "major.minor.patch".

@@ -171,14 +171,15 @@ if(SQL_WITH_BUFS)
     target_compile_definitions(sql PUBLIC SQL_WITH_BUFS=1)
 endif()
 
-target_sources(sql PRIVATE src/remote/client_stub.cpp)
 if(SQL_WITH_REMOTE)
-    target_sources(sql PRIVATE src/remote/protocol.cpp src/remote/sql_socket.cpp)
+    target_sources(sql PRIVATE src/remote/protocol.cpp src/remote/sql_socket.cpp src/remote/client.cpp)
     # Like libbufs, libhttp is a build-tree dependency: the plain LINK_LIBRARIES property builds sql itself against
     # it without putting it into the install export (a PRIVATE link of a static library would).
     set_property(TARGET sql APPEND PROPERTY LINK_LIBRARIES http)
     set_property(TARGET sql APPEND PROPERTY INTERFACE_LINK_LIBRARIES $<BUILD_INTERFACE:http>)
     target_compile_definitions(sql PUBLIC SQL_WITH_REMOTE=1)
+else()
+    target_sources(sql PRIVATE src/remote/client_stub.cpp)
 endif()
 
 if(MSVC)
