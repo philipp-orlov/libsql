@@ -32,6 +32,30 @@ The top bar shows which database the page edits and whether it is read-write or 
 | `--host ADDR` | Address to bind to. The default is `127.0.0.1`. |
 | `--public DIR` | Serve `index.html` and the other files of DIR instead of the page built into the binary. |
 | `--readonly` | Open the database read-only. The front end turns editing off. |
+| `--token T` | With `--listen`: the WebSocket route needs T. With a `ws://` URL: the token to present. |
+| `--auth VALUE` | With a `ws://` URL: sent as the `Authorization` header, e.g. `"Bearer abc"`. |
+| `--ws-path P` | With `--listen`: where the WebSocket route is served. The default is `/api/v1/ws/sql`. |
+| `--no-socket` | With `--listen`: serve the JSON API only. |
+
+## Remote
+
+With `--listen` the tool also serves the database over a WebSocket route
+(`/api/v1/ws/sql`, `sql::remote::SqlSocket`), on the same worker as the JSON API, so changes pending through either
+are one transaction. Other programs reach it with `sql::Database::connect`, and so does the tool itself: give it a
+URL instead of a file.
+
+```
+sql catalog.db --listen 8080 --token s3cret
+sql ws://127.0.0.1:8080/api/v1/ws/sql --token s3cret -c "SELECT count(*) FROM orders"
+echo ".tables" | sql ws://127.0.0.1:8080/api/v1/ws/sql --token s3cret
+```
+
+The Execute SQL tab runs its queries over the route when the server has one: rows arrive as libbufs batches that the
+page reads in place, and a running statement can be stopped. If the route needs a token, put it in the browser's
+`sessionStorage` under `sql.token`; without it the page keeps using the JSON API. `--token` protects the WebSocket
+route only: the JSON API and the page stay open, so keep the default loopback address unless the network is trusted.
+On loopback only this page's own origin may open the socket. `localStorage['sql.format'] = 'json'` makes the page use
+plain JSON everywhere.
 
 ## Pending changes
 

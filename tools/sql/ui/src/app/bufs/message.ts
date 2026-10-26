@@ -75,6 +75,18 @@ export class Table {
     return target < 0 ? null : new Table(this.view, target);
   }
 
+  /** Element `i` of a vector of strings. */
+  stringAt(vector: VectorRef, i: number): string {
+    const slot = vector.start + 4 * i;
+    const relative = this.view.getUint32(slot, true);
+    if (relative === 0) {
+      return '';
+    }
+    const target = slot + relative;
+    const length = this.view.getUint32(target, true);
+    return new TextDecoder().decode(new Uint8Array(this.view.buffer, this.view.byteOffset + target + 4, length));
+  }
+
   /** Element `i` of the vector of tables at reference `index`. */
   tableAt(vector: VectorRef, i: number): Table {
     const slot = vector.start + 4 * i;

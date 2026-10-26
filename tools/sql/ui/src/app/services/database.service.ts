@@ -17,6 +17,7 @@ import {
   SqlResult,
 } from '../models/api.models';
 import { BufsError, ResultSetView } from '../bufs';
+import { ErrorCode, SocketError, SqlSocket } from '../remote';
 import { fromBufs, fromReply } from '../utils/sql-result';
 
 export class ApiError extends Error {
@@ -59,6 +60,15 @@ function describeFailure(failure: HttpErrorResponse): string {
 
 const EMPTY_SCHEMA: Schema = { tables: [], views: [], indexes: [], triggers: [] };
 
+/** The part of SqlSocket the service uses; tests give it a fake. */
+export interface QuerySocket {
+  readonly connected: boolean;
+  connect(): Promise<void>;
+  exec(sql: string): Promise<{ view: Parameters<typeof fromBufs>[0]; done: { elapsedUs: number; inTransaction: boolean } }>;
+  interrupt(): void;
+  close(): void;
+}
+
 /** The server's database: what the tabs show, and every call that reads or changes it. */
 @Injectable({ providedIn: 'root' })
 export class DatabaseService {
@@ -70,6 +80,12 @@ export class DatabaseService {
   readonly inTransaction = signal(false);
   /** Grows when the data or the structure may have changed, so that open views reload. */
   readonly revision = signal(0);
+
+  /** Where queries go over the WebSocket route; replaced in tests. */
+  socketFactory: (url: string, token: string | undefined) => QuerySocket = (url, token) => new SqlSocket(url, { token });
+  private socket: QuerySocket | null = null;
+  /** The route could not be used once: stay on HTTP rather than trying for every run. */
+  private socketUnavailable = false;
 
   async load(): Promise<void> {
     this.info.set(await this.get<DatabaseInfo>('/api/info'));
@@ -107,13 +123,71 @@ export class DatabaseService {
 
   async execute(sql: string): Promise<SqlResult> {
     const wasPending = this.inTransaction();
-    const result = preferredFormat() === 'bufs' ? await this.executeBufs(sql) : fromReply(await this.post<SqlReply>('/api/sql', { sql }));
+    const viaSocket = this.socketApplies() ? await this.executeSocket(sql) : null;
+    const result =
+      viaSocket ?? (preferredFormat() === 'bufs' ? await this.executeBufs(sql) : fromReply(await this.post<SqlReply>('/api/sql', { sql })));
     // A run that left nothing pending changed nothing.
     if (wasPending || result.inTransaction) {
       this.changed();
       await this.loadSchema();
     }
     return result;
+  }
+
+  /** Stops the statement the Execute SQL tab is waiting for, when it runs over the WebSocket. */
+  interruptRunning(): void {
+    this.socket?.interrupt();
+  }
+
+  /**
+   * The statement over the server's WebSocket route, or null when that route is not to be used (the server has
+   * none, it needs a token this page does not have, JSON was asked for, or it could not be reached): the caller
+   * then goes through HTTP as before. Once a statement has been sent, its failure is its own.
+   */
+  private socketApplies(): boolean {
+    const info = this.info();
+    return (
+      !!info?.sqlSocket &&
+      !this.socketUnavailable &&
+      preferredFormat() === 'bufs' &&
+      typeof WebSocket !== 'undefined' &&
+      (!info.sqlSocketNeedsToken || !!this.storedToken())
+    );
+  }
+
+  private async executeSocket(sql: string): Promise<SqlResult | null> {
+    const path = this.info()!.sqlSocket!;
+    const token = this.storedToken();
+    if (!this.socket) {
+      this.socket = this.socketFactory(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${path}`, token ?? undefined);
+    }
+    if (!this.socket.connected) {
+      try {
+        await this.socket.connect();
+      } catch {
+        this.socket = null;
+        this.socketUnavailable = true;
+        return null;
+      }
+    }
+    try {
+      const { view, done } = await this.socket.exec(sql);
+      this.inTransaction.set(done.inTransaction);
+      return fromBufs(view, done.elapsedUs / 1000, done.inTransaction);
+    } catch (failure) {
+      if (failure instanceof SocketError) {
+        throw new ApiError(failure.message, failure.code === ErrorCode.Connection ? 0 : 400);
+      }
+      throw failure;
+    }
+  }
+
+  private storedToken(): string | null {
+    try {
+      return sessionStorage.getItem('sql.token');
+    } catch {
+      return null;
+    }
   }
 
   /**

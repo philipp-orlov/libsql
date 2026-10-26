@@ -27,6 +27,10 @@ export interface DatabaseInfo extends Pending {
   readOnly: boolean;
   /** Function names for the SQL editor to offer. */
   functions: string[];
+  /** Path of the server's WebSocket route for queries (sql::remote::SqlSocket), null when it has none. */
+  sqlSocket?: string | null;
+  /** True when that route needs a token (stored in sessionStorage under 'sql.token'). */
+  sqlSocketNeedsToken?: boolean;
 }
 
 export interface ColumnInfo {

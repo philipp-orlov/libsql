@@ -1,4 +1,4 @@
-execute_process(COMMAND ${GENERATOR} OUTPUT_FILE ${OUTPUT} RESULT_VARIABLE status)
+execute_process(COMMAND ${GENERATOR} ${ARGS} OUTPUT_FILE ${OUTPUT} RESULT_VARIABLE status)
 if(NOT status EQUAL 0)
     message(FATAL_ERROR "sql_bufs_golden failed: ${status}")
 endif()

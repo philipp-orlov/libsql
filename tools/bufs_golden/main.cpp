@@ -51,8 +51,12 @@ struct Case
 
 }  // namespace
 
-int main()
+int printRemoteGolden();
+
+int main(int argc, char** argv)
 {
+    if (argc > 1 && std::string(argv[1]) == "--remote")
+        return printRemoteGolden();
     const std::filesystem::path path = std::filesystem::temp_directory_path() / "libsql-bufs-golden.db";
     std::filesystem::remove(path);
     sql::Database db(path);

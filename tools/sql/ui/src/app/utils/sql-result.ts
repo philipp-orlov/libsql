@@ -17,7 +17,10 @@ export function fromReply(reply: SqlReply): SqlResult {
 }
 
 /** A libbufs reply as a SqlResult; cells are read from the received bytes when the grid asks for them. */
-export function fromBufs(view: ResultSetView, elapsedMs: number, inTransaction: boolean): SqlResult {
+export function fromBufs(view: ResultSetView | null, elapsedMs: number, inTransaction: boolean): SqlResult {
+  if (!view) {
+    return { columns: [], rowCount: 0, totalRows: 0, truncated: false, changes: 0, lastInsertId: 0, elapsedMs, inTransaction, cell: () => null };
+  }
   // A run cut at maxRows holds fewer rows than it produced.
   return {
     columns: view.columns,
