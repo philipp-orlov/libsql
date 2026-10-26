@@ -6,6 +6,7 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
 endif()
 
 option(SQL_WITH_BUFS "sql::BufsWriter binary results (needs libbufs)" ON)
+option(SQL_WITH_REMOTE "Remote databases over WebSocket: Database::connect and sql::remote::SqlSocket (needs libhttp and SQL_WITH_BUFS)" ON)
 option(SQL_BUILD_TESTS "Build the test suite" ON)
 option(SQL_BUILD_EXAMPLES "Build the examples" ON)
 option(SQL_BUILD_TOOLS "Build the sql command line tool" ON)
@@ -20,6 +21,7 @@ set(SQL_NOSQL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libnosql"
     CACHE PATH "Source directory of libnosql, when it is not already installed")
 
 set(SQL_BUFS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libbufs" CACHE PATH "Source directory of libbufs")
+set(SQL_HTTP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libhttp" CACHE PATH "Source directory of libhttp, when it is not already part of the build")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -102,6 +104,23 @@ if(SQL_WITH_BUFS AND NOT TARGET bufs::bufs)
     add_subdirectory("${SQL_BUFS_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/bufs")
 endif()
 
+# --- remote databases -----------------------------------------------------
+# libhttp (WebSocket server routes and client) from the sibling checkout; the sql tool's web interface
+# shares it. Its tests, examples and benchmarks stay out of this build.
+if(SQL_WITH_REMOTE AND NOT SQL_WITH_BUFS)
+    message(FATAL_ERROR "SQL_WITH_REMOTE needs SQL_WITH_BUFS (results travel as libbufs messages)")
+endif()
+if((SQL_WITH_REMOTE OR SQL_BUILD_TOOLS) AND NOT TARGET http)
+    if(EXISTS "${SQL_HTTP_DIR}/CMakeLists.txt")
+        set(HTTP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(HTTP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(HTTP_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+        add_subdirectory("${SQL_HTTP_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/libhttp")
+    elseif(SQL_WITH_REMOTE)
+        message(FATAL_ERROR "libhttp not found. Point -DSQL_HTTP_DIR at it, or set -DSQL_WITH_REMOTE=OFF.")
+    endif()
+endif()
+
 add_library(sql
     src/value.cpp
     src/database.cpp
@@ -141,7 +160,7 @@ target_link_libraries(sql PUBLIC nosql::nosql)
 
 if(SQL_WITH_BUFS)
     target_sources(sql PRIVATE src/bufs.cpp)
-    bufs_generate(sql SCHEMAS include/sql/wire/resultset.bufs
+    bufs_generate(sql SCHEMAS include/sql/wire/resultset.bufs include/sql/wire/remote.bufs
                   OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen/sql/wire)
     target_include_directories(sql PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/gen>)
     # bufs_generate links libbufs PRIVATE, and a static library re-exports that as LINK_ONLY, which an
@@ -150,6 +169,15 @@ if(SQL_WITH_BUFS)
     # expects libbufs on the include path.
     set_property(TARGET sql PROPERTY INTERFACE_LINK_LIBRARIES nosql::nosql $<BUILD_INTERFACE:bufs::bufs>)
     target_compile_definitions(sql PUBLIC SQL_WITH_BUFS=1)
+endif()
+
+target_sources(sql PRIVATE src/remote/client_stub.cpp)
+if(SQL_WITH_REMOTE)
+    # Like libbufs, libhttp is a build-tree dependency: the plain LINK_LIBRARIES property builds sql itself against
+    # it without putting it into the install export (a PRIVATE link of a static library would).
+    set_property(TARGET sql APPEND PROPERTY LINK_LIBRARIES http)
+    set_property(TARGET sql APPEND PROPERTY INTERFACE_LINK_LIBRARIES $<BUILD_INTERFACE:http>)
+    target_compile_definitions(sql PUBLIC SQL_WITH_REMOTE=1)
 endif()
 
 if(MSVC)

@@ -21,6 +21,10 @@ env:
   # libbufs, likewise: the binary result format (SQL_WITH_BUFS) builds from source.
   LIBBUFS_REPO: philipp-orlov/libbufs
   LIBBUFS_REF: be14e8bb4dfb74bfd12371fa9313dfec725fd3a6
+  # libhttp, likewise: the WebSocket server routes and client behind remote databases (SQL_WITH_REMOTE).
+  # Pin it to a commit once the libhttp work is on main.
+  LIBHTTP_REPO: philipp-orlov/libhttp
+  LIBHTTP_REF: develop-sql-remote
 
 jobs:
   test:
@@ -71,6 +75,13 @@ jobs:
           repository: ${{ env.LIBBUFS_REPO }}
           ref: ${{ env.LIBBUFS_REF }}
           path: libbufs
+
+      - name: Check out libhttp
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LIBHTTP_REPO }}
+          ref: ${{ env.LIBHTTP_REF }}
+          path: libhttp
 
       - name: Install build tools
         run: |

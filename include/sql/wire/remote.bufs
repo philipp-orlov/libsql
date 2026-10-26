@@ -1,0 +1,117 @@
+/// libsql remote protocol (sql::remote::SqlSocket <-> Database::connect).
+/// One WebSocket binary message = one Request (client -> server), or one Reply
+/// optionally followed by one sql.wire.ResultSet message (server -> client).
+namespace sql.remote;
+
+/// What a Request asks for. Values never change once released; add at the end.
+enum Op : ubyte {
+    None,
+    Hello,          // first request on a connection: version, credentials, window
+    Exec,           // run text (sql) with params, rows of the last statement stream back
+    Prepare,        // parse sql, keep it as statement `statement`
+    ExecPrepared,   // run statement `statement` with params
+    ClosePrepared,  // forget statement `statement`
+    Begin,          // open transaction `txn` (read_only: a snapshot reader)
+    Commit,         // commit transaction `txn`
+    Rollback,       // roll back transaction `txn`
+    Interrupt,      // stop request `target` (answered by that request's Error)
+    Credit,         // the client consumed `credit` more bytes of Rows replies
+    Describe,       // catalog: what = Tables / Table(name) / Indexes(table)
+    Ping,           // keep-alive for clients that cannot send WebSocket pings
+    State,          // changes / totalChanges / lastInsertRowid / inTransaction
+    Goodbye         // finish what is queued, then close
+}
+
+/// What a Reply carries.
+enum Kind : ubyte {
+    None,
+    Welcome,    // answer to Hello
+    Rows,       // a ResultSet message follows in the same WebSocket message
+    Done,       // the request finished; counters filled
+    Error,      // the request failed; code, constraint, message filled
+    Prepared,   // answer to Prepare: parameters, parameter names, columns, writes
+    Pong,       // answer to Ping
+    Closing     // the server is shutting down or the session is being closed
+}
+
+enum Catalog : ubyte { Tables, Table, Indexes }
+
+/// The storage class of a parameter (sql::Type order, as sql.wire.Tag).
+enum ParamType : ubyte { Null, Integer, Real, Datetime, Text, Blob }
+
+/// One bound value. Integer and Datetime use `integer`, Real uses `real`,
+/// Text and Blob use `bytes` (text is UTF-8 or any bytes, as stored).
+table Param {
+    name:string;        // empty: positional
+    type:ParamType = Null;
+    integer:long;
+    real:double;
+    bytes:[ubyte];
+}
+
+/// How rows come back (sql::BufsOptions); every default is zero = server default.
+table ResultOptions {
+    max_rows:ulong;
+    batch_rows:uint;
+    batch_bytes:uint;
+    blob_prefix:uint;
+    count_all_rows:bool;
+    no_dictionary:bool;
+    no_narrowing:bool;
+}
+
+table Request {
+    id:uint;            // chosen by the client, echoed in every Reply; 0 is never used
+    op:Op = None;
+    sql:string;
+    params:[Param];
+    statement:uint;     // Prepare / ExecPrepared / ClosePrepared
+    txn:uint;           // Begin / Commit / Rollback, and Exec / ExecPrepared inside it (0 = none)
+    target:uint;        // Interrupt
+    credit:ulong;       // Credit
+    read_only:bool;     // Hello (session), Begin (transaction)
+    options:ResultOptions;
+    what:Catalog = Tables;
+    name:string;        // Describe Table / Indexes
+    // Hello
+    protocol:ushort;    // 1
+    client:string;      // "libsql/0.3 C++", "sql-ui/1.0"
+    token:string;       // credentials when the handshake could not carry them
+    window:ulong;       // bytes of Rows the client accepts before it sends Credit
+    max_message:uint;   // largest WebSocket message the client accepts
+    hints:uint;         // bit 0: Managed (see SqlSocket's ExecInterceptor); others reserved, 0
+}
+
+table Reply {
+    id:uint;            // the Request it answers; 0 for Closing
+    kind:Kind = None;
+    // Error
+    code:ushort;        // sql::ErrorCode
+    constraint:ubyte;   // sql::Constraint
+    message:string;
+    // Done (and State)
+    changes:ulong;
+    last_insert_id:long;
+    total_changes:long;
+    in_transaction:bool;
+    elapsed_us:ulong;
+    // Prepared
+    parameters:uint;
+    parameter_names:[string];
+    columns:[string];
+    writes:bool;
+    // Welcome
+    protocol:ushort;
+    server:string;
+    session:ulong;
+    read_only:bool;
+    window:ulong;       // the window the server will honour (<= the client's)
+    max_message:uint;   // largest WebSocket message the server accepts
+    max_pipeline:ushort;// requests the client may send before the first is answered
+    // Describe Table (the Rows before it hold the columns)
+    sql:string;
+    strict:bool;
+    without_rowid:bool;
+}
+
+root_type Request;
