@@ -32,30 +32,36 @@ The top bar shows which database the page edits and whether it is read-write or 
 | `--host ADDR` | Address to bind to. The default is `127.0.0.1`. |
 | `--public DIR` | Serve `index.html` and the other files of DIR instead of the page built into the binary. |
 | `--readonly` | Open the database read-only. The front end turns editing off. |
-| `--token T` | With `--listen`: the WebSocket route needs T. With a `ws://` URL: the token to present. |
+| `--token T` | With `--listen`: the database needs T. With a `ws://` URL: the token to present. |
 | `--auth VALUE` | With a `ws://` URL: sent as the `Authorization` header, e.g. `"Bearer abc"`. |
-| `--ws-path P` | With `--listen`: where the WebSocket route is served. The default is `/api/v1/ws/sql`. |
-| `--no-socket` | With `--listen`: serve the JSON API only. |
+| `--ws-path P` | With `--listen`: where the WebSocket route is served. The default is `/api/v1/ws/sql`, which is where the page looks, so move it only for other clients. |
+| `--tls-cert F`, `--tls-key F` | With `--listen`: serve https and wss on PORT with this certificate and key (PEM). Needs OpenSSL at build time. |
+| `--ca FILE` | With a `wss://` URL: trust the certificates in FILE instead of the system's. |
+| `--insecure` | With a `wss://` URL: accept any certificate. For tests only. |
 
 ## Remote
 
-With `--listen` the tool also serves the database over a WebSocket route
-(`/api/v1/ws/sql`, `sql::remote::SqlSocket`), on the same worker as the JSON API, so changes pending through either
-are one transaction. Other programs reach it with `sql::Database::connect`, and so does the tool itself: give it a
-URL instead of a file.
+With `--listen` the tool serves the database over one WebSocket route (`/api/v1/ws/sql`,
+`sql::remote::SqlSocket`, sql-remote.md). **That route is the only way in**: the page uses it for every tab, and
+other programs reach it with `sql::Database::connect`, and so does the tool itself: give it a URL instead of a file.
+There is no JSON API.
 
 ```
 sql catalog.db --listen 8080 --token s3cret
 sql ws://127.0.0.1:8080/api/v1/ws/sql --token s3cret -c "SELECT count(*) FROM orders"
 echo ".tables" | sql ws://127.0.0.1:8080/api/v1/ws/sql --token s3cret
+sql catalog.db --listen 8443 --tls-cert cert.pem --tls-key key.pem     # https and wss
+sql wss://db.example:8443/api/v1/ws/sql --ca cert.pem -c ".tables"
 ```
 
-The Execute SQL tab runs its queries over the route when the server has one: rows arrive as libbufs batches that the
-page reads in place, and a running statement can be stopped. If the route needs a token, put it in the browser's
-`sessionStorage` under `sql.token`; without it the page keeps using the JSON API. `--token` protects the WebSocket
-route only: the JSON API and the page stay open, so keep the default loopback address unless the network is trusted.
-On loopback only this page's own origin may open the socket. `localStorage['sql.format'] = 'json'` makes the page use
-plain JSON everywhere.
+Every session shares the one database handle, so a change made through one is pending for all and Write Changes
+(commit) writes it. Rows arrive as libbufs batches that the page reads in place, and a running statement can be
+stopped. A session that asks to be read-only (or `--readonly`) gets a reader of its own and cannot write.
+
+`--token` protects the database: the page itself is public (it has to load to ask for the token), and when the
+server wants one the page shows a field for it and keeps the token in the tab's `sessionStorage`. Without
+`--token` anyone who can reach the address can change the data, so keep the default loopback address unless the
+network is trusted. On loopback only this page's own origin may open the socket.
 
 ## Pending changes
 
@@ -104,25 +110,13 @@ The interface has no login. Anyone who can reach the port can read and change th
 - Another process cannot open a store while the tool has it open (and the other way round): the store allows one
   process. Stop isvc before you point the tool at its `metrics.db`.
 
-## The API
+## What the page asks
 
-The front end uses a JSON API ([include/web_api.hpp](include/web_api.hpp)). Every reply has
-`inTransaction`. An error has a 4xx or 5xx status and `{"error": "..."}`.
-
-| Request | Body | Reply |
-| --- | --- | --- |
-| `GET /api/info` | | `path`, `version`, `readOnly`, `functions` |
-| `GET /api/schema` | | `tables`, `views`, `indexes`, `triggers` |
-| `GET /api/dump` | | `sql`, a script that rebuilds the schema and the rows |
-| `POST /api/sql` | `sql`, `maxRows` | `columns`, `rows`, `rowCount`, `truncated`, `changes`, `lastInsertId`, `elapsedMs` |
-| `POST /api/browse` | `table`, `offset`, `limit`, `sort`, `filters` | `columns`, `rows`, `keys`, `total`, `editable`, `view` |
-| `POST /api/rows/insert` | `table`, `values` | `changes`, `lastInsertId` |
-| `POST /api/rows/update` | `table`, `key`, `set` | `changes` |
-| `POST /api/rows/delete` | `table`, `keys` | `changes` |
-| `POST /api/commit` | `{}` | |
-| `POST /api/revert` | `{}` | |
-| `GET /api/pragmas` | | `pragmas`: `name`, `kind`, `scope`, `description`, `readOnly`, `value`, `choices` |
-| `POST /api/pragmas` | `name`, `value` | |
+The page needs nothing from the server but the socket. `ui/src/app/services/catalog.ts` holds the SQL behind each
+tab: the schema (`sqlite_schema`, and the server's Describe request for columns and indexes), a page of a table
+(`SELECT ... LIMIT ... OFFSET`, with `rowid` or the key of a WITHOUT ROWID table for edits), inserts, updates and
+deletes by key, the pragmas, and the dump. An edit opens a transaction that stays pending until Write Changes
+(`COMMIT`) or Revert Changes (`ROLLBACK`); the server does this for requests that carry the page's "managed" hint.
 
 A filter is text typed under a column: plain text finds rows that contain it, and a leading `=`, `<>`,
 `!=`, `<`, `<=`, `>` or `>=` compares. `=NULL` and `<>NULL` test for NULL.
@@ -151,7 +145,7 @@ The front end is an Angular and Angular Material application in [ui/](ui/).
 cd ui
 npm install
 npm run b          # builds, and writes ../public/index.html
-npm start          # dev server on :4200, proxies /api to 127.0.0.1:8080
+npm start          # dev server on :4200, proxies the WebSocket route to 127.0.0.1:8080
 npm test           # Karma and Jasmine in headless Chrome; set CHROME_BIN if Chrome is not on the PATH
 ```
 
@@ -160,11 +154,13 @@ of the repository, so a build of the tool needs no Node.js.
 
 ## Tests
 
-`ctest` (with `SQL_BUILD_TESTS=ON`) runs two programs for the back end:
+`ctest` (with `SQL_BUILD_TESTS=ON`) runs:
 
-- `web_api` calls the API directly: browse, filters, edits, pending changes, cell types, pragmas.
-- `web_server` starts the server on a loopback socket: routing, the content-type and `Host` checks, the
-  built-in page and `--public`.
+- `web_server`: the server on a loopback socket: the route, its token, origin and `Host` checks, read-only
+  sessions, a moved route, the built-in page and `--public`, and that no JSON API answers.
+- `web_ui_e2e` (when Node.js and the UI's packages are there): the front end's data layer, bundled with esbuild,
+  against the real binary: schema, browse with sort and filters, edits pending until written, WITHOUT ROWID
+  tables, large integers and blobs, pragmas and the dump.
 
 `npm test` runs the front end specs.
 
@@ -172,9 +168,8 @@ of the repository, so a build of the tool needs no Node.js.
 
 ```
 src/sql_tool.cpp     command line
-src/web_api.cpp      the JSON API on one sql::Database
-src/web_server.cpp   libhttp routes, worker thread, front end delivery
-include/             headers of the two web files
+src/web_server.cpp   libhttp routes, the SQL socket on one worker, front end delivery
+include/             headers of the web part
 ui/                  Angular front end
 public/index.html    the built front end
 cmake/               EmbedIndexHtml.cmake
