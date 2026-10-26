@@ -389,6 +389,62 @@ TEST(remote_client_no_alloc)
     CHECK_EQ(g_clientNews.load(), 0ul);
 }
 
+#ifdef HTTP_WITH_SSL
+// A self-signed certificate for localhost and 127.0.0.1, made by the openssl command line tool.
+struct Pem
+{
+    tst::Scratch dir{"pem"};
+    std::string certificate, key;
+    bool ok = false;
+    Pem()
+    {
+        certificate = dir.file().string() + ".crt";
+        key = dir.file().string() + ".key";
+        const std::string command =
+            "openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost "
+            "-addext subjectAltName=DNS:localhost,IP:127.0.0.1 -keyout " + key + " -out " + certificate +
+            " >/dev/null 2>&1";
+        ok = std::system(command.c_str()) == 0;
+    }
+    ~Pem()
+    {
+        std::remove(certificate.c_str());
+        std::remove(key.c_str());
+    }
+};
+
+TEST(remote_over_tls)
+{
+    Pem pem;
+    if (!pem.ok) {
+        std::puts("  (skipped: no openssl command line tool)");
+        return;
+    }
+    remote_test::Served served({}, [&](http::ServerConfig& c) {
+        c.tls = http::TlsConfig{remote_test::freePort(), pem.certificate, pem.key};
+        while (c.tls->port == c.port)
+            c.tls->port = remote_test::freePort();
+    });
+    const std::string url = "wss://localhost:" + std::to_string(served.config.tls->port) + "/api/v1/ws/sql";
+    {
+        auto db = Database::connect(url, RemoteOptions().caFile(pem.certificate));
+        seed(db);
+        CHECK_EQ(tst::only(db.exec("SELECT group_concat(name, '') FROM t")), std::string("abc"));
+    }
+    {
+        auto db = Database::connect(url, RemoteOptions().insecureSkipVerify());
+        CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM t")), std::string("3"));
+    }
+    bool refused = false;
+    try {
+        Database::connect(url, RemoteOptions());  // self-signed, not trusted
+    } catch (const Error&) {
+        refused = true;
+    }
+    CHECK(refused);
+}
+#endif
+
 int main()
 {
     return tst::runAll("remote_client");

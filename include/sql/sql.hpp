@@ -504,6 +504,18 @@ public:
         headers_.emplace_back(std::move(name), std::move(value));
         return *this;
     }
+    /// wss:// only: a PEM file of trusted certificates instead of the system's roots.
+    RemoteOptions& caFile(std::string path)
+    {
+        caFile_ = std::move(path);
+        return *this;
+    }
+    /// wss:// only: accept any certificate. For tests; it removes the protection TLS gives.
+    RemoteOptions& insecureSkipVerify(bool on = true)
+    {
+        insecureSkipVerify_ = on;
+        return *this;
+    }
     /// A read-only session: every write fails with ErrorCode::ReadOnly.
     RemoteOptions& readOnly(bool on = true)
     {
@@ -581,6 +593,8 @@ public:
 
     const std::string& authorization() const noexcept { return authorization_; }
     const std::string& token() const noexcept { return token_; }
+    const std::string& caFile() const noexcept { return caFile_; }
+    bool isInsecure() const noexcept { return insecureSkipVerify_; }
     const std::vector<std::pair<std::string, std::string>>& headers() const noexcept { return headers_; }
     bool isReadOnly() const noexcept { return readOnly_; }
     std::chrono::milliseconds connectTimeout() const noexcept { return connectTimeout_; }
@@ -597,8 +611,9 @@ public:
     const std::string& clientName() const noexcept { return clientName_; }
 
 private:
-    std::string authorization_, token_, clientName_;
+    std::string authorization_, token_, clientName_, caFile_;
     std::vector<std::pair<std::string, std::string>> headers_;
+    bool insecureSkipVerify_ = false;
     bool readOnly_ = false;
     bool reconnect_ = true;
     bool dictionary_ = true;

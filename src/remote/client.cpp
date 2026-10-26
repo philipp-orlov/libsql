@@ -333,6 +333,8 @@ private:
         wo.subprotocols = {"libsql.v1"};
         wo.connectTimeout = options_.connectTimeout();
         wo.maxMessageBytes = options_.maxMessage();
+        wo.caFile = options_.caFile();
+        wo.insecureSkipVerify = options_.isInsecure();
         if (!options_.authorization().empty())
             wo.headers.emplace_back("Authorization", options_.authorization());
         for (const auto& h : options_.headers())
