@@ -36,3 +36,13 @@ if(SQL_WITH_BUFS)
         target_compile_options(bench_bufs PRIVATE -Wall -Wextra)
     endif()
 endif()
+
+# Remote databases over loopback (needs SQL_WITH_REMOTE).
+if(SQL_WITH_REMOTE)
+    add_executable(bench_remote bench_remote.cpp)
+    target_link_libraries(bench_remote PRIVATE sql http)
+    target_include_directories(bench_remote PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    if(NOT MSVC)
+        target_compile_options(bench_remote PRIVATE -Wall -Wextra)
+    endif()
+endif()

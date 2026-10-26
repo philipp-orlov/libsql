@@ -44,3 +44,28 @@ above: JSON 6,985,069 bytes, bufs 5,702,608). Median of 15:
 The grid renders only the visible rows, so the first-paint cost drops about 50x. Materializing every cell (CSV
 export, sorting a column) is slower than `JSON.parse`, because each cell is built on demand where the JSON path paid
 up front.
+
+## bench_remote: remote databases over loopback
+
+`./bench_remote [soak-seconds]` runs a SqlSocket and clients in one process and measures `Database::connect` against a
+local `Database`. Measured 2026-10-26 on the Neoverse-N1 (2 cores, so the server, the clients and the load generator
+share them), g++ 13.3.0, Release:
+
+| What | Local | Remote |
+| --- | ---: | ---: |
+| Prepared point query, median / p99 | 1.2 / 1.2 us | 72 / 120 us |
+| 100,000 rows x 6 columns into a consumer | 8.5 ms (11.8 M rows/s) | 32.8 ms (3.0 M rows/s) |
+
+Concurrent sessions running prepared point queries (SqlSocket with 4 workers, one session per client thread):
+
+| Sessions | Requests/s | Median | p99 |
+| ---: | ---: | ---: | ---: |
+| 1 | 13,400 | 71 us | 122 us |
+| 8 | 28,300 | 266 us | 643 us |
+| 64 | 28,800 | 2.1 ms | 4.3 ms |
+
+Memory: 256 sessions that each ran a query add 4.8 MiB of resident memory, server and clients together (about 18 KiB per
+session; the 256 handles fit the idle-handle pool plus per-session rings, with no large buffers). In a 30 s soak of
+434,000 mixed requests on 4 sessions the resident size was the same, 33,708 KiB, at 5 s and at 30 s. The tests assert
+the same properties: no heap allocation per request on a warm server session or a warm client, and flat memory over
+tens of thousands of requests.
