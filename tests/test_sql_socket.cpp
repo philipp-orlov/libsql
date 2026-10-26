@@ -902,6 +902,22 @@ TEST(socket_shared_isolation_and_interceptor)
     CHECK(b.run("ROLLBACK").ok());
 }
 
+TEST(socket_shared_isolation_keeps_read_only_sessions_read_only)
+{
+    Fixture f(rem::SqlSocketOptions().isolation(rem::Isolation::Shared).workers(1));
+    Wire writer = f.open();
+    Wire reader = f.open({}, true);
+    CHECK(reader.run("SELECT count(*) FROM t").ok());
+    CHECK(reader.run("INSERT INTO t(name) VALUES ('nope')").error(ErrorCode::ReadOnly));
+    CHECK(reader.run("CREATE TABLE sneaky(a)").error(ErrorCode::ReadOnly));
+    // The writer is unaffected, and what it has pending stays invisible to the reader until it is committed.
+    CHECK(writer.run("BEGIN").ok());
+    CHECK(writer.run("INSERT INTO t(name) VALUES ('pending')").ok());
+    CHECK_EQ(cell(reader.run("SELECT count(*) FROM t").view(), 0, 0), std::string("3"));
+    CHECK(writer.run("COMMIT").ok());
+    CHECK_EQ(cell(reader.run("SELECT count(*) FROM t").view(), 0, 0), std::string("4"));
+}
+
 TEST(socket_two_routes_one_server)
 {
     // The application's own routes stay served beside the database route.

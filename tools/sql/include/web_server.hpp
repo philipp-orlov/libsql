@@ -3,12 +3,13 @@
 
 #pragma once
 
-// Serves the browser front end and a WebApi over HTTP.
+// Serves the browser front end, and the database over a WebSocket route (sql::remote::SqlSocket).
 //
 // The front end is a single index.html linked into the binary (see cmake/EmbedIndexHtml.cmake). A public
 // directory given on the command line replaces it, and its other files are served beside it.
 //
-// All requests that touch the database run, one at a time, on one worker thread.
+// The front end does everything through that route (SQL in the bufs protocol of sql-remote.md, nothing else): there is
+// no JSON API. All requests that touch the database run, one at a time, on one worker thread.
 
 #include <cstdint>
 #include <functional>
@@ -21,21 +22,23 @@ namespace sqlweb {
 
 struct WebOptions
 {
-    /// The API changes data and has no login, so it listens on this machine only unless told otherwise.
+    /// The database can be changed through this server and there is no login (but a token, below), so it listens on
+    /// this machine only unless told otherwise.
     std::string host = "127.0.0.1";
     std::uint16_t port = 8080;
     std::string publicDir = "./public";
     /// False: serve the embedded index.html when the binary has one.
     bool publicDirOverridden = false;
-    /// Tells the front end to disable editing.
+    /// Tells the front end to disable editing; the session is read-only, so the database refuses writes too.
     bool readOnly = false;
-    /// Also serve the database over a WebSocket route (sql::remote::SqlSocket): other programs connect with
-    /// sql::Database::connect, and the front end runs its queries through it.
-    bool socket = true;
+    /// Where the WebSocket route is served. The front end looks for it here, so change it only for other clients.
     std::string socketPath = "/api/v1/ws/sql";
-    /// When not empty the WebSocket route needs it ("Authorization: Bearer <token>" in the handshake, or the
-    /// token in the first message). The JSON API and the page stay open: this protects the socket only.
+    /// When not empty the route needs it ("Authorization: Bearer <token>" in the handshake, or the token in the
+    /// first message, which is how the page presents it). The page itself is public.
     std::string token;
+    /// Both set: serve https and wss on `port` instead of http and ws (needs a libhttp built with OpenSSL).
+    std::string tlsCertificate;
+    std::string tlsKey;
 };
 
 /// True when the binary carries its own index.html.

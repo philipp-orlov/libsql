@@ -66,6 +66,7 @@ enum class Isolation
     PerSession,
     /// Every session runs on the one Database given to the SqlSocket, through the serial executor
     /// the application also uses: transactions are shared, like the sql tool's single-user model.
+    /// A read-only session still gets a reader of its own (it sees committed data only).
     Shared,
 };
 

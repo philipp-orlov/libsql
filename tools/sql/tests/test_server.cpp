@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Philipp Orlov
 // SPDX-License-Identifier: Apache-2.0
 
-// WebServer: routing, request checks and front end delivery, over a real loopback socket.
+// WebServer: the SQL WebSocket route, its token and origin checks, and front end delivery, over a real loopback socket.
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -19,7 +19,6 @@
 #include <thread>
 #include <vector>
 
-#include "sql/wire/result_view.hpp"
 #include "sql_test.hpp"
 #include "web_server.hpp"
 
@@ -134,6 +133,8 @@ struct Running
         return response;
     }
 
+    std::string url() const { return "ws://127.0.0.1:" + std::to_string(options.port) + options.socketPath; }
+
     Response get(const std::string& path, const std::string& extra = {}) const
     {
         return send("GET", path, {}, extra);
@@ -147,70 +148,35 @@ struct Running
 
 }  // namespace
 
-TEST(the_api_answers_json)
+TEST(the_database_is_served_over_a_websocket)
 {
     Running s;
-    const Response info = s.get("/api/info");
-    CHECK_EQ(info.status, 200);
-    CHECK(info.header("content-type").find("application/json") == 0);
-    CHECK_EQ(info.header("cache-control"), std::string("no-store"));
-    CHECK(info.body.find("\"inTransaction\":false") != std::string::npos);
-
-    const Response schema = s.get("/api/schema");
-    CHECK_EQ(schema.status, 200);
-    CHECK(schema.body.find("\"name\":\"t\"") != std::string::npos);
-}
-
-TEST(a_query_goes_through_the_worker_and_back)
-{
-    Running s;
-    const Response reply = s.post("/api/sql", R"({"sql": "SELECT v FROM t ORDER BY id"})");
-    CHECK_EQ(reply.status, 200);
-    CHECK(reply.body.find("\"rows\":[[\"a\"],[\"b\"]]") != std::string::npos);
-}
-
-#if SQL_WITH_BUFS
-TEST(a_query_can_come_back_as_bufs)
-{
-    Running s;
-    const Response reply = s.post("/api/sql", R"({"sql": "SELECT id, v FROM t ORDER BY id", "format": "bufs"})");
-    CHECK_EQ(reply.status, 200);
-    CHECK_EQ(reply.header("content-type"), std::string("application/vnd.libsql.bufs"));
-    CHECK_EQ(reply.header("x-sql-in-transaction"), std::string("false"));
-    std::vector<std::uint64_t> aligned((reply.body.size() + 7) / 8);
-    std::memcpy(aligned.data(), reply.body.data(), reply.body.size());
-    const auto view = sql::wire::ResultView::open(aligned.data(), reply.body.size());
-    CHECK_EQ(view.rowCount(), std::uint64_t(2));
-    CHECK_EQ(std::string(view.value(1, 1).text()), std::string("b"));
-}
-#endif
-
-TEST(the_database_is_also_served_over_a_websocket)
-{
-    Running s;
-    const std::string url = "ws://127.0.0.1:" + std::to_string(s.options.port) + "/api/v1/ws/sql";
-    sql::Database remote = sql::Database::connect(url);
+    sql::Database remote = sql::Database::connect(s.url());
     CHECK_EQ(tst::only(remote.exec("SELECT count(*) FROM t")), std::string("2"));
-    // The page learns where the route is.
-    const Response info = s.get("/api/info");
-    CHECK(info.body.find("\"sqlSocket\":\"/api/v1/ws/sql\"") != std::string::npos);
-    CHECK(info.body.find("\"sqlSocketNeedsToken\":false") != std::string::npos);
-    // The socket and the JSON API are one database and one pending transaction: a change made over the socket
-    // stays pending, and the JSON API's Write Changes commits it.
+    // Changes made in a transaction are shared: every session runs on the one handle.
     remote.exec("BEGIN");
     remote.exec("INSERT INTO t(v) VALUES ('over the socket')");
-    CHECK(s.post("/api/browse", R"({"table": "t"})").body.find("over the socket") != std::string::npos);
-    CHECK(s.post("/api/browse", R"({"table": "t"})").body.find("\"inTransaction\":true") != std::string::npos);
-    CHECK_EQ(s.post("/api/commit", "{}").status, 200);
+    CHECK(remote.inTransaction());
+    sql::Database other = sql::Database::connect(s.url());
+    CHECK_EQ(tst::only(other.exec("SELECT count(*) FROM t")), std::string("3"));
+    other.exec("COMMIT");
     CHECK_EQ(tst::only(s.db.exec("SELECT count(*) FROM t")), std::string("3"));
 }
 
-TEST(a_token_protects_the_websocket_route)
+TEST(a_failing_statement_is_an_error_not_a_dropped_connection)
+{
+    Running s;
+    sql::Database remote = sql::Database::connect(s.url());
+    CHECK_THROWS(remote.exec("SELECT * FROM missing"), sql::ErrorCode::NoSuchTable);
+    CHECK_EQ(tst::only(remote.exec("SELECT 1")), std::string("1"));
+}
+
+TEST(a_token_protects_the_database)
 {
     sqlweb::WebOptions options;
     options.token = "s3cret";
     Running s(options);
-    const std::string url = "ws://127.0.0.1:" + std::to_string(s.options.port) + "/api/v1/ws/sql";
+    const std::string url = s.url();
     CHECK_THROWS(sql::Database::connect(url), sql::ErrorCode::PermissionDenied);
     CHECK_THROWS(sql::Database::connect(url, sql::RemoteOptions().token("nope")), sql::ErrorCode::PermissionDenied);
     CHECK_THROWS(sql::Database::connect(url, sql::RemoteOptions().authorization("Bearer nope")), sql::ErrorCode::PermissionDenied);
@@ -218,95 +184,62 @@ TEST(a_token_protects_the_websocket_route)
     CHECK_EQ(tst::only(viaHeader.exec("SELECT 1")), std::string("1"));
     sql::Database viaToken = sql::Database::connect(url, sql::RemoteOptions().token("s3cret"));
     CHECK_EQ(tst::only(viaToken.exec("SELECT 2")), std::string("2"));
-    CHECK(s.get("/api/info").body.find("\"sqlSocketNeedsToken\":true") != std::string::npos);
+    // The page is public (it has to be, to ask for the token); nothing else is served.
+    CHECK_EQ(s.get("/api/info").status, 404);
 }
 
-TEST(the_websocket_route_can_be_left_out)
+TEST(a_read_only_server_refuses_writes)
 {
     sqlweb::WebOptions options;
-    options.socket = false;
+    options.readOnly = true;
     Running s(options);
-    const std::string url = "ws://127.0.0.1:" + std::to_string(s.options.port) + "/api/v1/ws/sql";
-    CHECK_THROWS(sql::Database::connect(url), sql::ErrorCode::Connection);
-    CHECK(s.get("/api/info").body.find("\"sqlSocket\":null") != std::string::npos);
+    sql::Database remote = sql::Database::connect(s.url());
+    CHECK_EQ(tst::only(remote.exec("SELECT count(*) FROM t")), std::string("2"));
+    CHECK_THROWS(remote.exec("INSERT INTO t(v) VALUES ('x')"), sql::ErrorCode::ReadOnly);
+}
+
+TEST(the_route_can_be_moved)
+{
+    sqlweb::WebOptions options;
+    options.socketPath = "/db";
+    Running s(options);
+    const std::string where = "ws://127.0.0.1:" + std::to_string(s.options.port);
+    CHECK_THROWS(sql::Database::connect(where + "/api/v1/ws/sql"), sql::ErrorCode::Connection);
+    sql::Database moved = sql::Database::connect(where + "/db");
+    CHECK_EQ(tst::only(moved.exec("SELECT 1")), std::string("1"));
+}
+
+TEST(there_is_no_json_api)
+{
+    Running s;
+    for (const char* path : {"/api/info", "/api/schema", "/api/dump", "/api/pragmas", "/api/sql", "/api/browse"})
+        CHECK_EQ(s.get(path).status, 404);
+    CHECK_EQ(s.post("/api/sql", R"({"sql": "DELETE FROM t"})").status, 404);
+    CHECK_EQ(tst::only(s.db.exec("SELECT count(*) FROM t")), std::string("2"));
 }
 
 TEST(a_page_of_another_origin_cannot_open_the_websocket)
 {
     Running s;
-    const std::string url = "ws://127.0.0.1:" + std::to_string(s.options.port) + "/api/v1/ws/sql";
+    const std::string url = s.url();
     // A browser sends an Origin; only this server's own is let through.
-    sql::Database other;
     CHECK_THROWS(sql::Database::connect(url, sql::RemoteOptions().header("Origin", "https://evil.example")), sql::ErrorCode::PermissionDenied);
     sql::Database same = sql::Database::connect(
         url, sql::RemoteOptions().header("Origin", "http://127.0.0.1:" + std::to_string(s.options.port)));
     CHECK_EQ(tst::only(same.exec("SELECT 1")), std::string("1"));
 }
 
-TEST(an_edit_over_http_is_pending_until_commit)
-{
-    Running s;
-    CHECK_EQ(s.post("/api/rows/update", R"({"table": "t", "key": [1], "set": {"v": "z"}})").status,
-             200);
-    const Response page = s.post("/api/browse", R"({"table": "t"})");
-    CHECK(page.body.find("[[1,\"z\"],[2,\"b\"]]") != std::string::npos);
-    CHECK(page.body.find("\"inTransaction\":true") != std::string::npos);
-
-    CHECK_EQ(s.post("/api/revert", "{}").status, 200);
-    const Response again = s.post("/api/browse", R"({"table": "t"})");
-    CHECK(again.body.find("[[1,\"a\"],[2,\"b\"]]") != std::string::npos);
-
-    CHECK_EQ(s.post("/api/rows/update", R"({"table": "t", "key": [1], "set": {"v": "z"}})").status,
-             200);
-    CHECK_EQ(s.post("/api/commit", "{}").status, 200);
-    CHECK_EQ(tst::only(s.db.exec("SELECT v FROM t WHERE id = 1")), std::string("z"));
-}
-
-TEST(a_failing_request_is_a_4xx_with_a_message)
-{
-    Running s;
-    const Response reply = s.post("/api/sql", R"({"sql": "SELECT * FROM missing"})");
-    CHECK_EQ(reply.status, 400);
-    CHECK(reply.body.find("\"error\"") != std::string::npos);
-    CHECK_EQ(s.post("/api/browse", R"({"table": "missing"})").status, 400);
-}
-
-TEST(a_post_must_be_json)
-{
-    Running s;
-    const std::string body = R"({"sql": "DELETE FROM t"})";
-    // What a form on another site can send.
-    CHECK_EQ(s.send("POST", "/api/sql", body, "Content-Type: text/plain\r\n").status, 415);
-    CHECK_EQ(s.send("POST", "/api/sql", body, "Content-Type: application/x-www-form-urlencoded\r\n")
-                 .status,
-             415);
-    CHECK_EQ(s.send("POST", "/api/sql", body).status, 415);
-    CHECK_EQ(s.send("POST", "/api/commit", "{}").status, 415);
-    CHECK_EQ(s.post("/api/sql", "{not json").status, 400);
-    CHECK_EQ(tst::only(s.db.exec("SELECT count(*) FROM t")), std::string("2"));
-}
-
-TEST(a_json_content_type_may_carry_a_charset)
-{
-    Running s;
-    const Response reply = s.send("POST", "/api/sql", R"({"sql": "SELECT 1"})",
-                                  "Content-Type: Application/JSON; charset=utf-8\r\n");
-    CHECK_EQ(reply.status, 200);
-}
-
 TEST(a_request_for_another_host_name_is_refused)
 {
     Running s;
-    CHECK_EQ(s.send("GET", "/api/info", {}, {}, "evil.example").status, 421);
-    CHECK_EQ(s.send("GET", "/api/info", {}, {}, "localhost:1234").status, 200);
+    CHECK_EQ(s.send("GET", "/", {}, {}, "evil.example").status, 421);
+    CHECK_EQ(s.send("GET", "/", {}, {}, "localhost:1234").status, s.get("/").status);
 }
 
-TEST(an_unknown_route_is_404_and_a_wrong_method_is_405)
+TEST(an_unknown_route_is_404)
 {
     Running s;
     CHECK_EQ(s.get("/api/nothing").status, 404);
-    CHECK_EQ(s.send("PUT", "/api/sql", "{}", "Content-Type: application/json\r\n").status, 405);
-    CHECK_EQ(s.get("/api/sql").status, 405);
 }
 
 TEST(the_embedded_page_is_served_with_and_without_gzip)
@@ -349,18 +282,17 @@ TEST(a_public_directory_replaces_the_embedded_page)
     const Response extra = s.get("/extra.txt");
     CHECK_EQ(extra.status, 200);
     CHECK_EQ(extra.body, std::string("extra"));
-    CHECK_EQ(s.get("/api/info").status, 200);
     CHECK_EQ(s.get("/missing.txt").status, 404);
 }
 
-TEST(a_missing_public_directory_still_serves_the_api)
+TEST(a_missing_public_directory_still_serves_the_database)
 {
     sqlweb::WebOptions options;
     options.publicDir = "/nonexistent/sql-public";
     options.publicDirOverridden = true;
     Running s(options);
     CHECK_EQ(s.get("/").status, 404);
-    CHECK_EQ(s.get("/api/info").status, 200);
+    CHECK_EQ(tst::only(sql::Database::connect(s.url()).exec("SELECT count(*) FROM t")), std::string("2"));
 }
 
 int main()

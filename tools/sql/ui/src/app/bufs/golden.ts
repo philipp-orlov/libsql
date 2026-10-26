@@ -5,7 +5,7 @@ export interface GoldenCase {
   /** base64 of the BufsWriter output */
   bufs: string;
   columns: string[];
-  /** the same rows as the web API's JSON cells */
+  /** the same rows as the front end reads them (utils/cell.ts) */
   rows: unknown[][];
 }
 

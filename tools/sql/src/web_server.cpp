@@ -13,10 +13,8 @@
 
 #include "http/http_context.hpp"
 #include "http/server.hpp"
-#include "json/json.hpp"
 #include "managed.hpp"
 #include "sql/remote/sql_socket.hpp"
-#include "web_api.hpp"
 
 #ifdef SQL_EMBEDDED_INDEX_HTML
 // Defined by objcopy (see cmake/EmbedIndexHtml.cmake) from the gzipped public/index.html; they mark where
@@ -30,10 +28,6 @@ extern const char _binary_index_html_gz_end[];
 
 namespace sqlweb {
 namespace {
-
-using json::Json;
-
-constexpr std::size_t kMaxBodyBytes = 16u * 1024 * 1024;
 
 #ifdef SQL_EMBEDDED_INDEX_HTML
 // For the rare client that does not accept gzip; inflated once, on first use.
@@ -79,23 +73,25 @@ http::ServerConfig makeConfig(const WebOptions& options)
     config.ioThreads = 2;
     // One worker, so that the one Database handle is only ever used from one thread.
     config.workerThreads = 1;
-    config.maxBodyBytes = kMaxBodyBytes;
+    config.maxBodyBytes = 64 * 1024;  // there is nothing to post: the page and the socket
     config.serverHeader = "sql";
     // A page from another site must not reach an API that listens on a private address (DNS rebinding).
     if (isLoopback(options.host)) {
         config.allowedHosts = {"127.0.0.1", "localhost", "[::1]"};
         // The same for WebSockets, which browsers do not confine by origin: only this page may open one.
         const std::string port = std::to_string(options.port);
-        config.allowedOrigins = {"http://127.0.0.1:" + port, "http://localhost:" + port, "http://[::1]:" + port};
+        const std::string scheme = options.tlsCertificate.empty() ? "http://" : "https://";
+        config.allowedOrigins = {scheme + "127.0.0.1:" + port, scheme + "localhost:" + port, scheme + "[::1]:" + port};
+    }
+    if (!options.tlsCertificate.empty()) {
+#ifdef HTTP_WITH_SSL
+        config.httpEnabled = false;
+        config.tls = http::TlsConfig{options.port, options.tlsCertificate, options.tlsKey};
+#else
+        throw std::runtime_error("this build has no TLS (libhttp was built without HTTP_WITH_SSL)");
+#endif
     }
     return config;
-}
-
-void reject(http::HttpContext& context, const std::function<void()>& done, int status,
-            const std::string& message)
-{
-    context.status(status).header("Cache-Control", "no-store").json(Json{{"error", message}});
-    done();
 }
 
 }  // namespace
@@ -111,23 +107,16 @@ bool hasEmbeddedIndex() noexcept
 
 struct WebServer::Impl
 {
-    using Query = Reply (WebApi::*)();
-    using Command = Reply (WebApi::*)(const Json&);
-
-    Impl(sql::Database& db, WebOptions o)
-        : options(std::move(o)), api(db, options.readOnly), server(makeConfig(options))
+    Impl(sql::Database& db, WebOptions o) : options(std::move(o)), server(makeConfig(options))
     {
-        registerApi();
         registerSocket(db);
         registerFrontEnd();
     }
 
-    // The database over a WebSocket route, run on the same one worker as the JSON API: every session shares the
-    // one Database handle, so changes pending through either are the same transaction.
+    // The database over a WebSocket route, run on the server's one worker: every session shares the one Database
+    // handle, so changes pending through any of them are the same transaction.
     void registerSocket(sql::Database& db)
     {
-        if (!options.socket)
-            return;
         sql::remote::SqlSocketOptions socketOptions;
         socketOptions.isolation(sql::remote::Isolation::Shared)
             .readOnly(options.readOnly)
@@ -154,92 +143,12 @@ struct WebServer::Impl
         }
         sqlSocket = std::make_unique<sql::remote::SqlSocket>(db, std::move(socketOptions));
         sqlSocket->attach(server, options.socketPath);
-        api.setSocket(options.socketPath, !options.token.empty());
     }
 
     void shutdownSocket()
     {
         if (sqlSocket)
             sqlSocket->shutdown(std::chrono::milliseconds(1000));
-    }
-
-    // Runs `call` on the worker and writes its reply from the connection's own loop.
-    template <class Call>
-    void offload(http::HttpContext& context, std::function<void()> done, Call call)
-    {
-        http::IoLoop& loop = context.loop();
-        const bool queued = server.pool().tryEnqueue([&context, &loop, done,
-                                                      call = std::move(call)]() mutable {
-            Reply reply = call();
-            loop.tryPost([&context, done, reply = std::move(reply)]() mutable {
-                context.status(reply.status).header("Cache-Control", "no-store");
-                if (!reply.binary.empty()) {
-                    for (const auto& [name, value] : reply.headers)
-                        context.header(name, value);
-                    context.header("X-Content-Type-Options", "nosniff");
-                    context.bytes(reply.binary.data(), reply.binary.size(), reply.contentType);
-                } else {
-                    context.json(reply.body);
-                }
-                done();
-            });
-        });
-        if (!queued)
-            reject(context, done, 503, "the server is busy");
-    }
-
-    // A browser form on another site can send a POST, but not one with this content type.
-    static bool isJson(http::HttpContext& context)
-    {
-        const std::string_view type = context.request().headers.get("Content-Type");
-        return http::equalsIgnoreCase(type.substr(0, 16), "application/json");
-    }
-
-    void get(const char* path, Query query)
-    {
-        server.onGet(path, [this, query](http::HttpContext& context, std::function<void()> done) {
-            offload(context, std::move(done), [this, query] { return (api.*query)(); });
-        });
-    }
-
-    void post(const char* path, Command command)
-    {
-        server.onPost(path, [this, command](http::HttpContext& context,
-                                            std::function<void()> done) {
-            if (!isJson(context))
-                return reject(context, done, 415, "the Content-Type must be application/json");
-            Json body;
-            std::string error;
-            if (!Json::parse(context.request().body.view(), body, error))
-                return reject(context, done, 400, "the request body is not valid JSON: " + error);
-            offload(context, std::move(done),
-                    [this, command, body = std::move(body)] { return (api.*command)(body); });
-        });
-    }
-
-    void post(const char* path, Query query)
-    {
-        server.onPost(path, [this, query](http::HttpContext& context, std::function<void()> done) {
-            if (!isJson(context))
-                return reject(context, done, 415, "the Content-Type must be application/json");
-            offload(context, std::move(done), [this, query] { return (api.*query)(); });
-        });
-    }
-
-    void registerApi()
-    {
-        get("/api/info", &WebApi::info);
-        get("/api/schema", &WebApi::schema);
-        get("/api/dump", &WebApi::dump);
-        get("/api/pragmas", &WebApi::pragmas);
-        post("/api/sql", &WebApi::execute);
-        post("/api/browse", &WebApi::browse);
-        post("/api/rows/insert", &WebApi::insertRow);
-        post("/api/rows/update", &WebApi::updateRow);
-        post("/api/rows/delete", &WebApi::deleteRows);
-        post("/api/pragmas", &WebApi::setPragma);
-        post("/api/commit", &WebApi::commit);
-        post("/api/revert", &WebApi::revert);
     }
 
     // index.html keeps its name across a release, unlike the files it may load, so it is never cached.
@@ -283,12 +192,11 @@ struct WebServer::Impl
             server.onStaticFiles("/", options.publicDir);
         if (!haveDirectory && (options.publicDirOverridden || !hasEmbeddedIndex()))
             std::fprintf(stderr,
-                         "sql: the public directory %s does not exist; serving the API only\n",
+                         "sql: the public directory %s does not exist; serving the database socket only\n",
                          options.publicDir.c_str());
     }
 
     WebOptions options;
-    WebApi api;
     http::Server server;
     std::unique_ptr<sql::remote::SqlSocket> sqlSocket;  // after the server: it goes first, after shutdownSocket()
 };

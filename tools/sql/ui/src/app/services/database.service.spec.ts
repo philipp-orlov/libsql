@@ -164,6 +164,18 @@ describe('DatabaseService', () => {
     expect(service.info()?.version).toBe('1.2.3');
   });
 
+  it('opens one connection for requests that arrive together', async () => {
+    let connects = 0;
+    fake.connect = async () => {
+      connects++;
+      await new Promise(resolve => setTimeout(resolve, 5));
+      fake.connected = true;
+    };
+    await Promise.all([service.execute('SELECT 1'), service.execute('SELECT 2'), service.execute('SELECT 3')]);
+    expect(connects).toBe(1);
+    expect(urls.length).toBe(1);
+  });
+
   it('presents a stored token', async () => {
     sessionStorage.setItem('sql.token', 'kept');
     await service.execute('SELECT 1');

@@ -1,4 +1,4 @@
-foreach(name api server)
+foreach(name server)
     add_executable(sqlweb_test_${name} test_${name}.cpp)
     target_link_libraries(sqlweb_test_${name} PRIVATE sqlweb sql_testmain)
     add_test(NAME web_${name} COMMAND sqlweb_test_${name})

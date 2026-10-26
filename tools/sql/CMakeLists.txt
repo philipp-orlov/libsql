@@ -1,6 +1,6 @@
 # The sql command line tool and, with SQL_TOOL_WEB, its browser front end:
 #   src/sql_tool.cpp       the command line (prompt, -c, -f, --listen)
-#   src/web_*.cpp          the HTTP server and the JSON API behind --listen (library sqlweb, uses libhttp)
+#   src/web_server.cpp     the HTTP server behind --listen: the page and the SQL WebSocket route (library sqlweb)
 #   ui/                    the Angular front end; `npm run b` there writes public/index.html
 #   public/index.html      the built front end, linked into the binary (cmake/EmbedIndexHtml.cmake)
 #   tests/                 tests of the web part, run by ctest with SQL_BUILD_TESTS
@@ -30,7 +30,7 @@ endif()
 if(SQL_TOOL_WEB)
     include(cmake/EmbedIndexHtml.cmake)
 
-    add_library(sqlweb STATIC src/web_api.cpp src/web_server.cpp)
+    add_library(sqlweb STATIC src/web_server.cpp)
     target_include_directories(sqlweb PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(sqlweb PUBLIC sql http)
     if(MSVC)
@@ -45,6 +45,13 @@ if(SQL_TOOL_WEB)
 
     if(SQL_BUILD_TESTS AND NOT WIN32)
         add_subdirectory(tests)
+        # The front end's data layer against the real binary, when node and the UI's packages are there.
+        find_program(SQL_NODE node)
+        if(SQL_NODE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ui/node_modules/esbuild")
+            add_test(NAME web_ui_e2e COMMAND ${SQL_NODE} scripts/e2e.mjs $<TARGET_FILE:sql_cli>
+                     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+            set_tests_properties(web_ui_e2e PROPERTIES TIMEOUT 120)
+        endif()
         if(SQL_WITH_BUFS)
             add_subdirectory(../bufs_golden bufs_golden)
         endif()

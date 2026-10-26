@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Philipp Orlov
 // SPDX-License-Identifier: Apache-2.0
 
-// The "Execute SQL" tab's transaction behaviour, shared by the JSON API and the WebSocket route.
+// The front end's transaction behaviour on the WebSocket route.
 //
 // Like the Execute SQL tab of DB Browser, whatever the statements change stays pending until Write Changes
 // (commit) or Revert; a run that changed nothing leaves nothing pending. Statements that manage a transaction
@@ -50,22 +50,6 @@ inline bool controlsTransaction(std::string_view text)
             return true;
     }
     return false;
-}
-
-/// Opens the pending transaction when there is none. A failure undoes only a transaction opened here.
-template <class F>
-auto inPendingTransaction(sql::Database& db, F&& work)
-{
-    const bool opened = !db.inTransaction();
-    if (opened)
-        db.exec("BEGIN");
-    try {
-        return work();
-    } catch (...) {
-        if (opened && db.inTransaction())
-            db.exec("ROLLBACK");
-        throw;
-    }
 }
 
 inline std::int64_t schemaVersion(sql::Database& db)

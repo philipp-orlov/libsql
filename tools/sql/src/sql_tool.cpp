@@ -58,8 +58,11 @@ constexpr const char* kUsage =
     "  --token T     with --listen, the WebSocket route (/api/v1/ws/sql) needs T; with a ws:// URL, the\n"
     "                token to present\n"
     "  --auth VALUE  with a ws:// URL, sent as the Authorization header (\"Bearer abc\")\n"
-    "  --ws-path P   with --listen, the WebSocket route (default /api/v1/ws/sql)\n"
-    "  --no-socket   with --listen, serve the JSON API only\n"
+    "  --ws-path P   with --listen, the WebSocket route (default /api/v1/ws/sql; the page looks for that one)\n"
+    "  --tls-cert F  with --listen, serve https and wss with this certificate (PEM); needs --tls-key\n"
+    "  --tls-key F   the private key (PEM) of --tls-cert\n"
+    "  --ca FILE     with a wss:// URL, trust the certificates in FILE (PEM) instead of the system's\n"
+    "  --insecure    with a wss:// URL, accept any certificate (testing only)\n"
     "  -h, --help    this text\n"
     "\n"
     "dot commands, when reading statements from stdin:\n"
@@ -413,12 +416,11 @@ int serve(Database& db, sqlweb::WebOptions options)
         sqlweb::WebServer server(db, options);
         std::signal(SIGINT, requestStop);
         std::signal(SIGTERM, requestStop);
-        std::printf("sql: serving %s on http://%s:%u/ (Ctrl-C to stop)\n",
-                    db.path().string().c_str(), options.host.c_str(), unsigned(options.port));
-        if (options.host != "127.0.0.1" && options.host != "localhost" && options.host != "::1")
+        std::printf("sql: serving %s on %s://%s:%u/ (Ctrl-C to stop)\n", db.path().string().c_str(),
+                    options.tlsCertificate.empty() ? "http" : "https", options.host.c_str(), unsigned(options.port));
+        if (options.token.empty() && options.host != "127.0.0.1" && options.host != "localhost" && options.host != "::1")
             std::printf(
-                "sql: warning: the web interface has no login; anyone who can reach it can change "
-                "the data\n");
+                "sql: warning: no --token is set; anyone who can reach this address can change the data\n");
         std::fflush(stdout);
         server.run([] { return stopRequested != 0; });
     } catch (const std::exception& e) {
@@ -443,7 +445,8 @@ int main(int argc, char** argv)
     std::string host = "127.0.0.1";
     std::string publicDir;
     std::string token, authorization, socketPath = "/api/v1/ws/sql";
-    bool socket = true;
+    std::string tlsCertificate, tlsKey, caFile;
+    bool insecure = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -505,8 +508,14 @@ int main(int argc, char** argv)
             authorization = value("--auth");
         } else if (arg == "--ws-path") {
             socketPath = value("--ws-path");
-        } else if (arg == "--no-socket") {
-            socket = false;
+        } else if (arg == "--tls-cert") {
+            tlsCertificate = value("--tls-cert");
+        } else if (arg == "--tls-key") {
+            tlsKey = value("--tls-key");
+        } else if (arg == "--ca") {
+            caFile = value("--ca");
+        } else if (arg == "--insecure") {
+            insecure = true;
         } else if (!arg.empty() && arg[0] == '-') {
             std::fprintf(stderr, "sql: unknown option: %s\n\n", argv[i]);
             std::fputs(kUsage, stderr);
@@ -533,6 +542,10 @@ int main(int argc, char** argv)
     if (!modeGiven && !batches.empty())
         settings.mode = Mode::List;
 
+    if (tlsCertificate.empty() != tlsKey.empty()) {
+        std::fprintf(stderr, "sql: --tls-cert and --tls-key go together\n");
+        return kUsageError;
+    }
     const bool remote = path.rfind("ws://", 0) == 0 || path.rfind("wss://", 0) == 0;
     if (remote && listenPort != 0) {
         std::fprintf(stderr, "sql: --listen serves a database file; %s is a remote database\n", path.c_str());
@@ -542,7 +555,7 @@ int main(int argc, char** argv)
     try {
         if (remote) {
             RemoteOptions options;
-            options.readOnly(readOnly).token(token).authorization(authorization);
+            options.readOnly(readOnly).token(token).authorization(authorization).caFile(caFile).insecureSkipVerify(insecure);
             db = Database::connect(path, options);
         } else {
             db = Database::configure().readOnly(readOnly).createIfMissing(!readOnly).open(path);
@@ -563,8 +576,9 @@ int main(int argc, char** argv)
         options.host = host;
         options.port = static_cast<std::uint16_t>(listenPort);
         options.readOnly = readOnly;
-        options.socket = socket;
         options.socketPath = socketPath;
+        options.tlsCertificate = tlsCertificate;
+        options.tlsKey = tlsKey;
         options.token = token;
         if (!publicDir.empty()) {
             options.publicDir = publicDir;

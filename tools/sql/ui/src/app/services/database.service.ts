@@ -183,17 +183,26 @@ export class DatabaseService {
     }
   }
 
-  private async open(): Promise<QuerySocket> {
+  /** The connected socket; callers that arrive while it is being opened wait for that one connection. */
+  private open(): Promise<QuerySocket> {
+    if (this.socket?.connected) {
+      return Promise.resolve(this.socket);
+    }
+    this.opening ??= this.connectSocket().finally(() => (this.opening = null));
+    return this.opening;
+  }
+
+  private opening: Promise<QuerySocket> | null = null;
+
+  private async connectSocket(): Promise<QuerySocket> {
     if (!this.socket) {
       this.socket = this.socketFactory(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${SOCKET_PATH}`, this.storedToken() ?? undefined);
     }
-    if (!this.socket.connected) {
-      try {
-        await this.socket.connect();
-      } catch (failure) {
-        this.socket = null;
-        throw this.asApiError(failure);
-      }
+    try {
+      await this.socket.connect();
+    } catch (failure) {
+      this.socket = null;
+      throw this.asApiError(failure);
     }
     return this.socket;
   }

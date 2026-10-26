@@ -592,7 +592,9 @@ private:
 
     void acquireHandle(bool readOnly)
     {
-        if (impl_->o.isolation_ == Isolation::Shared) {
+        // A read-only session never shares the writable handle (it would be able to write through it): it gets
+        // a reader of its own, which sees what has been committed.
+        if (impl_->o.isolation_ == Isolation::Shared && !readOnly) {
             handle_ = impl_->db;
             return;
         }
