@@ -148,6 +148,10 @@ public:
     BufsBytes exec(Statement& stmt);
     BufsBytes exec(Statement& stmt, Transaction& txn);
 
+    /// Forgets the previous result (exec() and write() do this themselves); for
+    /// code that feeds the writer as a ResultConsumer or by row().
+    BufsWriter& reset();
+
     /// Encode a Result the caller already has.
     BufsBytes write(const Result& result);
 

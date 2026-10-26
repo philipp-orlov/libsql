@@ -772,6 +772,12 @@ BufsBytes BufsWriter::exec(Statement& stmt, Transaction& txn)
     return bytes();
 }
 
+BufsWriter& BufsWriter::reset()
+{
+    impl_->reset();
+    return *this;
+}
+
 BufsBytes BufsWriter::write(const Result& result)
 {
     Impl& m = *impl_;
