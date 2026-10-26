@@ -14,6 +14,14 @@
     <span class="mode" [class.read-only]="readOnly()">{{ readOnly() ? 'read-only' : 'read-write' }}</span>
   </mat-toolbar>
 
+  @if (db.authRequired()) {
+    <form class="token" (ngSubmit)="signIn(token.value)">
+      <p>This server asks for a token.</p>
+      <input #token name="token" type="password" autocomplete="off" aria-label="Token" />
+      <button mat-flat-button type="submit">Connect</button>
+    </form>
+  }
+
   <mat-tab-group class="tabs" animationDuration="0ms" mat-stretch-tabs="false" mat-align-tabs="start" [(selectedIndex)]="workspace.tab">
     <mat-tab label="Database Structure">
       <app-structure />

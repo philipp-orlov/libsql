@@ -1,4 +1,5 @@
 import { Component, OnInit, computed, inject } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTabsModule } from '@angular/material/tabs';
@@ -16,6 +17,7 @@ import { StructureComponent } from '../structure/structure.component';
 @Component({
   selector: 'app-shell',
   imports: [
+    FormsModule,
     MatButtonModule,
     MatIconModule,
     MatTabsModule,
@@ -41,7 +43,20 @@ export class ShellComponent implements OnInit {
     try {
       await this.db.load();
     } catch (failure) {
-      this.notice.error(failure);
+      // A server that wants a token is not an error to report: the form below asks for it.
+      if (!this.db.authRequired()) {
+        this.notice.error(failure);
+      }
+    }
+  }
+
+  protected async signIn(token: string): Promise<void> {
+    try {
+      await this.db.useToken(token.trim());
+    } catch (failure) {
+      if (!this.db.authRequired()) {
+        this.notice.error(failure);
+      }
     }
   }
 

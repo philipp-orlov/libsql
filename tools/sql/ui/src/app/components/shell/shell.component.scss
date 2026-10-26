@@ -75,3 +75,20 @@
   color: var(--mat-sys-error);
   font-weight: 500;
 }
+
+.token {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+
+  p {
+    margin: 0;
+  }
+
+  input {
+    min-width: 260px;
+    padding: 6px 8px;
+  }
+}

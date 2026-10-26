@@ -1,61 +1,21 @@
-import { HttpClient, HttpErrorResponse, HttpResponse } from '@angular/common/http';
-import { Injectable, inject, signal } from '@angular/core';
-import { Observable, firstValueFrom } from 'rxjs';
+import { Injectable, signal } from '@angular/core';
 
-import {
-  BrowseReply,
-  BrowseRequest,
-  Cell,
-  ChangeReply,
-  DatabaseInfo,
-  DumpReply,
-  Pending,
-  PragmasReply,
-  Schema,
-  SchemaReply,
-  SqlReply,
-  SqlResult,
-} from '../models/api.models';
-import { BufsError, ResultSetView } from '../bufs';
-import { ErrorCode, SocketError, SqlSocket } from '../remote';
-import { fromBufs, fromReply } from '../utils/sql-result';
+import { BrowseReply, BrowseRequest, Cell, DatabaseInfo, PragmaInfo, Schema, SqlResult } from '../models/api.models';
+import { Catalog, ErrorCode, ParamValue, Reply, ResultOptionsFields, SocketError, SocketResult, SqlSocket } from '../remote';
+import { fromBufs } from '../utils/sql-result';
+import * as catalog from './catalog';
+
+/** Where the server's SQL route is (sql::remote::SqlSocket; `sql --listen` serves it here). */
+export const SOCKET_PATH = '/api/v1/ws/sql';
 
 export class ApiError extends Error {
   constructor(
     message: string,
+    /** 0: the server cannot be reached; 401: it wants a token; 400: the request was refused. */
     readonly status: number,
   ) {
     super(message);
   }
-}
-
-/** An error body, which is JSON even when the reply asked for was binary (it then arrives as bytes). */
-function errorBody(failure: HttpErrorResponse): { error?: unknown; inTransaction?: unknown } | null {
-  if (failure.error instanceof ArrayBuffer) {
-    try {
-      return JSON.parse(new TextDecoder().decode(failure.error)) as { error?: unknown };
-    } catch {
-      return null;
-    }
-  }
-  return failure.error as { error?: unknown } | null;
-}
-
-/** The result format for Execute SQL: libbufs unless `localStorage['sql.format']` says 'json' (A/B timing, old servers). */
-export function preferredFormat(): 'bufs' | 'json' {
-  try {
-    return localStorage.getItem('sql.format') === 'json' ? 'json' : 'bufs';
-  } catch {
-    return 'bufs';
-  }
-}
-
-function describeFailure(failure: HttpErrorResponse): string {
-  const body = errorBody(failure);
-  if (body && typeof body.error === 'string') {
-    return body.error;
-  }
-  return failure.status === 0 ? 'The server cannot be reached.' : failure.message;
 }
 
 const EMPTY_SCHEMA: Schema = { tables: [], views: [], indexes: [], triggers: [] };
@@ -63,69 +23,94 @@ const EMPTY_SCHEMA: Schema = { tables: [], views: [], indexes: [], triggers: [] 
 /** The part of SqlSocket the service uses; tests give it a fake. */
 export interface QuerySocket {
   readonly connected: boolean;
+  readonly welcome: Reply | null;
   connect(): Promise<void>;
-  exec(sql: string): Promise<{ view: Parameters<typeof fromBufs>[0]; done: { elapsedUs: number; inTransaction: boolean } }>;
+  exec(sql: string, params?: ParamValue[], options?: ResultOptionsFields): Promise<SocketResult>;
+  describe(what: Catalog, name?: string): Promise<SocketResult>;
   interrupt(): void;
   close(): void;
 }
 
-/** The server's database: what the tabs show, and every call that reads or changes it. */
+/**
+ * The server's database: what the tabs show, and every call that reads or changes it. All of it goes over the one
+ * WebSocket to the server's SQL route; the SQL the tabs need is written in catalog.ts.
+ */
 @Injectable({ providedIn: 'root' })
 export class DatabaseService {
-  private readonly http = inject(HttpClient);
-
   readonly info = signal<DatabaseInfo | null>(null);
   readonly schema = signal<Schema>(EMPTY_SCHEMA);
   /** True while changes wait for Write Changes. */
   readonly inTransaction = signal(false);
   /** Grows when the data or the structure may have changed, so that open views reload. */
   readonly revision = signal(0);
+  /** True when the server refused the connection for want of a (correct) token: the shell asks for one. */
+  readonly authRequired = signal(false);
 
-  /** Where queries go over the WebSocket route; replaced in tests. */
+  /** Where queries go; replaced in tests. */
   socketFactory: (url: string, token: string | undefined) => QuerySocket = (url, token) => new SqlSocket(url, { token });
   private socket: QuerySocket | null = null;
-  /** The route could not be used once: stay on HTTP rather than trying for every run. */
-  private socketUnavailable = false;
+
+  private readonly conn: catalog.Conn = {
+    exec: (sql, params, options) => this.call(socket => socket.exec(sql, params, options)),
+    describe: (what, name) => this.call(socket => socket.describe(what, name)),
+  };
+
+  private get readOnly(): boolean {
+    return this.info()?.readOnly ?? false;
+  }
 
   async load(): Promise<void> {
-    this.info.set(await this.get<DatabaseInfo>('/api/info'));
+    await this.open();
+    const welcome = this.socket!.welcome;
+    const facts = await catalog.loadFacts(this.conn);
+    this.info.set({
+      path: facts.path,
+      version: (welcome?.server ?? '').split('/')[1] ?? welcome?.server ?? '',
+      readOnly: welcome?.readOnly ?? false,
+      functions: facts.functions,
+      inTransaction: this.inTransaction(),
+    });
     await this.loadSchema();
   }
 
   async loadSchema(): Promise<void> {
-    const { tables, views, indexes, triggers } = await this.get<SchemaReply>('/api/schema');
-    this.schema.set({ tables, views, indexes, triggers });
+    this.schema.set(await this.run(() => catalog.loadSchema(this.conn)));
   }
 
   /** A script that rebuilds the schema and the rows. */
-  async dump(): Promise<string> {
-    return (await this.get<DumpReply>('/api/dump')).sql;
+  dump(): Promise<string> {
+    return this.run(() => catalog.dump(this.conn));
   }
 
-  browse(request: BrowseRequest): Promise<BrowseReply> {
-    return this.post<BrowseReply>('/api/browse', request);
+  async browse(request: BrowseRequest): Promise<BrowseReply> {
+    const page = await this.run(() => catalog.browse(this.conn, request, this.readOnly));
+    return { ...page, inTransaction: this.inTransaction() };
   }
 
   async insertRow(table: string, values: Record<string, Cell>): Promise<void> {
-    await this.post<ChangeReply>('/api/rows/insert', { table, values });
+    await this.run(() => catalog.insertRow(this.conn, table, values, this.readOnly));
     this.changed();
   }
 
   async updateRow(table: string, key: Cell[], set: Record<string, Cell>): Promise<void> {
-    await this.post<ChangeReply>('/api/rows/update', { table, key, set });
+    await this.run(() => catalog.updateRow(this.conn, table, key, set, this.readOnly));
     this.changed();
   }
 
   async deleteRows(table: string, keys: Cell[][]): Promise<void> {
-    await this.post<ChangeReply>('/api/rows/delete', { table, keys });
+    await this.run(() => catalog.deleteRows(this.conn, table, keys, this.readOnly));
     this.changed();
   }
 
   async execute(sql: string): Promise<SqlResult> {
     const wasPending = this.inTransaction();
-    const viaSocket = this.socketApplies() ? await this.executeSocket(sql) : null;
-    const result =
-      viaSocket ?? (preferredFormat() === 'bufs' ? await this.executeBufs(sql) : fromReply(await this.post<SqlReply>('/api/sql', { sql })));
+    const { view, done } = await this.call(socket => socket.exec(sql, undefined, catalog.RESULT_OPTIONS));
+    const result = fromBufs(view, done.elapsedUs / 1000, done.inTransaction);
+    if (!view) {
+      // A statement without rows reports its counters in the Done.
+      result.changes = done.changes;
+      result.lastInsertId = done.lastInsertId;
+    }
     // A run that left nothing pending changed nothing.
     if (wasPending || result.inTransaction) {
       this.changed();
@@ -134,55 +119,63 @@ export class DatabaseService {
     return result;
   }
 
-  /** Stops the statement the Execute SQL tab is waiting for, when it runs over the WebSocket. */
+  /** Stops the statement the Execute SQL tab is waiting for; it then fails as interrupted. */
   interruptRunning(): void {
     this.socket?.interrupt();
   }
 
-  /**
-   * The statement over the server's WebSocket route, or null when that route is not to be used (the server has
-   * none, it needs a token this page does not have, JSON was asked for, or it could not be reached): the caller
-   * then goes through HTTP as before. Once a statement has been sent, its failure is its own.
-   */
-  private socketApplies(): boolean {
-    const info = this.info();
-    return (
-      !!info?.sqlSocket &&
-      !this.socketUnavailable &&
-      preferredFormat() === 'bufs' &&
-      typeof WebSocket !== 'undefined' &&
-      (!info.sqlSocketNeedsToken || !!this.storedToken())
-    );
+  async commit(): Promise<void> {
+    if (this.inTransaction()) {
+      await this.conn.exec('COMMIT');
+    }
+    this.changed();
+    await this.loadSchema();
   }
 
-  private async executeSocket(sql: string): Promise<SqlResult | null> {
-    const path = this.info()!.sqlSocket!;
-    const token = this.storedToken();
-    if (!this.socket) {
-      this.socket = this.socketFactory(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${path}`, token ?? undefined);
+  async revert(): Promise<void> {
+    if (this.inTransaction()) {
+      await this.conn.exec('ROLLBACK');
     }
-    if (!this.socket.connected) {
-      try {
-        await this.socket.connect();
-      } catch {
-        this.socket = null;
-        this.socketUnavailable = true;
-        return null;
-      }
-    }
+    this.changed();
+    await this.loadSchema();
+  }
+
+  async pragmas(): Promise<{ pragmas: PragmaInfo[]; inTransaction: boolean }> {
+    const pragmas = await this.run(() => catalog.loadPragmas(this.conn, this.readOnly));
+    return { pragmas, inTransaction: this.inTransaction() };
+  }
+
+  async setPragma(name: string, value: number): Promise<void> {
+    await this.run(() => catalog.setPragma(this.conn, name, value, this.readOnly, this.inTransaction()));
+    this.changed();
+  }
+
+  /** Connects again with this token, for a server that asked for one. */
+  async useToken(token: string): Promise<void> {
     try {
-      const { view, done } = await this.socket.exec(sql);
-      this.inTransaction.set(done.inTransaction);
-      return fromBufs(view, done.elapsedUs / 1000, done.inTransaction);
-    } catch (failure) {
-      if (failure instanceof SocketError) {
-        throw new ApiError(failure.message, failure.code === ErrorCode.Connection ? 0 : 400);
-      }
-      throw failure;
+      sessionStorage.setItem('sql.token', token);
+    } catch {
+      // the token then lasts for this page only
     }
+    this.pageToken = token;
+    this.socket?.close();
+    this.socket = null;
+    this.authRequired.set(false);
+    await this.load();
+  }
+
+  // -------------------------------------------------------------------------------------------------
+
+  private pageToken: string | null = null;
+
+  private changed(): void {
+    this.revision.update(count => count + 1);
   }
 
   private storedToken(): string | null {
+    if (this.pageToken) {
+      return this.pageToken;
+    }
     try {
       return sessionStorage.getItem('sql.token');
     } catch {
@@ -190,91 +183,59 @@ export class DatabaseService {
     }
   }
 
-  /**
-   * Asks for libbufs. A server that does not know the format answers JSON, and so does any error, so the content
-   * type decides how the body is read.
-   */
-  private async executeBufs(sql: string): Promise<SqlResult> {
-    const response = await this.settleResponse(
-      this.http.post('/api/sql', { sql, format: 'bufs' }, { observe: 'response', responseType: 'arraybuffer' }),
-    );
-    const body = response.body as ArrayBuffer;
-    if (!(response.headers.get('Content-Type') ?? '').startsWith('application/vnd.libsql.bufs')) {
-      const reply = JSON.parse(new TextDecoder().decode(body)) as SqlReply;
-      this.inTransaction.set(reply.inTransaction);
-      return fromReply(reply);
+  private async open(): Promise<QuerySocket> {
+    if (!this.socket) {
+      this.socket = this.socketFactory(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${SOCKET_PATH}`, this.storedToken() ?? undefined);
     }
-    const inTransaction = response.headers.get('X-Sql-In-Transaction') === 'true';
-    this.inTransaction.set(inTransaction);
+    if (!this.socket.connected) {
+      try {
+        await this.socket.connect();
+      } catch (failure) {
+        this.socket = null;
+        throw this.asApiError(failure);
+      }
+    }
+    return this.socket;
+  }
+
+  /** One request over the socket; its Done says whether changes are pending. */
+  private async call(request: (socket: QuerySocket) => Promise<SocketResult>): Promise<SocketResult> {
+    const socket = await this.open();
     try {
-      return fromBufs(ResultSetView.open(body), Number(response.headers.get('X-Sql-Elapsed-Ms')) || 0, inTransaction);
+      const result = await request(socket);
+      this.inTransaction.set(result.done.inTransaction);
+      return result;
     } catch (failure) {
-      throw failure instanceof BufsError ? new ApiError(failure.message, 200) : failure;
+      if (failure instanceof SocketError && failure.code === ErrorCode.Connection) {
+        this.inTransaction.set(false); // the server rolled it back with the connection
+      }
+      throw this.asApiError(failure);
     }
   }
 
-  async commit(): Promise<void> {
-    await this.post<Pending>('/api/commit', {});
-    this.changed();
-    await this.loadSchema();
-  }
-
-  async revert(): Promise<void> {
-    await this.post<Pending>('/api/revert', {});
-    this.changed();
-    await this.loadSchema();
-  }
-
-  pragmas(): Promise<PragmasReply> {
-    return this.get<PragmasReply>('/api/pragmas');
-  }
-
-  async setPragma(name: string, value: number): Promise<void> {
-    await this.post<Pending>('/api/pragmas', { name, value });
-    this.changed();
-  }
-
-  private changed(): void {
-    this.revision.update(count => count + 1);
-  }
-
-  private get<T extends Pending>(url: string): Promise<T> {
-    return this.settle(this.http.get<T>(url));
-  }
-
-  private post<T extends Pending>(url: string, body: object): Promise<T> {
-    return this.settle(this.http.post<T>(url, body));
-  }
-
-  private async settleResponse(call: Observable<HttpResponse<ArrayBuffer>>): Promise<HttpResponse<ArrayBuffer>> {
+  /** Runs a catalog function, turning what it throws into an ApiError. */
+  private async run<T>(work: () => Promise<T>): Promise<T> {
     try {
-      return await firstValueFrom(call);
+      return await work();
     } catch (failure) {
-      if (!(failure instanceof HttpErrorResponse)) {
-        throw failure;
-      }
-      const body = errorBody(failure);
-      if (body && typeof body.inTransaction === 'boolean') {
-        this.inTransaction.set(body.inTransaction);
-      }
-      throw new ApiError(describeFailure(failure), failure.status);
+      throw this.asApiError(failure);
     }
   }
 
-  private async settle<T extends Pending>(call: Observable<T>): Promise<T> {
-    try {
-      const reply = await firstValueFrom(call);
-      this.inTransaction.set(reply.inTransaction);
-      return reply;
-    } catch (failure) {
-      if (!(failure instanceof HttpErrorResponse)) {
-        throw failure;
-      }
-      const body = errorBody(failure);
-      if (body && typeof body.inTransaction === 'boolean') {
-        this.inTransaction.set(body.inTransaction);
-      }
-      throw new ApiError(describeFailure(failure), failure.status);
+  private asApiError(failure: unknown): Error {
+    if (failure instanceof ApiError) {
+      return failure;
     }
+    if (failure instanceof SocketError) {
+      if (failure.code === ErrorCode.PermissionDenied) {
+        this.authRequired.set(true);
+        return new ApiError(failure.message || 'The server wants a token.', 401);
+      }
+      return new ApiError(failure.message, failure.code === ErrorCode.Connection ? 0 : 400);
+    }
+    if (failure instanceof catalog.CatalogError) {
+      return new ApiError(failure.message, 400);
+    }
+    return failure instanceof Error ? failure : new Error(String(failure));
   }
 }

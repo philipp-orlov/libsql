@@ -1,4 +1,5 @@
-// The JSON the sql tool's web API speaks (tools/sql/include/web_api.hpp).
+// The shapes the tabs work with. They are built from SQL results (services/catalog.ts); a cell is what the
+// result reader returns for a value.
 
 export interface IntegerCell {
   type: 'integer';
@@ -27,10 +28,6 @@ export interface DatabaseInfo extends Pending {
   readOnly: boolean;
   /** Function names for the SQL editor to offer. */
   functions: string[];
-  /** Path of the server's WebSocket route for queries (sql::remote::SqlSocket), null when it has none. */
-  sqlSocket?: string | null;
-  /** True when that route needs a token (stored in sessionStorage under 'sql.token'). */
-  sqlSocketNeedsToken?: boolean;
 }
 
 export interface ColumnInfo {

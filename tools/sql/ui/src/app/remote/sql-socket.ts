@@ -6,9 +6,9 @@
 // Free of Angular imports on purpose.
 
 import { ResultSetView } from '../bufs';
-import { ErrorCode, HINT_MANAGED, Kind, MIN_FRAME_COST, Op, PROTOCOL_VERSION } from './layout';
+import { Catalog, ErrorCode, HINT_MANAGED, Kind, MIN_FRAME_COST, Op, PROTOCOL_VERSION } from './layout';
 import { Reply, decodeReply } from './reply';
-import { RequestFields, encodeRequest } from './request';
+import { RequestFields, ResultOptionsFields, encodeRequest } from './request';
 
 export class SocketError extends Error {
   constructor(
@@ -69,6 +69,7 @@ export class SqlSocket {
   private consumed = 0;
   private inTransaction = false;
   private pinger: ReturnType<typeof setInterval> | null = null;
+  private welcomed: Reply | null = null;
 
   constructor(
     private readonly url: string,
@@ -77,6 +78,11 @@ export class SqlSocket {
 
   get connected(): boolean {
     return this.socket !== null && this.socket.readyState === OPEN;
+  }
+
+  /** What the server said when it welcomed this client (its name, whether the session is read-only); null before that. */
+  get welcome(): Reply | null {
+    return this.welcomed;
   }
 
   /** Opens the connection and says hello; resolves when the server has welcomed this client. */
@@ -99,6 +105,7 @@ export class SqlSocket {
           id,
           resolve: welcome => {
             this.window = welcome.window || this.window;
+            this.welcomed = welcome;
             this.startPings();
             resolve();
           },
@@ -141,8 +148,20 @@ export class SqlSocket {
    * Runs `sql` and resolves with its rows and counters. One request runs at a time: calls queue. A connection the
    * server closed while idle is replaced, unless a transaction was open on it.
    */
-  exec(sql: string, params?: RequestFields['params']): Promise<SocketResult> {
-    const run = () => this.run({ sql, params, hints: HINT_MANAGED });
+  exec(sql: string, params?: RequestFields['params'], options?: ResultOptionsFields): Promise<SocketResult> {
+    return this.queue({ op: Op.Exec, sql, params, options, hints: HINT_MANAGED });
+  }
+
+  /**
+   * The catalog: the table names, one table's columns (the Reply carries its CREATE statement, strict and without_rowid),
+   * or the columns of the indexes of `name` (all tables when empty). The rows are those of the server's Describe.
+   */
+  describe(what: Catalog, name = ''): Promise<SocketResult> {
+    return this.queue({ op: Op.Describe, what, name });
+  }
+
+  private queue(fields: Omit<RequestFields, 'id'>): Promise<SocketResult> {
+    const run = () => this.run(fields);
     const result = this.chain.then(run, run);
     this.chain = result.catch(() => undefined);
     return result;
@@ -175,7 +194,7 @@ export class SqlSocket {
     return id;
   }
 
-  private async run(fields: { sql: string; params?: RequestFields['params']; hints: number }): Promise<SocketResult> {
+  private async run(fields: Omit<RequestFields, 'id'>): Promise<SocketResult> {
     if (!this.connected) {
       if (this.inTransaction) {
         this.inTransaction = false;
@@ -189,7 +208,7 @@ export class SqlSocket {
     const id = this.take();
     return new Promise<SocketResult>((resolve, reject) => {
       this.pending = { id, frames: [], resolve, reject };
-      this.socket!.send(encodeRequest({ id, op: Op.Exec, sql: fields.sql, params: fields.params, hints: fields.hints }));
+      this.socket!.send(encodeRequest({ ...fields, id }));
     });
   }
 

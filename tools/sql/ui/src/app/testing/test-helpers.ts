@@ -100,6 +100,7 @@ export function fakeDatabase() {
     schema: signal<Schema>(sampleSchema()),
     inTransaction: signal(false),
     revision: signal(0),
+    authRequired: signal(false),
     load: jasmine.createSpy('load').and.resolveTo(),
     loadSchema: jasmine.createSpy('loadSchema').and.resolveTo(),
     browse: jasmine.createSpy('browse').and.callFake(async () => personPage()),
