@@ -67,14 +67,11 @@
     }
   </div>
 
-  <div class="body">
-    <aside class="trees">
-      <div class="trees-head">
-        <span>Trees</span>
-        @if (store.selectedTree() !== null) {
-          <button mat-icon-button (click)="clearTree()" matTooltip="Show every tree on the map" aria-label="Clear the selection"><mat-icon>filter_alt_off</mat-icon></button>
-        }
-      </div>
+  <ui-split class="body">
+    <ui-split-pane class="trees" title="Trees" icon="park" [size]="240" [minSize]="160">
+      @if (store.selectedTree() !== null) {
+        <button paneActions mat-icon-button class="small" (click)="clearTree()" matTooltip="Show every tree on the map" aria-label="Clear the selection"><mat-icon>filter_alt_off</mat-icon></button>
+      }
       <div class="trees-scroll">
         @for (group of groups(); track group.title) {
           <div class="group-title">{{ group.title }}</div>
@@ -87,17 +84,15 @@
           }
         }
       </div>
-    </aside>
+    </ui-split-pane>
 
-    <section class="centre">
-      <div class="centre-bar">
-        <mat-button-toggle-group [value]="view()" (change)="view.set($event.value)" hideSingleSelectionIndicator aria-label="What to show">
-          <mat-button-toggle value="map"><mat-icon>grid_view</mat-icon> Page map</mat-button-toggle>
-          <mat-button-toggle value="tree"><mat-icon>account_tree</mat-icon> Tree</mat-button-toggle>
-          <mat-button-toggle value="meta"><mat-icon>fingerprint</mat-icon> Meta pages</mat-button-toggle>
-          <mat-button-toggle value="free"><mat-icon>recycling</mat-icon> Free list</mat-button-toggle>
-        </mat-button-toggle-group>
-      </div>
+    <ui-split-pane class="centre" [minSize]="320">
+      <mat-button-toggle-group paneTitle [value]="view()" (change)="view.set($event.value)" hideSingleSelectionIndicator aria-label="What to show">
+        <mat-button-toggle value="map"><mat-icon>grid_view</mat-icon> Page map</mat-button-toggle>
+        <mat-button-toggle value="tree"><mat-icon>account_tree</mat-icon> Tree</mat-button-toggle>
+        <mat-button-toggle value="meta"><mat-icon>fingerprint</mat-icon> Meta pages</mat-button-toggle>
+        <mat-button-toggle value="free"><mat-icon>recycling</mat-icon> Free list</mat-button-toggle>
+      </mat-button-toggle-group>
       <div class="centre-body">
         @switch (view()) {
           @case ('map') {
@@ -174,10 +169,10 @@
           }
         }
       </div>
-    </section>
+    </ui-split-pane>
 
-    <aside class="inspector-pane">
+    <ui-split-pane class="inspector-pane" title="Page inspector" icon="manage_search" [size]="480" [minSize]="300">
       <app-page-inspector />
-    </aside>
-  </div>
+    </ui-split-pane>
+  </ui-split>
 </div>

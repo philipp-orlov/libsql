@@ -152,34 +152,23 @@ mat-progress-bar,
 }
 
 .body {
-  display: grid;
   flex: 1;
-  grid-template-columns: 240px minmax(380px, 1fr) minmax(400px, 520px);
   min-height: 0;
   border-top: 1px solid var(--mat-sys-outline-variant);
 }
 
 .trees {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-right: 1px solid var(--mat-sys-outline-variant);
-
-  .trees-head {
-    display: flex;
-    flex: none;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px 8px 6px 14px;
-    font-weight: 500;
-    color: var(--mat-sys-on-surface-variant);
-  }
-
   .trees-scroll {
-    flex: 1;
-    min-height: 0;
+    height: 100%;
     overflow: auto;
     padding-bottom: 12px;
+  }
+
+  .small {
+    --mat-icon-button-state-layer-size: 28px;
+    width: 28px;
+    height: 28px;
+    padding: 4px;
   }
 
   .group-title {
@@ -234,24 +223,13 @@ mat-progress-bar,
 }
 
 .centre {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  border-right: 1px solid var(--mat-sys-outline-variant);
-
-  .centre-bar {
-    flex: none;
-    padding: 8px 12px 0;
-
-    mat-button-toggle-group {
-      --mat-button-toggle-height: 34px;
-    }
+  mat-button-toggle-group {
+    --mat-button-toggle-height: 30px;
+    margin: 3px 0;
   }
 
   .centre-body {
-    flex: 1;
-    min-height: 0;
+    height: 100%;
     overflow: auto;
   }
 
@@ -260,10 +238,8 @@ mat-progress-bar,
   }
 }
 
-.inspector-pane {
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
+.inspector-pane app-page-inspector {
+  height: 100%;
 }
 
 .intro {
@@ -370,11 +346,5 @@ mat-progress-bar,
   th {
     color: var(--mat-sys-on-surface-variant);
     font-weight: 500;
-  }
-}
-
-@media (max-width: 1200px) {
-  .body {
-    grid-template-columns: 200px minmax(300px, 1fr) minmax(340px, 440px);
   }
 }

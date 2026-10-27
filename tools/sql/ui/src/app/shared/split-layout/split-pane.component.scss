@@ -1,0 +1,138 @@
+:host {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: visible;
+  background: var(--ui-split-pane-background, transparent);
+}
+
+:host(.hidden) {
+  display: none;
+}
+
+.pane-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 4px 0 12px;
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+  background: var(--ui-split-header-background, var(--mat-sys-surface-container-low));
+  color: var(--mat-sys-on-surface-variant);
+  user-select: none;
+}
+
+.pane-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.pane-title {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.pane-spacer {
+  flex: 1;
+}
+
+.pane-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+
+  mat-icon {
+    width: 16px;
+    height: 16px;
+    font-size: 16px;
+  }
+
+  &:hover {
+    background: var(--mat-sys-surface-container-highest);
+    color: var(--mat-sys-on-surface);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--mat-sys-primary);
+  }
+}
+
+.pane-body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+:host(.maximized) .pane-header {
+  background: var(--mat-sys-secondary-container);
+  color: var(--mat-sys-on-secondary-container);
+}
+
+/* The sash straddles the trailing edge of the pane; a thin line shows at rest, a thicker accent on hover and drag. */
+.sash {
+  position: absolute;
+  z-index: 5;
+  background: transparent;
+  touch-action: none;
+  transition: background 0.12s 0.1s;
+
+  &::after {
+    position: absolute;
+    content: '';
+    background: var(--mat-sys-outline-variant);
+  }
+
+  &:hover,
+  &.dragging,
+  &:focus-visible {
+    background: color-mix(in srgb, var(--mat-sys-primary) 55%, transparent);
+    outline: none;
+  }
+
+  &.dragging {
+    transition: none;
+  }
+}
+
+:host(.horizontal) .sash {
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+
+  &::after {
+    inset: 0 2px;
+  }
+}
+
+:host(:not(.horizontal)) .sash {
+  right: 0;
+  bottom: -3px;
+  left: 0;
+  height: 6px;
+  cursor: row-resize;
+
+  &::after {
+    inset: 2px 0;
+  }
+}
