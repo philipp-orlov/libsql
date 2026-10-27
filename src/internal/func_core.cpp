@@ -9,6 +9,7 @@
 #include <random>
 
 #include "internal/cnumeric.hpp"
+#include "internal/encoding.hpp"
 #include "internal/exec.hpp"
 #include "internal/util.hpp"
 #include "sql/sql.hpp"
@@ -150,6 +151,62 @@ void fnHex(FuncContext& ctx, int, Args argv, Value& out)
         s += kDigits[b & 15];
     }
     out.setText(s);
+}
+
+// storage_row(x), storage_key(x), storage_rowid(x): what the bytes of a stored record, key or rowid key mean, for
+// reading PRAGMA storage_nodes; NULL when the bytes are not one. See pragma_storage.cpp.
+void fnStorageRow(FuncContext& ctx, int, Args argv, Value& out)
+{
+    out.setNull();
+    if (argv[0]->type() != Type::Blob)
+        return;
+    try {
+        const BlobView b = argv[0]->blob();
+        const std::vector<Value> cells = decodeRow(std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
+        std::string& s = ctx.buf;
+        s = "(";
+        for (std::size_t i = 0; i < cells.size(); ++i) {
+            if (i)
+                s += ", ";
+            quoteValue(cells[i], s);
+        }
+        s += ")";
+        out.setText(s);
+    } catch (const std::exception&) {
+        out.setNull();
+    }
+}
+
+void fnStorageKey(FuncContext& ctx, int, Args argv, Value& out)
+{
+    out.setNull();
+    if (argv[0]->type() != Type::Blob)
+        return;
+    try {
+        const BlobView b = argv[0]->blob();
+        std::string_view in(reinterpret_cast<const char*>(b.data()), b.size());
+        std::string& s = ctx.buf;
+        s = "(";
+        for (bool first = true; !in.empty(); first = false) {
+            if (!first)
+                s += ", ";
+            quoteValue(decodeKey(in), s);
+        }
+        s += ")";
+        out.setText(s);
+    } catch (const std::exception&) {
+        out.setNull();
+    }
+}
+
+void fnStorageRowid(FuncContext&, int, Args argv, Value& out)
+{
+    out.setNull();
+    if (argv[0]->type() != Type::Blob || argv[0]->blob().size() != 8)
+        return;
+    const BlobView b = argv[0]->blob();
+    std::string_view in(reinterpret_cast<const char*>(b.data()), b.size());
+    out.setInteger(readRowidKey(in));
 }
 
 void fnInstr(FuncContext& ctx, int, Args argv, Value& out)
@@ -960,6 +1017,9 @@ void registerCoreFunctions(FunctionRegistry& r)
     add(r, "concat_ws", 2, -1, fnConcatWs);
     add(r, "glob", 2, 2, fnGlob);
     add(r, "hex", 1, 1, fnHex);
+    add(r, "storage_key", 1, 1, fnStorageKey);
+    add(r, "storage_row", 1, 1, fnStorageRow);
+    add(r, "storage_rowid", 1, 1, fnStorageRowid);
     add(r, "ifnull", 2, 2, fnCoalesceEager);
     add(r, "iif", 3, 3, fnIifEager);
     add(r, "instr", 2, 2, fnInstr, kDeterministic | kNeedsCollation);

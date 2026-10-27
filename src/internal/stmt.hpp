@@ -155,6 +155,12 @@ struct PragmaResult
 PragmaResult runPragma(Session& s, const std::string& schema, const std::string& name,
                        const Value* value, bool call);
 std::vector<std::string> pragmaColumns(const std::string& name);
+
+// PRAGMA storage_* (pragma_storage.cpp)
+bool isStoragePragma(std::string_view name);
+std::vector<std::string> storagePragmaColumns(std::string_view name);
+std::vector<const char*> storagePragmaNames();
+void runStoragePragma(Session& s, std::size_t storeIdx, const std::string& name, const Value* value, PragmaResult& r);
 /// sqlite_schema rows for store `i`.
 void schemaRows(Session& s, std::size_t i, RowStore& out);
 

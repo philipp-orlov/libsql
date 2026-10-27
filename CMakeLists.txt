@@ -152,6 +152,7 @@ add_library(sql
     src/internal/parser.cpp
     src/internal/plan_select.cpp
     src/internal/pragma.cpp
+    src/internal/pragma_storage.cpp
     src/internal/run_select.cpp
     src/internal/schema.cpp
     src/internal/statement.cpp

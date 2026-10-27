@@ -260,6 +260,8 @@ std::vector<std::string> pragmaColumns(const std::string& name)
         return {"timeout"};
     if (n == "pragma_list" || n == "module_list")
         return {"name"};
+    if (isStoragePragma(n))
+        return storagePragmaColumns(n);
     return {n};
 }
 
@@ -468,6 +470,10 @@ PragmaResult runPragma(Session& s, const std::string& schema, const std::string&
         integrityCheck(s, r, name == "quick_check");
         return r;
     }
+    if (isStoragePragma(name)) {
+        runStoragePragma(s, storeIdx, name, value, r);
+        return r;
+    }
     if (name == "compile_options") {
         r.columns = {"compile_options"};
         for (const char* o : {"DQS=0", "ENABLE_MATH_FUNCTIONS", "LIBSQL", "OMIT_LOAD_EXTENSION", "SOUNDEX",
@@ -485,6 +491,8 @@ PragmaResult runPragma(Session& s, const std::string& schema, const std::string&
     if (name == "pragma_list") {
         r.columns = pragmaColumns(name);
         for (const char* p : kPragmas)
+            r.rows.push_back({Value(p)});
+        for (const char* p : storagePragmaNames())
             r.rows.push_back({Value(p)});
         return r;
     }
@@ -785,7 +793,7 @@ SubqueryPlan* Planner::planSchemaTable(std::string_view schema, std::string_view
 SubqueryPlan* Planner::planPragmaFunction(std::string_view pragma, std::vector<ExprPtr>& args, Scope& scope)
 {
     const std::string name = toLower(pragma);
-    bool known = false;
+    bool known = isStoragePragma(name);
     for (const char* p : kPragmas)
         known = known || name == p;
     if (!known)
