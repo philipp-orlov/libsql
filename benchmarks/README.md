@@ -68,4 +68,5 @@ Memory: 256 sessions that each ran a query add 4.8 MiB of resident memory, serve
 session; the 256 handles fit the idle-handle pool plus per-session rings, with no large buffers). In a 30 s soak of
 434,000 mixed requests on 4 sessions the resident size was the same, 33,708 KiB, at 5 s and at 30 s. The tests assert
 the same properties: no heap allocation per request on a warm server session or a warm client, and flat memory over
-tens of thousands of requests.
+tens of thousands of requests. A 600 s soak (`./bench_remote 600`, 3,199,000 requests) ended with resident memory
+42,644 KiB, 0 KiB above the level after warm-up.

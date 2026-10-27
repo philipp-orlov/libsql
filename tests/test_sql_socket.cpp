@@ -832,7 +832,13 @@ TEST(socket_shutdown_graceful)
 {
     Fixture f;
     Wire w = f.open();
-    auto slowish = w.exec("WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 300000) SELECT count(*) FROM c");
+    // Under AddressSanitizer this query is about 80 times slower; the test is about the grace period, not the engine.
+#if defined(__SANITIZE_ADDRESS__)
+    const char* slowSql = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 20000) SELECT count(*) FROM c";
+#else
+    const char* slowSql = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 300000) SELECT count(*) FROM c";
+#endif
+    auto slowish = w.exec(slowSql);
     std::this_thread::sleep_for(50ms);
     std::thread shutting([&] { f.socket->shutdown(20s); });
     struct Joiner
