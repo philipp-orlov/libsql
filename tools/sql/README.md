@@ -110,6 +110,44 @@ The interface has no login. Anyone who can reach the port can read and change th
 - Another process cannot open a store while the tool has it open (and the other way round): the store allows one
   process. Stop isvc before you point the tool at its `metrics.db`.
 
+## The Visualize tab
+
+A debugging view of the store under the database: libnosql keeps everything in one file of fixed-size pages, and this
+tab draws it.
+
+- **Counters** of the file and the transactions, and a bar that divides the pages by what they are.
+- **Page map**: every page of the file as a square, in file order, coloured as meta, branch, leaf, overflow or free
+  (free pages are hatched: their bytes are stale). Pick a tree on the left and the others fade. Hover for the page's
+  number, kind and tree; click to open it. A file with more than 40,000 pages shares a square between several.
+- **Tree**: a table's or index's B+tree opened level by level, as a list or a diagram. Each page shows how full it
+  is, how many entries lie below it and the separator key it is filed under (a rowid, or a decoded index key).
+- **Page inspector**: the header; the stored hash against the one computed (a damaged page says so); how the page's
+  4096 bytes are used (header, slot array, free gap, nodes, shared key prefix, hash); every node with its key and
+  value decoded (rowids, key-encoded index entries, stored rows), links to child pages and to the overflow run a large
+  value lives on; and a hex dump with each part coloured, scrolling to the node you select.
+- **Meta pages**: the two alternating meta pages, which is current, their checksums, and the commit chain.
+- **Free list**: the pages waiting for reuse and the transaction that retired them.
+- **Check integrity** recomputes every page's hash and runs the structural check; bad pages are circled on the map.
+
+All of it is read over the same SQL socket as the other tabs, from `PRAGMA storage_*`, which you can also use
+yourself (committed state only; they never show a transaction's pending changes):
+
+| Pragma | Rows |
+| --- | --- |
+| `storage_stats` | `name, value`: the store's counters |
+| `storage_meta` | one per meta page: ids, checksums, transaction, page counts |
+| `storage_trees` | one per tree: the table or index it holds, root, depth, page counts, entries |
+| `storage_map` | runs of consecutive pages of one kind and tree |
+| `storage_free` | free-list entries: the transaction that retired the pages, how many |
+| `storage_page(n)` | page n's header, free space, shared prefix, stored and computed hash |
+| `storage_nodes(n)` | the keys and values, or child pages, on page n |
+| `storage_bytes(n)` | the page's bytes (an overflow run: its first 16 pages) |
+| `storage_check` | `result, page, detail, pages_checked`: every page's hash, then the structural check |
+
+They are also table-valued functions, so they join: `SELECT object, leaf_pages FROM pragma_storage_trees() ORDER BY
+leaf_pages DESC`. `storage_row(blob)`, `storage_key(blob [, with_rowid])` and `storage_rowid(blob)` decode the bytes of
+a stored row, an index or WITHOUT ROWID key, or a rowid key.
+
 ## What the page asks
 
 The page needs nothing from the server but the socket. `ui/src/app/services/catalog.ts` holds the SQL behind each

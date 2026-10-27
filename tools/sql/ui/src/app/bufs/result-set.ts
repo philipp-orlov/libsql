@@ -437,6 +437,12 @@ export class ResultSetView {
     return this.batches[lo];
   }
 
+  /** The bytes of a TEXT or BLOB cell, whole (a BLOB cut by the writer's blobPrefix is cut here too). */
+  raw(row: number, column: number): Uint8Array {
+    const batch = this.batchOf(row);
+    return batch.column(column).raw(row - batch.rowOffset);
+  }
+
   /** The cell as the web API's JSON would send it. */
   cell(row: number, column: number): Cell {
     const batch = this.batchOf(row);

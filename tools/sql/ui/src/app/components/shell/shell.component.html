@@ -35,6 +35,12 @@
     <mat-tab label="Execute SQL">
       <app-execute-sql />
     </mat-tab>
+    <mat-tab label="Visualize">
+      <!-- read only when the tab is opened -->
+      <ng-template matTabContent>
+        <app-visualize />
+      </ng-template>
+    </mat-tab>
   </mat-tab-group>
 
   <footer class="status">

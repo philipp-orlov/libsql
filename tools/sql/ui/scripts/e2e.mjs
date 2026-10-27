@@ -17,7 +17,7 @@ assert(binary, 'usage: node scripts/e2e.mjs path/to/sql');
 
 const bundle = await build({
   stdin: {
-    contents: "export * from './src/app/remote/index.ts'; export * as catalog from './src/app/services/catalog.ts';",
+    contents: "export * from './src/app/remote/index.ts'; export * as catalog from './src/app/services/catalog.ts'; export * as storage from './src/app/services/storage.ts';",
     resolveDir: root,
     loader: 'ts',
   },
@@ -26,7 +26,7 @@ const bundle = await build({
   format: 'esm',
   platform: 'node',
 });
-const { SqlSocket, SocketError, ErrorCode, Catalog, catalog } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+const { SqlSocket, SocketError, ErrorCode, Catalog, catalog, storage } = await import('data:text/javascript;base64,' + Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 
 const freePort = () =>
   new Promise(resolve => {
@@ -214,6 +214,117 @@ const check = await new Promise(resolve => {
 });
 assert.match(check, /\b4\b/);
 ok('the dump rebuilds the database');
+
+// ---- the store underneath (the Visualize tab)
+await run('CREATE TABLE wide(id INTEGER PRIMARY KEY, who TEXT, blob BLOB)');
+await run('CREATE INDEX wide_who ON wide(who)');
+await run("WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000) INSERT INTO wide SELECT n, 'person ' || (n % 40), randomblob(20) FROM c");
+await run("INSERT INTO wide VALUES (100000, 'big', randomblob(30000))");
+await run('COMMIT');
+await run('DELETE FROM wide WHERE id % 5 = 0 AND id < 100000');
+await run('COMMIT');
+
+const stats = await storage.loadStats(conn);
+assert.equal(stats.page_size, 4096);
+const trees = await storage.loadTrees(conn);
+const runs = await storage.loadMap(conn);
+const meta = await storage.loadMeta(conn);
+const free = await storage.loadFree(conn);
+
+// the map covers every page once, and agrees with the trees and the counters
+let next = 0;
+const byKind = {};
+const perTree = {};
+for (const r of runs) {
+  assert.equal(r.first, next, 'runs are consecutive');
+  next += r.count;
+  byKind[r.kind] = (byKind[r.kind] ?? 0) + r.count;
+  if (r.tree !== null) {
+    perTree[`${r.tree}:${r.kind}`] = (perTree[`${r.tree}:${r.kind}`] ?? 0) + r.count;
+  }
+}
+assert.equal(next, stats.used_pages);
+assert.equal(byKind.meta, 2);
+assert.equal(byKind.free ?? 0, stats.free_pages);
+assert.equal(byKind.unknown ?? 0, 0);
+for (const t of trees) {
+  assert.equal(perTree[`${t.id}:branch`] ?? 0, t.branchPages, `branch pages of ${t.name}`);
+  assert.equal(perTree[`${t.id}:leaf`] ?? 0, t.leafPages, `leaf pages of ${t.name}`);
+  assert.equal((perTree[`${t.id}:overflow`] ?? 0) + (perTree[`${t.id}:overflow-continued`] ?? 0), t.overflowPages, `overflow pages of ${t.name}`);
+}
+assert.equal(free.reduce((n, e) => n + e.pages, 0), stats.free_pages);
+assert.equal(meta.filter(m => m.current).length, 1);
+assert(meta.every(m => m.valid && m.checksum === m.computedChecksum));
+ok('the map, the trees and the counters agree');
+
+// walk the "wide" table from its root: every page's hash is good and the counts add up
+const wide = trees.find(t => t.object === 'wide');
+assert.equal(wide.kind, 'table');
+const widx = trees.find(t => t.object === 'wide_who');
+assert.equal(widx.kind, 'index');
+assert.equal(widx.parent, 'wide');
+async function walk(tree) {
+  let pages = 0, entries = 0, bigValues = 0;
+  const stack = [tree.root];
+  while (stack.length) {
+    const pg = stack.pop();
+    const page = await storage.loadPage(conn, pg);
+    assert(page.hashOk && page.headerOk, `page ${pg} is sound`);
+    pages++;
+    const nodes = await storage.loadNodes(conn, pg, tree.kind);
+    assert.equal(nodes.length, page.nkeys);
+    if (page.kind === 'branch') {
+      assert.equal(nodes.reduce((n, x) => n + x.count, 0), page.entries);
+      const kids = await storage.loadChildren(conn, pg);
+      assert.deepEqual(kids.map(k => k.pgno), nodes.map(n => n.child));
+      stack.push(...nodes.map(n => n.child));
+    } else {
+      entries += nodes.length;
+      for (const n of nodes) {
+        if (n.big) {
+          bigValues++;
+          const run = await storage.loadPage(conn, n.overflow);
+          assert.equal(run.kind, 'overflow');
+          assert(run.hashOk && run.runPages >= 8);
+          const { bytes, pages: shown } = await storage.loadBytes(conn, n.overflow);
+          assert.equal(bytes.length, shown * 4096);
+        }
+      }
+    }
+  }
+  return { pages, entries, bigValues };
+}
+const w = await walk(wide);
+assert.equal(w.entries, wide.entries);
+assert.equal(w.pages, wide.branchPages + wide.leafPages);
+assert.equal(w.bigValues, 1);
+const wi = await walk(widx);
+assert.equal(wi.entries, widx.entries);
+ok('every page of a table and an index is sound, and its counts add up');
+
+// decoded keys and rows
+let leaf = wide.root;
+while ((await storage.loadPage(conn, leaf)).kind === 'branch') {
+  leaf = (await storage.loadNodes(conn, leaf, 'table'))[0].child;
+}
+const items = await storage.loadNodes(conn, leaf, 'table');
+assert.equal(items[0].rowid, 1);
+assert.match(items[0].rowText, /^\(NULL, 'person 1', X'[0-9A-F]{40}'\)$/);
+let idxLeaf = widx.root;
+while ((await storage.loadPage(conn, idxLeaf)).kind === 'branch') {
+  idxLeaf = (await storage.loadNodes(conn, idxLeaf, 'index'))[0].child;
+}
+const entries = await storage.loadNodes(conn, idxLeaf, 'index');
+assert.match(entries[0].keyText, /^\('big', rowid 100000\)$/);
+ok('keys and rows are decoded');
+
+const report = await storage.runCheck(conn);
+assert.equal(report.ok, true);
+assert(report.pagesChecked > 40 && report.pagesChecked <= stats.used_pages, JSON.stringify({ checked: report.pagesChecked, used: stats.used_pages }));
+ok('the integrity check passes');
+await assert.rejects(storage.loadPage(conn, 99999999), /beyond the last page/);
+await assert.rejects(storage.loadPage(conn, 1.5), /bad page number/);
+ok('bad page numbers are refused');
 
 // ---- the old JSON API is gone
 const response = await fetch(`http://127.0.0.1:${port}/api/info`);

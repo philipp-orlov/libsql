@@ -1,0 +1,182 @@
+<div class="inspector">
+  <div class="bar">
+    <button mat-icon-button (click)="store.back()" [disabled]="!store.canGoBack()" matTooltip="Back" aria-label="Back"><mat-icon>arrow_back</mat-icon></button>
+    <button mat-icon-button (click)="store.forward()" [disabled]="!store.canGoForward()" matTooltip="Forward" aria-label="Forward"><mat-icon>arrow_forward</mat-icon></button>
+    <button mat-icon-button (click)="step(-1)" [disabled]="store.selectedPage() === null" matTooltip="Previous page" aria-label="Previous page"><mat-icon>chevron_left</mat-icon></button>
+    <button mat-icon-button (click)="step(1)" [disabled]="store.selectedPage() === null" matTooltip="Next page" aria-label="Next page"><mat-icon>chevron_right</mat-icon></button>
+    <input #goto class="goto mono" type="text" inputmode="numeric" placeholder="page #" aria-label="Go to page" (keydown.enter)="go(goto.value)" />
+    <span class="spacer"></span>
+    @if (loading()) {
+      <mat-icon class="spin">autorenew</mat-icon>
+    }
+  </div>
+
+  @if (store.selectedPage() === null) {
+    <div class="empty">
+      <mat-icon>touch_app</mat-icon>
+      <p>Click a page on the map, a page in the tree, or type a page number to look inside it.</p>
+    </div>
+  } @else if (error(); as message) {
+    <div class="empty error">
+      <mat-icon>error_outline</mat-icon>
+      <p>{{ message }}</p>
+    </div>
+  } @else if (details(); as d) {
+    <header class="title">
+      <span class="kind-dot" [style.background]="colors[d.kind]"></span>
+      <h3>Page {{ d.pgno }}</h3>
+      <span class="kind">{{ labels[d.kind] }}</span>
+      @if (treeName(); as name) {
+        <span class="chip tree" matTooltip="The tree this page belongs to"><mat-icon>account_tree</mat-icon>{{ name }}</span>
+      }
+      @if (d.prefixKeys) {
+        <span class="chip" matTooltip="The keys share a prefix that is stored once on the page">prefix-compressed</span>
+      }
+      @if (d.suffixKeys) {
+        <span class="chip" matTooltip="The keys share a suffix that is stored once on the page">suffix-compressed</span>
+      }
+      @if (store.badPages().has(d.pgno)) {
+        <span class="chip bad"><mat-icon>report</mat-icon>failed the check</span>
+      }
+      @if (owner()?.kind === 'free') {
+        <span class="chip stale" matTooltip="The page is on the free list: its bytes are whatever it held before">free · stale bytes</span>
+      }
+    </header>
+
+    <div class="hash" [class.ok]="d.hashOk" [class.bad]="!d.hashOk">
+      <mat-icon>{{ d.hashOk ? 'verified' : 'gpp_bad' }}</mat-icon>
+      <div class="hash-text">
+        <div class="line"><span class="label">stored hash</span><span class="mono value">{{ d.storedHash }}</span></div>
+        <div class="line"><span class="label">computed</span><span class="mono value">{{ d.computedHash }}</span></div>
+      </div>
+      <div class="verdict">
+        {{ d.hashOk ? 'matches' : 'does not match' }}
+        @if (!d.headerOk) {
+          <br /><small>header not valid</small>
+        }
+      </div>
+    </div>
+
+    <section class="usage">
+      <div class="usage-bar">
+        @for (segment of segments(); track $index) {
+          <div class="segment" [style.flex-grow]="segment.bytes" [style.background]="segment.color" [matTooltip]="segment.label + ' — ' + segment.detail">
+            @if (percent(segment.bytes) > 9) {
+              <span>{{ segment.label }}</span>
+            }
+          </div>
+        }
+      </div>
+      @if (isTreePage()) {
+        <div class="fill">
+          <mat-progress-bar mode="determinate" [value]="fillPercent()"></mat-progress-bar>
+          <span>{{ fillPercent() }}% full · {{ d.freeBytes }} bytes free</span>
+        </div>
+      }
+    </section>
+
+    <dl class="fields">
+      <dt>Flags</dt>
+      <dd class="mono">{{ d.flags }} <span class="muted">{{ flags().join(' | ') }}</span></dd>
+      @if (isTreePage()) {
+        <dt>Keys</dt>
+        <dd class="mono">{{ d.nkeys }} <span class="muted">{{ d.kind === 'branch' ? 'children' : 'entries' }}</span></dd>
+        <dt>Slot array ends</dt>
+        <dd class="mono">{{ d.lower }}</dd>
+        <dt>Nodes start</dt>
+        <dd class="mono">{{ d.upper }}</dd>
+        <dt>Entries below</dt>
+        <dd class="mono">{{ d.entries }}</dd>
+      }
+      @if (d.sharedBytes > 0) {
+        <dt>Shared {{ d.suffixKeys ? 'suffix' : 'prefix' }}</dt>
+        <dd class="mono">{{ d.sharedBytes }} bytes <span class="muted">in a {{ d.sharedBlock }}-byte block</span></dd>
+      }
+      @if (d.kind === 'overflow') {
+        <dt>Run</dt>
+        <dd class="mono">{{ d.runPages }} pages <span class="muted">holding up to {{ bytesText(d.runBytes) }}</span></dd>
+      }
+      <dt>Page size</dt>
+      <dd class="mono">{{ d.pageSize }} <span class="muted">at file offset {{ d.pgno * d.pageSize }}</span></dd>
+    </dl>
+
+    <mat-tab-group class="tabs" animationDuration="0ms" [selectedIndex]="tab()" (selectedIndexChange)="setTab($event)" mat-stretch-tabs="false">
+      @if (isTreePage()) {
+        <mat-tab [label]="(isBranch() ? 'Children' : 'Items') + ' (' + nodes().length + ')'">
+          <div class="items">
+            <div class="items-bar">
+              <mat-button-toggle-group [value]="keyMode()" (change)="keyMode.set($event.value)" aria-label="How to show keys and values" hideSingleSelectionIndicator>
+                <mat-button-toggle value="auto">Decoded</mat-button-toggle>
+                <mat-button-toggle value="hex">Hex</mat-button-toggle>
+              </mat-button-toggle-group>
+            </div>
+            <div class="head item">
+              <span class="idx">#</span>
+              <span class="key">Key</span>
+              <span class="val">{{ isBranch() ? 'Child' : 'Value' }}</span>
+              <span class="size">Size</span>
+              <span class="off">At</span>
+            </div>
+            <cdk-virtual-scroll-viewport class="list" itemSize="30">
+              <div
+                *cdkVirtualFor="let node of nodes(); trackBy: trackNode"
+                class="item"
+                [class.selected]="node.index === selectedNode()"
+                (click)="chooseNode(node)"
+              >
+                <span class="idx mono">{{ node.index }}</span>
+                <span class="key mono" [title]="keyOf(node)">{{ keyOf(node) }}</span>
+                <span class="val mono">
+                  @if (isBranch()) {
+                    <button class="link" (click)="open(node.child); $event.stopPropagation()">page {{ node.child }}</button>
+                    <span class="share" [matTooltip]="node.count + ' entries below'"><span class="share-fill" [style.width.%]="childShare(node)"></span></span>
+                    <span class="muted">{{ node.count }}</span>
+                  } @else if (node.big) {
+                    <button class="link" (click)="open(node.overflow); $event.stopPropagation()" [matTooltip]="'The value is on an overflow run starting at page ' + node.overflow">
+                      <mat-icon>open_in_new</mat-icon>overflow · page {{ node.overflow }}
+                    </button>
+                    <span class="muted">{{ bytesText(node.valueBytes) }}</span>
+                  } @else {
+                    <span class="text" [title]="valueOf(node)">{{ valueOf(node) }}</span>
+                  }
+                </span>
+                <span class="size mono">{{ node.size }}</span>
+                <span class="off mono">{{ node.offset }}</span>
+              </div>
+            </cdk-virtual-scroll-viewport>
+            @if (current(); as node) {
+              <div class="detail">
+                <div class="detail-title">Node {{ node.index }} · {{ node.size }} bytes at offset {{ node.offset }}</div>
+                <div class="kv"><span>key ({{ node.keyBytes }} B)</span><code>{{ hex(node.key) }}</code></div>
+                @if (isBranch()) {
+                  <div class="kv"><span>child</span><code>page {{ node.child }} · {{ node.count }} entries</code></div>
+                } @else {
+                  <div class="kv"><span>value ({{ node.valueBytes }} B)</span><code>{{ node.big ? 'on overflow page ' + node.overflow : hex(node.value) }}</code></div>
+                  @if (node.rowText !== null) {
+                    <div class="kv"><span>decoded row</span><code>{{ node.rowText }}</code></div>
+                  }
+                  @if (node.keyText !== null) {
+                    <div class="kv"><span>decoded key</span><code>{{ node.keyText }}</code></div>
+                  }
+                }
+              </div>
+            }
+          </div>
+        </mat-tab>
+      }
+      <mat-tab label="Bytes">
+        <div class="hex">
+          <div class="legend">
+            @for (segment of segments(); track $index) {
+              <span class="legend-item"><span class="dot" [style.background]="segment.color"></span>{{ segment.label }}</span>
+            }
+          </div>
+          @if (d.kind === 'overflow' && bytesPages() < d.runPages) {
+            <p class="note">The first {{ bytesPages() }} of {{ d.runPages }} pages of the run.</p>
+          }
+          <app-hex-dump [bytes]="bytes()" [regions]="regions()" [highlight]="highlight()" [base]="d.pgno * d.pageSize" (pick)="pickByte($event)" />
+        </div>
+      </mat-tab>
+    </mat-tab-group>
+  }
+</div>

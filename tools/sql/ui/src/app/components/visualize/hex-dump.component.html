@@ -1,0 +1,23 @@
+<cdk-virtual-scroll-viewport class="viewport" itemSize="20" minBufferPx="200" maxBufferPx="400">
+  <div *cdkVirtualFor="let row of rowIndexes()" class="row">
+    <span class="offset">{{ rowOffset(row) }}</span>
+    <span class="hex">
+      @for (column of columns; track column) {
+        <span
+          class="byte"
+          [class.gap]="column === 7"
+          [class.hl]="highlighted(row, column)"
+          [style.background]="colorAt(row, column)"
+          [title]="titleAt(row, column)"
+          (click)="onPick(row, column)"
+          >{{ hexAt(row, column) }}</span
+        >
+      }
+    </span>
+    <span class="ascii">
+      @for (column of columns; track column) {
+        <span class="char" [class.hl]="highlighted(row, column)" [style.background]="colorAt(row, column)">{{ charAt(row, column) }}</span>
+      }
+    </span>
+  </div>
+</cdk-virtual-scroll-viewport>

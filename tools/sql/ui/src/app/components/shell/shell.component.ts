@@ -13,6 +13,7 @@ import { BrowseComponent } from '../browse/browse.component';
 import { ExecuteSqlComponent } from '../execute-sql/execute-sql.component';
 import { PragmasComponent } from '../pragmas/pragmas.component';
 import { StructureComponent } from '../structure/structure.component';
+import { VisualizeComponent } from '../visualize/visualize.component';
 
 @Component({
   selector: 'app-shell',
@@ -27,6 +28,7 @@ import { StructureComponent } from '../structure/structure.component';
     BrowseComponent,
     PragmasComponent,
     ExecuteSqlComponent,
+    VisualizeComponent,
   ],
   templateUrl: './shell.component.html',
   styleUrl: './shell.component.scss',

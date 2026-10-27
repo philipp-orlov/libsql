@@ -94,6 +94,24 @@ TEST(storage_pages_and_nodes_walk_a_tree)
     CHECK_EQ(tst::only(db.exec("SELECT length(data) FROM pragma_storage_bytes(" + std::to_string(root) + ")")), std::string("4096"));
 }
 
+TEST(storage_decodes_index_keys_and_rows)
+{
+    tst::Scratch s("storage");
+    Database db = s.open();
+    fill(db);
+    const std::string leaf =
+        "(SELECT first FROM pragma_storage_map() WHERE kind = 'leaf' AND tree = "
+        "(SELECT id FROM pragma_storage_trees() WHERE object = 'orders_customer') ORDER BY first LIMIT 1)";
+    const Result r = db.exec("SELECT storage_key(key, 1), storage_key(key) FROM pragma_storage_nodes(" + leaf + ") LIMIT 1");
+    CHECK_EQ(r[0][0].toText(), std::string("('big', rowid 5000)"));
+    CHECK(r[0][1].isNull());  // without the flag the trailing rowid bytes are not a key
+    // WITHOUT ROWID: the key is the columns
+    const std::string tags = "(SELECT first FROM pragma_storage_map() WHERE kind = 'leaf' AND tree = "
+                             "(SELECT id FROM pragma_storage_trees() WHERE object = 'tags') LIMIT 1)";
+    CHECK_EQ(tst::flatten(db.exec("SELECT storage_key(key), storage_row(value) FROM pragma_storage_nodes(" + tags + ")")),
+             std::string("('a')|('a', 1);('b')|('b', 2)"));
+}
+
 TEST(storage_meta_stats_and_free_list)
 {
     tst::Scratch s("storage");

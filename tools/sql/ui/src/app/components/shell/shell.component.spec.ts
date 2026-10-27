@@ -31,10 +31,10 @@ describe('ShellComponent', () => {
     expect(query(el, '.status').textContent).toContain('libsql 0.2.0');
   });
 
-  it('has the four tabs of DB Browser', async () => {
+  it('has the four tabs of DB Browser and the Visualize tab', async () => {
     const { el } = await create();
     const labels = Array.from(el.querySelectorAll('.mdc-tab')).map(tab => tab.textContent?.trim());
-    expect(labels).toEqual(['Database Structure', 'Browse Data', 'Edit Pragmas', 'Execute SQL']);
+    expect(labels).toEqual(['Database Structure', 'Browse Data', 'Edit Pragmas', 'Execute SQL', 'Visualize']);
   });
 
   it('keeps Write Changes and Revert Changes off until something is pending', async () => {

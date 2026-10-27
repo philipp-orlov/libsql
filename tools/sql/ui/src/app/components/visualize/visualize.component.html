@@ -1,0 +1,183 @@
+<div class="visualize">
+  <div class="actions">
+    <button mat-button class="refresh" (click)="refresh()" [disabled]="store.loading()"><mat-icon>refresh</mat-icon> Refresh</button>
+    <button mat-button class="check" (click)="check()" [disabled]="store.checking() || store.loading()" matTooltip="Recompute the hash of every page and run the structural check">
+      <mat-icon>fact_check</mat-icon> Check integrity
+    </button>
+    <mat-slide-toggle class="auto" [checked]="autoRefresh()" (change)="autoRefresh.set($event.checked)">Refresh every 3 s</mat-slide-toggle>
+    <span class="spacer"></span>
+    @if (db.inTransaction()) {
+      <span class="note pending" matTooltip="This tab reads what is committed. Press Write Changes to see pending changes here.">
+        <mat-icon>pending</mat-icon>Pending changes are not shown
+      </span>
+    }
+    @if (store.takenAt(); as at) {
+      <span class="note">Snapshot of txn {{ store.stats()['last_txn'] ?? '' }} · {{ at | date: 'HH:mm:ss' }}</span>
+    }
+  </div>
+  @if (store.loading() || store.checking()) {
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+  } @else {
+    <div class="progress-space"></div>
+  }
+
+  @if (store.error(); as message) {
+    <div class="banner error"><mat-icon>error_outline</mat-icon>{{ message }}</div>
+  }
+
+  @if (store.check(); as report) {
+    <div class="banner" [class.ok]="report.ok" [class.error]="!report.ok">
+      <mat-icon>{{ report.ok ? 'verified' : 'gpp_bad' }}</mat-icon>
+      <div class="banner-text">
+        @if (report.ok) {
+          Every one of the {{ report.pagesChecked }} pages matches its hash and the structure is consistent.
+        } @else {
+          {{ report.badPages.length }} page{{ report.badPages.length === 1 ? '' : 's' }} failed:
+          @for (page of report.badPages.slice(0, 24); track page) {
+            <button class="page-link" (click)="openPage(page)">{{ page }}</button>
+          }
+          @if (report.badPages.length > 24) {
+            <span>… and {{ report.badPages.length - 24 }} more</span>
+          }
+          @if (report.integrity) {
+            <div class="detail">{{ report.integrity }}</div>
+          }
+        }
+      </div>
+    </div>
+  }
+
+  <div class="stats">
+    @for (stat of stats(); track stat.label) {
+      <div class="stat" [matTooltip]="stat.hint">
+        <mat-icon>{{ stat.icon }}</mat-icon>
+        <div>
+          <div class="stat-value">{{ stat.value }}</div>
+          <div class="stat-label">{{ stat.label }}</div>
+        </div>
+      </div>
+    }
+  </div>
+
+  <div class="usage" aria-label="How the pages in use are divided">
+    @for (kind of kinds; track kind) {
+      @if (store.totals()[kind] > 0) {
+        <div class="usage-part" [style.flex-grow]="store.totals()[kind]" [style.background]="colors[kind]" [matTooltip]="labels[kind] + ': ' + store.totals()[kind] + ' pages (' + share(kind).toFixed(1) + '%)'"></div>
+      }
+    }
+  </div>
+
+  <div class="body">
+    <aside class="trees">
+      <div class="trees-head">
+        <span>Trees</span>
+        @if (store.selectedTree() !== null) {
+          <button mat-icon-button (click)="clearTree()" matTooltip="Show every tree on the map" aria-label="Clear the selection"><mat-icon>filter_alt_off</mat-icon></button>
+        }
+      </div>
+      <div class="trees-scroll">
+        @for (group of groups(); track group.title) {
+          <div class="group-title">{{ group.title }}</div>
+          @for (tree of group.trees; track tree.id) {
+            <button class="tree-item" [class.selected]="tree.id === store.selectedTree()" (click)="chooseTree(tree)" [attr.data-tree]="tree.id">
+              <mat-icon>{{ icon(tree) }}</mat-icon>
+              <span class="tree-name">{{ label(tree) }}</span>
+              <span class="tree-pages mono" [matTooltip]="tree.entries + ' entries on ' + pages(tree) + ' pages'">{{ pages(tree) }}</span>
+            </button>
+          }
+        }
+      </div>
+    </aside>
+
+    <section class="centre">
+      <div class="centre-bar">
+        <mat-button-toggle-group [value]="view()" (change)="view.set($event.value)" hideSingleSelectionIndicator aria-label="What to show">
+          <mat-button-toggle value="map"><mat-icon>grid_view</mat-icon> Page map</mat-button-toggle>
+          <mat-button-toggle value="tree"><mat-icon>account_tree</mat-icon> Tree</mat-button-toggle>
+          <mat-button-toggle value="meta"><mat-icon>fingerprint</mat-icon> Meta pages</mat-button-toggle>
+          <mat-button-toggle value="free"><mat-icon>recycling</mat-icon> Free list</mat-button-toggle>
+        </mat-button-toggle-group>
+      </div>
+      <div class="centre-body">
+        @switch (view()) {
+          @case ('map') {
+            <app-page-map />
+          }
+          @case ('tree') {
+            <app-tree-explorer />
+          }
+          @case ('meta') {
+            <div class="metas">
+              <p class="intro">
+                Two meta pages alternate: a commit writes the one the older transaction left, so a torn write always leaves the other intact. A reader opens the valid one with the higher transaction id.
+              </p>
+              @for (m of metaFresh(); track m.slot) {
+                <div class="meta-card" [class.current]="m.current" [class.invalid]="!m.valid">
+                  <div class="meta-title">
+                    <h4>Meta page {{ m.slot }}</h4>
+                    @if (m.current) {
+                      <span class="chip current">current</span>
+                    }
+                    <span class="chip" [class.bad]="!m.valid">{{ m.valid ? 'valid' : 'not valid' }}</span>
+                    <button class="page-link" (click)="openPage(m.slot)">view page</button>
+                  </div>
+                  <dl class="meta-fields">
+                    <dt>Format</dt><dd class="mono">{{ m.version }}</dd>
+                    <dt>Transaction</dt><dd class="mono">{{ m.txnid }}</dd>
+                    <dt>Page size</dt><dd class="mono">{{ m.pageSize }}</dd>
+                    <dt>Last page</dt><dd class="mono">{{ m.lastPgno }}</dd>
+                    <dt>File size</dt><dd class="mono">{{ m.fileSize }} <span class="muted">({{ bytes(m.fileSize) }})</span></dd>
+                    <dt>Sub-databases</dt><dd class="mono">{{ m.namedDbs }}</dd>
+                    <dt>Checksum</dt><dd class="mono">{{ m.checksum }} <span class="muted">{{ metaMatches(m) ? '· matches' : '· computed ' + m.computedChecksum }}</span></dd>
+                    <dt>Store id</dt><dd class="mono">{{ m.storeId }}</dd>
+                    <dt>Commit id</dt><dd class="mono">{{ m.commitId }}</dd>
+                    <dt>Parent commit</dt><dd class="mono">{{ m.parentId }}</dd>
+                    <dt>Parent checksum</dt><dd class="mono">{{ m.parentChecksum }}</dd>
+                    <dt>Late-freed pages</dt><dd class="mono">{{ m.deferredCount }} <span class="muted">+ {{ m.inlineCount }} inline (retired by txn {{ m.inlineTxn }})</span></dd>
+                  </dl>
+                </div>
+              }
+            </div>
+          }
+          @case ('free') {
+            <div class="free">
+              <p class="intro">
+                Pages no tree reaches any more. A transaction retires the pages it replaces; they return to use once no reader can still see them. Their bytes are stale.
+              </p>
+              @if (store.free().length === 0) {
+                <p class="empty">Nothing is waiting: the free list is empty.</p>
+              } @else {
+                <table class="free-table">
+                  <thead>
+                    <tr><th>Retired by txn</th><th>Entry</th><th>Pages</th><th>First pages</th></tr>
+                  </thead>
+                  <tbody>
+                    @for (entry of store.free(); track $index) {
+                      <tr>
+                        <td class="mono">{{ entry.txn || '—' }}</td>
+                        <td class="mono">{{ entry.deferred ? (entry.txn ? 'in the meta page' : 'late, in the meta page') : '#' + entry.chunk }}</td>
+                        <td class="mono">{{ entry.pages }}</td>
+                        <td>
+                          @for (page of entry.firstPages; track page) {
+                            <button class="page-link mono" (click)="openPage(page)">{{ page }}</button>
+                          }
+                          @if (entry.pages > entry.firstPages.length) {
+                            <span class="muted">…</span>
+                          }
+                        </td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              }
+            </div>
+          }
+        }
+      </div>
+    </section>
+
+    <aside class="inspector-pane">
+      <app-page-inspector />
+    </aside>
+  </div>
+</div>

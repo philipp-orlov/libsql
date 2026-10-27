@@ -50,7 +50,8 @@ export class DatabaseService {
   socketFactory: (url: string, token: string | undefined) => QuerySocket = (url, token) => new SqlSocket(url, { token });
   private socket: QuerySocket | null = null;
 
-  private readonly conn: catalog.Conn = {
+  /** The connection the catalog functions (and the Visualize tab's) ask through. */
+  readonly conn: catalog.Conn = {
     exec: (sql, params, options) => this.call(socket => socket.exec(sql, params, options)),
     describe: (what, name) => this.call(socket => socket.describe(what, name)),
   };
