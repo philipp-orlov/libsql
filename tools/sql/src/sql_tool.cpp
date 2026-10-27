@@ -53,7 +53,7 @@ constexpr const char* kUsage =
     "  --no-header   leave the column names out\n"
     "  --readonly    open an existing database and refuse to write to it\n"
     "  --listen PORT serve a web interface on PORT, after any -c or -f\n"
-    "  --host ADDR   with --listen, bind to ADDR (default 127.0.0.1; there is no login)\n"
+    "  --host ADDR   with --listen, bind to ADDR (default 127.0.0.1; use --token when it is not loopback)\n"
     "  --public DIR  with --listen, serve the files of DIR instead of the built-in page\n"
     "  --token T     with --listen, the WebSocket route (/api/v1/ws/sql) needs T; with a ws:// URL, the\n"
     "                token to present\n"
