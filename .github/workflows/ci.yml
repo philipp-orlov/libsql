@@ -24,7 +24,7 @@ env:
   # libhttp, likewise: the WebSocket server routes and client behind remote databases (SQL_WITH_REMOTE).
   # Pin it to a commit once the libhttp work is on main.
   LIBHTTP_REPO: philipp-orlov/libhttp
-  LIBHTTP_REF: develop-sql-remote
+  LIBHTTP_REF: main
 
 jobs:
   test:
