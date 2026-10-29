@@ -1,14 +1,71 @@
-// The browser's end of sql::remote::SqlSocket (sql-remote.md): one WebSocket to the server's /api/v1/ws/sql route,
-// one request at a time, rows decoded by the same ResultSetView as everything else that speaks libbufs.
-//
-// Flow control, as the C++ client does it: the server sends at most a window of rows before it hears back, so after
-// reading half a window this sends a Credit request; whatever is left over goes ahead of the next request.
+// The browser's end of sql::remote::SqlSocket: a librpc connection (one WebSocket to the server's /api/v1/ws/sql route)
+// speaking the Sql service of include/sql/wire/remote.bufs, one request at a time, rows decoded by the same
+// ResultSetView as everything else that speaks libbufs. The messages and the method ids come from `rpcc --ts`
+// (./wire); flow control, pings, cancellation and framing are the librpc runtime's (./librpc).
 // Free of Angular imports on purpose.
 
 import { ResultSetView } from '../bufs';
-import { Catalog, ErrorCode, HINT_MANAGED, Kind, MIN_FRAME_COST, Op, PROTOCOL_VERSION } from './layout';
-import { Reply, decodeReply } from './reply';
-import { RequestFields, ResultOptionsFields, encodeRequest } from './request';
+import { Code, RpcClient, RpcError, RpcStream, WebSocketConstructor } from './librpc/index';
+import {
+  Catalog,
+  ParamListInit,
+  ParamType,
+  ResultOptionsInit,
+  SqlDescribeRequest,
+  SqlExecRequest,
+  SqlMethods,
+  Opened,
+  SqlOpenRequest,
+  StatementEnd,
+} from './wire/remote.bufs';
+
+export { Catalog, ParamType };
+
+/** The ErrorCode values of include/sql/error.hpp that the front end tells apart. */
+export enum ErrorCode {
+  Ok = 0,
+  SyntaxError,
+  Unsupported,
+  InvalidArgument,
+  NoSuchTable,
+  TableExists,
+  NoSuchColumn,
+  AmbiguousColumn,
+  NoSuchIndex,
+  IndexExists,
+  TypeMismatch,
+  ConstraintViolation,
+  BadTransaction,
+  ReadOnly,
+  Internal,
+  Runtime,
+  Busy,
+  Interrupted,
+  Connection,
+  Protocol,
+  PermissionDenied,
+}
+
+/** `Request.hints` bit 0: the server's ExecInterceptor applies (the Execute SQL tab's "pending until written"). */
+const HINT_MANAGED = 1;
+
+/** A parameter value as the protocol carries it. */
+export type ParamValue =
+  | null
+  | { type: ParamType.Integer | ParamType.Datetime; value: bigint | number }
+  | { type: ParamType.Real; value: number }
+  | { type: ParamType.Text; value: string }
+  | { type: ParamType.Blob; value: Uint8Array };
+
+export interface ResultOptionsFields {
+  maxRows?: bigint | number;
+  batchRows?: number;
+  batchBytes?: number;
+  blobPrefix?: number;
+  countAllRows?: boolean;
+  noDictionary?: boolean;
+  noNarrowing?: boolean;
+}
 
 export class SocketError extends Error {
   constructor(
@@ -20,16 +77,22 @@ export class SocketError extends Error {
   }
 }
 
-/** The part of the browser's WebSocket this uses; tests pass a fake. */
-export interface WebSocketLike {
-  binaryType: string;
-  readyState: number;
-  onopen: ((event: unknown) => void) | null;
-  onmessage: ((event: { data: unknown }) => void) | null;
-  onclose: ((event: { code?: number; reason?: string }) => void) | null;
-  onerror: ((event: unknown) => void) | null;
-  send(data: ArrayBuffer): void;
-  close(code?: number, reason?: string): void;
+/** How a statement ended (the stream's trailer), and what the server said when it opened the session. */
+export interface Reply {
+  changes: number;
+  lastInsertId: number;
+  totalChanges: number;
+  inTransaction: boolean;
+  elapsedUs: number;
+  sql: string;
+  strict: boolean;
+  withoutRowid: boolean;
+  handleChanges: number;
+  handleLastInsertId: number;
+  /** Open only. */
+  server: string;
+  session: number;
+  readOnly: boolean;
 }
 
 export interface SqlSocketOptions {
@@ -39,36 +102,82 @@ export interface SqlSocketOptions {
   window?: number;
   /** A ping request this often, while connected, so an idle timeout on the way does not cut the connection. */
   pingMs?: number;
-  /** For tests. */
-  createSocket?: (url: string, protocols: string[]) => WebSocketLike;
+  /** For tests: the WebSocket constructor to use instead of the browser's. */
+  WebSocket?: WebSocketConstructor;
 }
 
 /** What a finished request produced. */
 export interface SocketResult {
-  /** The rows (and the statement's columns); null only when the server sent no rows frame. */
+  /** The rows (and the statement's columns); null only when the server sent no rows. */
   view: ResultSetView | null;
   done: Reply;
 }
 
-const OPEN = 1;
+const emptyReply = (): Reply => ({
+  changes: 0,
+  lastInsertId: 0,
+  totalChanges: 0,
+  inTransaction: false,
+  elapsedUs: 0,
+  sql: '',
+  strict: false,
+  withoutRowid: false,
+  handleChanges: 0,
+  handleLastInsertId: 0,
+  server: '',
+  session: 0,
+  readOnly: false,
+});
 
-interface Pending {
-  id: number;
-  frames: { buffer: ArrayBuffer; offset: number; length: number }[];
-  resolve: (result: SocketResult) => void;
-  reject: (error: Error) => void;
+/** The error a failed call stands for: the server's own code travels in the status detail. */
+function socketError(e: unknown): SocketError {
+  if (e instanceof SocketError) {
+    return e;
+  }
+  if (e instanceof RpcError) {
+    if ((e.detail & 0x80000000) !== 0) {
+      return new SocketError(e.message.replace(/^[A-Za-z]+: /, ''), (e.detail >>> 8) & 0xffff);
+    }
+    switch (e.code) {
+      case Code.Cancelled:
+        return new SocketError('interrupted', ErrorCode.Interrupted);
+      case Code.PermissionDenied:
+      case Code.Unauthenticated:
+        return new SocketError(e.message, ErrorCode.PermissionDenied);
+      case Code.DataLoss:
+        return new SocketError(e.message, ErrorCode.Protocol);
+      default:
+        return new SocketError(e.message, ErrorCode.Connection);
+    }
+  }
+  return new SocketError(e instanceof Error ? e.message : String(e));
+}
+
+function encodeParams(params: ParamValue[] | undefined): ParamListInit {
+  return {
+    list: (params ?? []).map(p => {
+      if (p === null) {
+        return {};
+      }
+      switch (p.type) {
+        case ParamType.Real:
+          return { type: p.type, real: p.value };
+        case ParamType.Text:
+          return { type: p.type, bytes: new TextEncoder().encode(p.value) };
+        case ParamType.Blob:
+          return { type: p.type, bytes: p.value };
+        default:
+          return { type: p.type, integer: p.value };
+      }
+    }),
+  };
 }
 
 export class SqlSocket {
-  private socket: WebSocketLike | null = null;
-  private pending: Pending | null = null;
-  private hello: { id: number; resolve: (r: Reply) => void; reject: (e: Error) => void } | null = null;
+  private rpc: RpcClient | null = null;
+  private running: RpcStream<Uint8Array, StatementEnd> | null = null;
   private chain: Promise<unknown> = Promise.resolve();
-  private nextId = 1;
-  private window = 1 << 20;
-  private consumed = 0;
   private inTransaction = false;
-  private pinger: ReturnType<typeof setInterval> | null = null;
   private welcomed: Reply | null = null;
 
   constructor(
@@ -77,91 +186,55 @@ export class SqlSocket {
   ) {}
 
   get connected(): boolean {
-    return this.socket !== null && this.socket.readyState === OPEN;
+    return this.rpc !== null && this.rpc.connected;
   }
 
-  /** What the server said when it welcomed this client (its name, whether the session is read-only); null before that. */
+  /** What the server said when it opened the session (its name, whether it is read-only); null before that. */
   get welcome(): Reply | null {
     return this.welcomed;
   }
 
-  /** Opens the connection and says hello; resolves when the server has welcomed this client. */
-  connect(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const factory = this.options.createSocket ?? ((url: string, protocols: string[]) => new WebSocket(url, protocols) as unknown as WebSocketLike);
-      let socket: WebSocketLike;
-      try {
-        socket = factory(this.url, ['libsql.v1']);
-      } catch (e) {
-        reject(new SocketError(`cannot open ${this.url}: ${e instanceof Error ? e.message : String(e)}`));
-        return;
-      }
-      socket.binaryType = 'arraybuffer';
-      this.socket = socket;
-      this.consumed = 0;
-      socket.onopen = () => {
-        const id = this.take();
-        this.hello = {
-          id,
-          resolve: welcome => {
-            this.window = welcome.window || this.window;
-            this.welcomed = welcome;
-            this.startPings();
-            resolve();
-          },
-          reject,
-        };
-        socket.send(
-          encodeRequest({
-            id,
-            op: Op.Hello,
-            protocol: PROTOCOL_VERSION,
-            client: 'sql-ui/1.0',
-            token: this.options.token,
-            window: this.options.window ?? 1 << 20,
-            maxMessage: 16 << 20,
-          }),
-        );
-      };
-      socket.onmessage = event => this.onMessage(event.data);
-      socket.onerror = () => undefined;
-      socket.onclose = event => {
-        const wasOurs = this.socket === socket;
-        if (wasOurs) {
-          this.socket = null;
-        }
-        this.stopPings();
-        const error = new SocketError(`the connection was closed${event.reason ? `: ${event.reason}` : ''}${event.code ? ` (${event.code})` : ''}`);
-        this.hello?.reject(error);
-        this.hello = null;
-        if (this.pending) {
-          const lost = this.inTransaction ? new SocketError('the connection was lost; the transaction was rolled back') : error;
-          this.inTransaction = false;
-          this.pending.reject(lost);
-          this.pending = null;
-        }
-      };
-    });
+  /** Opens the connection and the session; resolves when the server has welcomed this client. */
+  async connect(): Promise<void> {
+    try {
+      this.rpc = await RpcClient.connect(this.url, {
+        token: this.options.token,
+        window: this.options.window,
+        pingIntervalMs: this.options.pingMs,
+        WebSocket: this.options.WebSocket,
+        peer: 'sql-ui/1.0',
+      });
+      const opened: Opened = await this.rpc.call(SqlMethods.Open, SqlOpenRequest.encode({ readOnly: false, client: 'sql-ui/1.0' }), Opened.decode);
+      this.welcomed = { ...emptyReply(), server: opened.server, session: Number(opened.session), readOnly: opened.readOnly };
+    } catch (e) {
+      this.rpc?.close();
+      this.rpc = null;
+      throw socketError(e);
+    }
   }
 
   /**
    * Runs `sql` and resolves with its rows and counters. One request runs at a time: calls queue. A connection the
    * server closed while idle is replaced, unless a transaction was open on it.
    */
-  exec(sql: string, params?: RequestFields['params'], options?: ResultOptionsFields): Promise<SocketResult> {
-    return this.queue({ op: Op.Exec, sql, params, options, hints: HINT_MANAGED });
+  exec(sql: string, params?: ParamValue[], options?: ResultOptionsFields): Promise<SocketResult> {
+    return this.queue(() => ({
+      method: SqlMethods.Exec,
+      request: SqlExecRequest.encode({ text: sql, params: encodeParams(params), options: options as ResultOptionsInit, hints: HINT_MANAGED }),
+    }));
   }
 
   /**
-   * The catalog: the table names, one table's columns (the Reply carries its CREATE statement, strict and without_rowid),
-   * or the columns of the indexes of `name` (all tables when empty). The rows are those of the server's Describe.
+   * The catalog: the table names, one table's columns (the trailer carries its CREATE statement, strict and
+   * without_rowid), or the columns of the indexes of `name` (all tables when empty). The rows are those of the
+   * server's Describe.
    */
   describe(what: Catalog, name = ''): Promise<SocketResult> {
-    return this.queue({ op: Op.Describe, what, name });
+    return this.queue(() => ({ method: SqlMethods.Describe, request: SqlDescribeRequest.encode({ what, name }) }));
   }
 
-  private queue(fields: Omit<RequestFields, 'id'>): Promise<SocketResult> {
-    const run = () => this.run(fields);
+  private queue(build: () => { method: number; request: Uint8Array }): Promise<SocketResult> {
+    const run = () => this.run(build());
     const result = this.chain.then(run, run);
     this.chain = result.catch(() => undefined);
     return result;
@@ -169,32 +242,17 @@ export class SqlSocket {
 
   /** Asks the server to stop the running request, which then ends with ErrorCode.Interrupted. */
   interrupt(): void {
-    if (this.pending && this.connected) {
-      this.socket!.send(encodeRequest({ id: this.take(), op: Op.Interrupt, target: this.pending.id }));
-    }
+    this.running?.cancel();
   }
 
   close(): void {
-    this.stopPings();
-    const socket = this.socket;
-    this.socket = null;
-    if (socket && socket.readyState === OPEN) {
-      socket.send(encodeRequest({ id: this.take(), op: Op.Goodbye }));
-    }
-    socket?.close(1000, 'goodbye');
+    this.rpc?.close();
+    this.rpc = null;
   }
 
   // ---------------------------------------------------------------------------------------------
 
-  private take(): number {
-    const id = this.nextId++;
-    if (this.nextId >= 0x80000000) {
-      this.nextId = 1;
-    }
-    return id;
-  }
-
-  private async run(fields: Omit<RequestFields, 'id'>): Promise<SocketResult> {
+  private async run(call: { method: number; request: Uint8Array }): Promise<SocketResult> {
     if (!this.connected) {
       if (this.inTransaction) {
         this.inTransaction = false;
@@ -202,111 +260,60 @@ export class SqlSocket {
       }
       await this.connect();
     }
-    if (this.consumed > 0) {
-      this.sendCredit();
-    }
-    const id = this.take();
-    return new Promise<SocketResult>((resolve, reject) => {
-      this.pending = { id, frames: [], resolve, reject };
-      this.socket!.send(encodeRequest({ ...fields, id }));
-    });
-  }
-
-  private sendCredit(): void {
-    const credit = this.consumed;
-    this.consumed = 0;
-    this.socket!.send(encodeRequest({ id: this.take(), op: Op.Credit, credit }));
-  }
-
-  private onMessage(data: unknown): void {
-    if (!(data instanceof ArrayBuffer)) {
-      return;
-    }
-    let reply: Reply;
+    const frames: Uint8Array[] = [];
+    const stream = this.rpc!.stream<Uint8Array, StatementEnd>(call.method, call.request, body => body, {}, StatementEnd.decode);
+    this.running = stream;
     try {
-      reply = decodeReply(data);
-    } catch {
-      this.fail(new SocketError('the server sent a message that is not a reply', ErrorCode.Protocol));
-      return;
-    }
-    if (reply.kind === Kind.Closing) {
-      return; // the close that follows tells the caller
-    }
-    if (this.hello && reply.id === this.hello.id) {
-      const hello = this.hello;
-      this.hello = null;
-      if (reply.kind === Kind.Welcome) {
-        hello.resolve(reply);
-      } else {
-        hello.reject(new SocketError(reply.message || 'the server refused the connection', reply.code));
+      for await (const body of stream) {
+        frames.push(body);
       }
-      return;
-    }
-    const pending = this.pending;
-    if (!pending || reply.id !== pending.id) {
-      return; // a pong, or the answer of something nobody waits for
-    }
-    if (reply.kind === Kind.Rows) {
-      this.consumed += Math.max(data.byteLength, MIN_FRAME_COST);
-      pending.frames.push({ buffer: data, offset: reply.size, length: data.byteLength - reply.size });
-      if (this.consumed >= this.window / 2) {
-        this.sendCredit();
+    } catch (e) {
+      this.running = null;
+      const error = socketError(e);
+      if (!this.connected && this.inTransaction) {
+        this.inTransaction = false;
+        throw new SocketError('the connection was lost; the transaction was rolled back');
       }
-      return;
+      throw error;
     }
-    this.pending = null;
-    if (reply.kind === Kind.Error) {
-      pending.reject(new SocketError(reply.message, reply.code));
-      return;
-    }
-    this.inTransaction = reply.inTransaction;
-    pending.resolve({ view: SqlSocket.view(pending.frames), done: reply });
+    this.running = null;
+    const end = stream.trailer;
+    const done: Reply = {
+      ...emptyReply(),
+      changes: Number(end?.changes ?? 0n),
+      lastInsertId: Number(end?.lastInsertId ?? 0n),
+      totalChanges: Number(end?.totalChanges ?? 0n),
+      inTransaction: end?.inTransaction ?? false,
+      elapsedUs: Number(end?.elapsedUs ?? 0n),
+      sql: end?.sql ?? '',
+      strict: end?.strict ?? false,
+      withoutRowid: end?.withoutRowid ?? false,
+      handleChanges: Number(end?.handleChanges ?? 0n),
+      handleLastInsertId: Number(end?.handleLastInsertId ?? 0n),
+    };
+    this.inTransaction = done.inTransaction;
+    return { view: SqlSocket.view(frames), done };
   }
 
   /** The batches of one result as one stream: a single batch is read where it lies, several are joined. */
-  private static view(frames: Pending['frames']): ResultSetView | null {
+  private static view(frames: Uint8Array[]): ResultSetView | null {
     if (frames.length === 0) {
       return null;
     }
     if (frames.length === 1) {
-      return ResultSetView.open(frames[0].buffer, frames[0].offset, frames[0].length);
+      const f = frames[0];
+      return ResultSetView.open(f.buffer as ArrayBuffer, f.byteOffset, f.byteLength);
     }
     let total = 0;
     for (const f of frames) {
-      total += f.length;
+      total += f.byteLength;
     }
     const joined = new Uint8Array(total);
     let at = 0;
     for (const f of frames) {
-      joined.set(new Uint8Array(f.buffer, f.offset, f.length), at);
-      at += f.length;
+      joined.set(f, at);
+      at += f.byteLength;
     }
     return ResultSetView.open(joined.buffer);
-  }
-
-  private fail(error: Error): void {
-    this.pending?.reject(error);
-    this.pending = null;
-    this.hello?.reject(error);
-    this.hello = null;
-  }
-
-  private startPings(): void {
-    this.stopPings();
-    const every = this.options.pingMs ?? 20000;
-    if (every > 0) {
-      this.pinger = setInterval(() => {
-        if (this.connected) {
-          this.socket!.send(encodeRequest({ id: this.take(), op: Op.Ping }));
-        }
-      }, every);
-    }
-  }
-
-  private stopPings(): void {
-    if (this.pinger !== null) {
-      clearInterval(this.pinger);
-      this.pinger = null;
-    }
   }
 }

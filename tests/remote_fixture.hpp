@@ -47,6 +47,7 @@ struct Served
     std::unique_ptr<sql::remote::SqlSocket> socket;
     std::future<void> serving;
     std::uint16_t port = 0;
+    std::string localPath;
 
     explicit Served(sql::remote::SqlSocketOptions options = sql::remote::SqlSocketOptions(),
                     std::function<void(http::ServerConfig&)> tweak = {})
@@ -63,6 +64,8 @@ struct Served
                 server = std::make_unique<http::Server>(config);
                 socket = std::make_unique<sql::remote::SqlSocket>(db, options);
                 socket->attach(*server, "/api/v1/ws/sql");
+                localPath = "/tmp/libsql-test-" + std::to_string(::getpid()) + "-" + std::to_string(config.port) + ".sock";
+                socket->listenLocal(localPath);
                 serving = std::async(std::launch::async, [this] { server->run(); });
                 for (int i = 0; i < 200; ++i) {
                     http::WebSocketClient probe;
@@ -98,6 +101,12 @@ struct Served
     sql::Database connect(const sql::RemoteOptions& options = sql::RemoteOptions()) const
     {
         return sql::Database::connect(url(), options);
+    }
+    /// The same database through the local socket (shared-memory rings).
+    std::string localUrl() const { return "unix://" + localPath; }
+    sql::Database connectLocal(const sql::RemoteOptions& options = sql::RemoteOptions()) const
+    {
+        return sql::Database::connect(localUrl(), options);
     }
 };
 

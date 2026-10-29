@@ -170,11 +170,14 @@ reads a result back column by column or as `sql::Value`s. See
 
 **Remote databases**
 
-A `sql::Database` can live in another process. `sql::remote::SqlSocket` serves one over a WebSocket route of the
-application's own `http::Server`, beside its pages and other routes, and `Database::connect` returns a database that
-behaves like a local one -- `exec`, `prepare`, `begin`, `Statement`, `Transaction`, `ResultConsumer` and `BufsWriter`
-all work unchanged -- the way the client libraries of DB2 or SQL Server do. Rows travel as the binary batches above.
-Needs `SQL_WITH_REMOTE` (on by default, with the sibling `../libhttp`).
+A `sql::Database` can live in another process. `sql::remote::SqlSocket` serves one -- over a WebSocket route of the
+application's own `http::Server`, beside its pages and other routes, and/or over a Unix socket to programs on the
+same machine -- and `Database::connect` returns a database that behaves like a local one: `exec`, `prepare`, `begin`,
+`Statement`, `Transaction`, `ResultConsumer` and `BufsWriter` all work unchanged, the way the client libraries of DB2
+or SQL Server do. Rows travel as the binary batches above. The transport is [librpc](../librpc): the service is
+written once as signatures in [include/sql/wire/remote.bufs](include/sql/wire/remote.bufs) and librpc's compiler
+turns it into the C++ server and client stubs and the TypeScript client the web front end uses. Needs
+`SQL_WITH_REMOTE` (on by default, with the sibling `../libhttp`, `../libbufs` and `../librpc`).
 
 ```cpp
 // The server: next to the application's own routes.
@@ -186,26 +189,35 @@ sql::remote::SqlSocket sql(db, sql::remote::SqlSocketOptions()
     })
     .requireAuth());
 sql.attach(server, "/api/v1/ws/sql");
+sql.listenLocal("/run/app/db.sock");         // also for processes on this machine (works without an http::Server)
 server.run(stop);
 sql.shutdown(std::chrono::seconds(5));
 
 // A client, anywhere:
 sql::Database db = sql::Database::connect("ws://host:8080/api/v1/ws/sql",
                                           sql::RemoteOptions().authorization("Bearer " + secret));
+// ... or on the same machine, through shared memory:
+sql::Database local = sql::Database::connect("unix:///run/app/db.sock");
 auto rows = db.exec("SELECT id, name FROM customer WHERE region = ?", {sql::Value("north")});
 ```
 
 Each session has its own handle on the store (`Database::openHandle`, or `openReader` for a read-only one), so its
 transactions and prepared statements are its own and writers take turns on the writer slot; `Isolation::Shared` runs
-every session on one serial handle instead, as the `sql` tool does. A result streams in batches under a credit
-window -- the client acknowledges what it has read -- so neither side holds more than a window of rows whatever the
-result size; a client that stops reading is cut off after `stallTimeout`. A warm session answers a prepared query
-without a heap allocation, on the server and on the client, and memory stays flat over long runs (both are tested).
-Calls on the client run on the caller's thread; `interrupt()` may come from another, requests can have a timeout, a
-connection the server closed while idle is replaced on the next call (unless a transaction was open), and
-`env()` and `Transaction::txn()` are the only members that throw `Unsupported`. Without an `authorize` or
-`authenticate` hook the route serves the database to anyone who can reach it. The protocol is
-[include/sql/wire/remote.bufs](include/sql/wire/remote.bufs).
+every session on one serial handle instead, as the `sql` tool does. A session's calls run one at a time, in order. A
+result streams in batches under a flow-control window -- the client acknowledges what it has read -- so neither side
+holds more than a window of rows whatever the result size; a client that stops reading is cut off after
+`stallTimeout`. Cancelling a call (`interrupt()` from another thread, a request timeout, the connection dropping)
+interrupts the running statement. A warm session answers a prepared query without a heap allocation on the client and
+with a handful per thousand on the server, and memory stays flat over long runs (both are tested). Over a local socket
+a prepared point query takes about 40 us against 70 us over a loopback WebSocket (a 2-core VM; `benchmarks/bench_remote`):
+a statement streams its rows, so it runs on a worker thread, and the hand-off to that thread is most of what is left --
+librpc's own calls, which can run on the connection's reader thread, take about 1 us, and large results stream at several
+GB/s (its `bench/` measures both). The rings are sized by `SqlSocketOptions::maxMessage`, so a smaller maximum means a
+smaller footprint per connection.
+Calls on the client run on the caller's thread; a connection the server closed while idle is replaced on the next
+call (unless a transaction was open), and `env()` and `Transaction::txn()` are the only members that throw
+`Unsupported`. Without an `authorize` or `authenticate` hook the route serves the database to anyone who can reach it
+(a local socket admits its owner only, and the hook sees the peer's pid/uid/gid in the `Handshake`).
 
 **Types**
 
@@ -453,6 +465,43 @@ as zero-copy buffers (`numpy.frombuffer`, `torch.frombuffer`), batches of keys
 resolve in one pass, and the next batch's pages can be prefetched -- the shape
 a training loader wants. See [python/README.md](python/README.md) and
 [python/examples/](python/examples/).
+
+## C#
+
+`-DSQL_BUILD_C_API=ON` builds `libsql_c`, a C interface ([include/sql/sql_c.h](include/sql/sql_c.h)) that
+[bindings/csharp](bindings/csharp) wraps for .NET (net10.0). One `Database` is a local file (`Database.Open`) or a server
+(`Database.Connect("ws://host:port/api/v1/ws/sql")`, `wss://`, or `unix:///path` for the shared-memory transport) and is used the
+same way on both; remote errors keep their `ErrorCode` and `Constraint`.
+
+```csharp
+using LibSql;
+
+using var db = Database.Open("app.db");                       // or Database.Connect("unix:///run/app.sock")
+db.Run("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, born DATETIME)");
+
+using (var tx = db.Begin())                                   // disposing without Commit rolls back
+{
+    using var insert = db.Prepare("INSERT INTO people (name, born) VALUES (?, ?)");
+    insert.Bind("Ann", new DateTime(1990, 5, 17, 0, 0, 0, DateTimeKind.Utc)).Exec(tx).Dispose();
+    tx.Commit();
+}
+
+using var r = db.Exec("SELECT id, name, born FROM people WHERE name = ?", "Ann");
+foreach (var row in r.Rows)
+    Console.WriteLine($"{row.GetInt64(0)} {row.GetString(1)} {row["born"]}");
+// text and blob cells can be read in place: row.Cell(1).Bytes is a ReadOnlySpan<byte> into the result
+
+try { db.Run("INSERT INTO people (name) VALUES ('Ann')"); }
+catch (SqlException e) when (e.Constraint == Constraint.Unique) { /* ... */ }
+```
+
+Parameters may be `null`, `bool`, the integer types, `float`/`double`, `DateTime`/`DateTimeOffset`, `string` and `byte[]`.
+`Interrupt()` stops a statement running on another thread; `OpenReader()` gives a reading thread its own handle; `Tables()` and
+`Table(name)` are the catalog. The loader finds `libsql_c` next to the application or on the library path; `SQL_LIBRARY` names it
+explicitly. Tests (local, over WebSocket, over a Unix socket, with a token): `dotnet run --project bindings/csharp/LibSql.Tests --
+<work dir> <sql tool>`, or `ctest -R csharp_binding`. The service itself is also available to .NET without the native library: `rpcc --cs -I include/sql/wire` on
+`include/sql/wire/resultset.bufs` and on `remote.bufs` (one schema per call) generates a client for the `Sql` service on
+[librpc/cs](../librpc/cs); it compiles, but unlike `Database.Connect` it is not covered by a test yet.
 
 ## The `sql` tool
 

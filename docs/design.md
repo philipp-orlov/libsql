@@ -1783,37 +1783,42 @@ that a writer's offsets and codes agree with each other.
 ### 17.2 Remote access
 
 `sql::remote::SqlSocket` (`src/remote/sql_socket.cpp`) and `Database::connect` (`src/remote/client.cpp`) put a
-Database behind one WebSocket route of an `http::Server`. One WebSocket message is one libbufs message: a `Request`
-from the client, or a `Reply` (and, for rows, the `sql.wire.ResultSet` batch right behind it) from the server
-(`include/sql/wire/remote.bufs`).
+Database behind librpc: a WebSocket route of an `http::Server`, and/or a Unix socket whose clients talk through
+shared-memory rings. The protocol is the `Sql` service of `include/sql/wire/remote.bufs`, written as signatures
+(`Exec(text, params, txn, options, hints): stream sql.wire.ResultSet (trailer: "StatementEnd")`, `Prepare`, `Begin`,
+`Commit`, `Describe`, ...); librpc's compiler `rpcc` makes the request and response tables and the C++ and TypeScript
+stubs from it. Framing, authentication hooks, limits, flow control, cancellation and graceful shutdown are librpc's
+(see its `docs/design.md`); what is here is the database side of a session.
 
-**Server.** The loop thread (libhttp's reactor) copies each request into a pooled slot, verifies it and queues it;
-it never touches a Database and never waits. A session runs one request at a time, in order, on a worker (the
-SqlSocket's own pool, or an executor the application gives it). Workers encode rows with a per-worker `BufsWriter`
-whose `onBatch` hands each batch to the session, which wraps it in a `Rows` reply and queues it in an outbox; the
-loop flushes the outbox with `WebSocketConnection::send(Buffer&&)`, so a frame is written from its pooled block
-without a copy. Tasks posted between threads capture one raw pointer (std::function stores it inline; a captured
-shared_ptr would allocate) and a pin count keeps the session alive while any are pending.
+**Server.** `SqlSocket` builds an `rpc::Endpoint` with `serialPerSession`, so a session's calls run one at a time in
+arrival order, on the endpoint's workers (or an executor the application gives it). `Open` creates the session
+state -- the database handle (from a small pool of idle ones, or `Database::openHandle` / `openReader`), the prepared
+statements and the transactions, kept by librpc per connection -- and the state is torn down when the connection ends:
+open transactions are rolled back and the handle goes back to the pool. Rows are encoded by a per-worker `BufsWriter`
+whose `onBatch` hands each batch straight to `rpc::ServerWriter` (one copy, into the frame); the stream's trailer
+(`StatementEnd`) carries the counters. Errors cross the wire as an `rpc::Status` whose code is the nearest gRPC-style
+code and whose `detail` holds the exact `ErrorCode` and `Constraint`, so the client throws what the server raised.
 
-**Flow control.** The connection of libhttp closes when its queued output passes a frame or byte limit, so the
-server never queues more than a window of rows: a `Rows` frame counts `max(size, 8 KiB)` against the window and the
-client credits what it has read. The window is held below half the queue's byte limit and below its frame limit.
-A worker waits for credit up to `stallTimeout`, then the request ends with an error and the session closes.
+**Flow control.** librpc's window: the server sends at most a window of stream bytes before the client credits what
+it has consumed, and a client that stops reading for `stallTimeout` is cut off. The window is held below half of the
+queue limit of the WebSocket connection, so libhttp never closes it for queueing too much.
 
-**Interrupts.** The engine clears a handle's interrupt flag when a statement starts, so one aimed at a statement
-that has not started yet would vanish. A watchdog thread therefore repeats the interrupt of a request that was told
-to stop until it does, and enforces the statement timeout. A request is marked finished *before* its final reply is
-queued, so a client may reuse the request id as soon as it has read the answer.
+**Interrupts.** A cancelled call (the client's `Cancel`, a closed connection, a shutdown past its grace) runs a hook
+the handler registered with `ServerContext::onCancel`, which interrupts the handle. The engine clears a handle's
+interrupt flag when a statement starts, so one aimed at a statement that has not started yet would vanish: a watchdog
+thread therefore repeats the interrupt of a statement that was told to stop, every tick, until the statement is gone.
+The same thread enforces the statement timeout.
 
-**Long runs.** Request slots, frames and encoder buffers come from the server's BufferPool or are kept per worker;
-queues are fixed-size rings sized by the limits; the watchdog keeps its list between turns. The tests assert zero
-heap allocations on a warm server session and a warm client, and flat resident memory over tens of thousands of
-requests.
+**Long runs.** Call objects, call slots, frames, messages and the encoder buffers are recycled or come from pools; the
+tests assert zero heap allocations per call on a warm client and at most a handful per thousand on the server, and
+flat resident memory over tens of thousands of requests. A local connection's two rings are touched progressively as
+the write position walks round them and are then flat: their size follows `maxMessage`.
 
-**Client.** A remote Database holds a `RemoteSession`: a WebSocket client and the state of the connection. Every call
-runs on the caller's thread: it writes the request and reads frames until its final reply, feeding rows to the
-caller's consumer or Result through the same `ResultBuilder` local statements use. A consumer that stops, or throws,
-gets an interrupt sent and the rest of that request's frames read and dropped (still credited).
+**Client.** A remote Database holds a `RemoteSession`: an `rpc::Client` and the state of the connection. Every call
+runs on the caller's thread through the generated `SqlClient`, feeding rows to the caller's consumer or Result through
+the same `ResultBuilder` local statements use. A consumer that stops, or throws, cancels the stream (the server
+interrupts the statement); `interrupt()` from another thread cancels whatever is in flight. Fire-and-forget calls (a
+statement or transaction abandoned in a destructor) use `Client::notify`.
 
 ## 18. Public C++ API
 

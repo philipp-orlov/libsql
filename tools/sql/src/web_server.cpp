@@ -143,6 +143,8 @@ struct WebServer::Impl
         }
         sqlSocket = std::make_unique<sql::remote::SqlSocket>(db, std::move(socketOptions));
         sqlSocket->attach(server, options.socketPath);
+        if (!options.unixSocket.empty())
+            sqlSocket->listenLocal(options.unixSocket);
     }
 
     void shutdownSocket()
@@ -211,9 +213,9 @@ WebServer::~WebServer()
         impl_->shutdownSocket();
 }
 
-void WebServer::run(std::function<bool()> shouldStop)
+void WebServer::run(std::function<bool()> shouldStop, std::function<void()> onListening)
 {
-    impl_->server.run(std::move(shouldStop));
+    impl_->server.run(std::move(shouldStop), std::move(onListening));
 }
 
 void WebServer::stop()

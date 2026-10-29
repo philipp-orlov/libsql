@@ -850,8 +850,9 @@ public:
     /// The file of a local database; the URL of a remote one.
     const std::filesystem::path& path() const;
 
-    /// Opens a remote database served by a sql::remote::SqlSocket (sql-remote.md)
-    /// at `url`, "ws://host:port/path". The result behaves like a local
+    /// Opens a remote database served by a sql::remote::SqlSocket at `url`:
+    /// "ws://host:port/path", "wss://..." or, for a server on this machine,
+    /// "unix:///path/to/socket" (shared memory). The result behaves like a local
     /// Database: exec, prepare, begin, Statement, Transaction, ResultConsumer
     /// and BufsWriter work unchanged, and errors carry the server's codes and
     /// messages. Only env() and Transaction::txn() are local-only and throw

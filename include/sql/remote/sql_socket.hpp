@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Philipp Orlov
 // SPDX-License-Identifier: Apache-2.0
 
-// libsql -- serving a sql::Database to remote clients over one WebSocket route of an
-// http::Server, next to the application's own routes (sql-remote.md).
+// libsql -- serving a sql::Database to remote clients, next to the application's own routes (sql-remote.md).
+// The transport is librpc: a WebSocket route of an http::Server, and/or a local socket (shared-memory rings) for
+// clients on the same machine. The service itself is include/sql/wire/remote.bufs.
 //
 //     http::Server server(config);
 //     server.onGet("/", servePage).onPost("/api/orders", createOrder);   // the application's own
@@ -11,7 +12,9 @@
 //     server.run(stop);
 //     sql.shutdown(std::chrono::seconds(5));
 //
-// Clients connect with sql::Database::connect("ws://host:port/api/v1/ws/sql"). Without an
+//     sql.listenLocal("/run/app/db.sock");       // also, for processes on this machine (no http::Server needed)
+//
+// Clients connect with sql::Database::connect("ws://host:port/api/v1/ws/sql") or ("unix:///run/app/db.sock"). Without an
 // authorize/authenticate hook the route serves the whole database to anyone who can reach it:
 // keep it on a trusted network or put the hooks in.
 #pragma once
@@ -34,17 +37,13 @@
 
 namespace sql::remote {
 
-namespace detail {
-class Session;
-struct Reservation;
-struct AcceptInfo;
-}  // namespace detail
-
 /// What the handshake looked like, for the authorize hook. Valid during the call only.
 struct Handshake
 {
-    std::string_view path;
-    std::string_view remoteAddress;  ///< "host:port"
+    std::string_view path;           ///< the route, or the socket file of a local connection
+    std::string_view remoteAddress;  ///< "host:port"; "pid:<pid> uid:<uid>" for a local connection
+    bool local = false;              ///< a local-socket connection: pid/uid/gid come from the kernel
+    int pid = -1, uid = -1, gid = -1;
     /// Any request header by name, "" if absent.
     std::function<std::string_view(std::string_view)> header;
     /// A named part of the route pattern ("/db/{tenant}"), "" if absent.
@@ -219,10 +218,7 @@ public:
         return *this;
     }
 
-private:
-    friend class SqlSocket;
-    friend class detail::Session;
-    friend struct detail::Reservation;
+    // The settings, read by SqlSocket (internal: use the setters above).
     std::function<AuthorizeResult(const Handshake&)> authorize_;
     std::function<std::optional<Principal>(std::string_view)> authenticate_;
     bool requireAuth_ = false;
@@ -259,15 +255,14 @@ public:
     SqlSocket(const SqlSocket&) = delete;
     SqlSocket& operator=(const SqlSocket&) = delete;
 
-    /// Registers the route on `server` (sub-protocol libsql.v1, the accept hook, the message limit and the
-    /// idle timeout). Call once per route; several routes, or servers, may share one SqlSocket.
+    /// Registers the route on `server` (sub-protocol librpc.v1, the accept hook, the message limit and the
+    /// idle timeout). Call once, before server.run().
     void attach(http::Server& server, std::string pattern);
 
-    /// The pieces attach() uses, for an application that registers routes itself:
-    ///   server.onWebSocket(pattern, socket.handler(&server.bufferPool()), socket.routeOptions());
-    /// `pool` is where frames come from (nullptr: http::BufferPool::shared()).
-    http::WebSocketHandler handler(http::BufferPool* pool = nullptr);
-    http::WebSocketRouteOptions routeOptions() const;
+    /// Also serves clients on this machine through a Unix socket at `path` (file mode `mode`, the owner only by
+    /// default): after a handshake over the socket, requests and rows travel through shared memory. The
+    /// authorize hook sees the peer's pid/uid/gid in the Handshake. Works without an http::Server.
+    void listenLocal(const std::string& path, unsigned mode = 0600);
 
     /// Stops accepting sessions, tells every session the server is going away, lets running requests
     /// finish for up to `grace`, interrupts the rest, closes every connection and waits for the

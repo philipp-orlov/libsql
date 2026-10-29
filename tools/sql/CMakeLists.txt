@@ -51,6 +51,22 @@ if(SQL_TOOL_WEB)
             add_test(NAME web_ui_e2e COMMAND ${SQL_NODE} scripts/e2e.mjs $<TARGET_FILE:sql_cli>
                      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
             set_tests_properties(web_ui_e2e PROPERTIES TIMEOUT 120)
+            # The page the binary embeds speaks librpc, not the retired protocol (rebuild it with `npm run b` in ui/).
+            add_test(NAME ui_embedded_page_current
+                     COMMAND ${CMAKE_COMMAND} -DPAGE=${CMAKE_CURRENT_SOURCE_DIR}/public/index.html
+                             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckEmbeddedPage.cmake)
+            # The real page in a real browser, when one is installed (CHROME_BIN, or a Playwright download).
+            file(GLOB SQL_CHROME_HINTS "$ENV{HOME}/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux*")
+            find_program(SQL_CHROME NAMES chrome-headless-shell chromium chromium-browser google-chrome
+                         HINTS $ENV{CHROME_BIN} ${SQL_CHROME_HINTS})
+            if(SQL_CHROME)
+                add_test(NAME web_ui_browser COMMAND ${SQL_NODE} scripts/browser-e2e.mjs $<TARGET_FILE:sql_cli> ${SQL_CHROME}
+                         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+                set_tests_properties(web_ui_browser PROPERTIES TIMEOUT 120)
+            endif()
+            # The TypeScript generated from remote.bufs and the vendored librpc runtime match their sources.
+            add_test(NAME ui_wire_up_to_date COMMAND ${SQL_NODE} scripts/vendor-librpc.mjs $<TARGET_FILE:rpcc> --check
+                     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
         endif()
         if(SQL_WITH_BUFS)
             add_subdirectory(../bufs_golden bufs_golden)

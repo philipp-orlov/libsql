@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Philipp Orlov
 // SPDX-License-Identifier: Apache-2.0
 
-// Database::connect: a Database whose work happens on a server (sql-remote.md, section 7). The session has no
-// thread of its own; every call runs on the caller's thread, writes its request, and reads frames until the
-// request's terminal reply. Rows reach a consumer, a Result or a callback through the same ResultBuilder local
-// statements use, so a remote database behaves like a local one to the code above it.
+// Database::connect: a Database whose work happens on a server. The connection is a librpc client (a WebSocket, or a
+// local socket with shared-memory rings) and the calls are the generated SqlClient's (include/sql/wire/remote.bufs).
+// Every call runs on the caller's thread and finishes before it returns; rows reach a consumer, a Result or a
+// callback through the same ResultBuilder local statements use, so a remote database behaves like a local one to the
+// code above it.
 
 #include <algorithm>
 #include <atomic>
@@ -15,55 +16,121 @@
 #include <thread>
 
 #include "bufs/bufs.hpp"
+#include "errors.hpp"
 #include "http/websocket_client.hpp"
 #include "internal/params.hpp"
 #include "internal/stmt.hpp"
 #include "remote/client.hpp"
-#include "remote/protocol.hpp"
-#include "sql/wire/remote.bufs.hpp"
+#include "rpc/client.hpp"
+#include "sql/wire/remote.rpc.hpp"
 #include "sql/wire/result_view.hpp"
 
 namespace sql::internal {
 
-using Clock = std::chrono::steady_clock;
 namespace r = sql::remote;
 namespace wire_ = sql::wire;
 namespace detail = sql::remote::detail;
 
 namespace {
 
-/// What a terminal reply said; strings are assigned in place so a warm session reuses their buffers.
-struct Terminal
-{
-    r::Kind kind = r::Kind::None;
-    std::uint16_t code = 0;
-    std::uint8_t constraint = 0;
-    std::string message;
-    std::uint64_t changes = 0;
-    std::int64_t lastInsertId = 0;
-    std::int64_t totalChanges = 0;
-    bool inTransaction = false;
-    std::uint64_t elapsedUs = 0;
-    // Prepared
-    std::uint32_t parameters = 0;
-    std::vector<std::string> names, columns;
-    bool writes = false;
-    // Welcome
-    std::uint16_t protocol = 0;
-    std::uint64_t window = 0;
-    std::uint32_t maxMessage = 0;
-    std::uint16_t maxPipeline = 0;
-    bool readOnly = false;
-    // Describe Table
-    std::string sql;
-    bool strict = false, withoutRowid = false;
-    std::int64_t handleChanges = 0, handleLastInsertId = 0;
-};
-
 [[noreturn]] void connectionError(const std::string& what)
 {
     throw Error(ErrorCode::Connection, what);
 }
+
+/// What a failed connect means to the caller.
+[[noreturn]] void connectFailed(const rpc::Error& e)
+{
+    switch (e.code()) {
+        case rpc::Code::Unauthenticated:
+        case rpc::Code::PermissionDenied:
+            throw Error(ErrorCode::PermissionDenied, std::string("the server refused the connection: ") + e.what());
+        default: connectionError(e.what());
+    }
+}
+
+void encodeValue(r::Param::Builder p, const Value& v)
+{
+    switch (v.type()) {
+        case Type::Integer:
+            p.setType(r::ParamType::Integer);
+            p.setInteger(v.integer());
+            break;
+        case Type::Real:
+            p.setType(r::ParamType::Real);
+            p.setReal(v.real());
+            break;
+        case Type::Datetime:
+            p.setType(r::ParamType::Datetime);
+            p.setInteger(v.datetime().usec);
+            break;
+        case Type::Text: {
+            p.setType(r::ParamType::Text);
+            const std::string_view t = v.text();
+            p.setBytes(reinterpret_cast<const std::uint8_t*>(t.data()), t.size());
+            break;
+        }
+        case Type::Blob: {
+            p.setType(r::ParamType::Blob);
+            const BlobView b = v.blob();
+            p.setBytes(reinterpret_cast<const std::uint8_t*>(b.data()), b.size());
+            break;
+        }
+        default: break;
+    }
+}
+
+/// The parameters of one call, as the lambdas that fill the request borrow them. Kept in one struct so each lambda
+/// captures a single pointer, which std::function stores without allocating.
+struct CallArgs
+{
+    const Value* params = nullptr;
+    std::size_t paramCount = 0;
+    const NamedParams* named = nullptr;
+    const RemoteOptions* options = nullptr;
+};
+
+void fillParams(const CallArgs& a, r::ParamList::Builder& b)
+{
+    if (a.named) {
+        if (a.named->empty())
+            return;
+        auto list = b.initList(a.named->size());
+        std::size_t i = 0;
+        for (const auto& [name, v] : *a.named) {
+            auto p = list.init(i++);
+            p.setName(name);
+            encodeValue(p, v);
+        }
+    } else if (a.paramCount) {
+        auto list = b.initList(a.paramCount);
+        for (std::size_t i = 0; i < a.paramCount; ++i)
+            encodeValue(list.init(i), a.params[i]);
+    }
+}
+
+void fillOptions(const CallArgs& a, r::ResultOptions::Builder& o)
+{
+    const RemoteOptions& opt = *a.options;
+    if (!opt.batchRows() && !opt.batchBytes() && !opt.blobPrefix() && opt.dictionary() && opt.narrowing())
+        return;  // all defaults: nothing to say
+    o.setBatchRows(static_cast<std::uint32_t>(opt.batchRows()));
+    o.setBatchBytes(static_cast<std::uint32_t>(opt.batchBytes()));
+    o.setBlobPrefix(static_cast<std::uint32_t>(opt.blobPrefix()));
+    o.setNoDictionary(!opt.dictionary());
+    o.setNoNarrowing(!opt.narrowing());
+}
+
+/// What the closing trailer of a statement said.
+struct Ended
+{
+    std::uint64_t changes = 0;
+    std::int64_t lastInsertId = 0, totalChanges = 0, handleChanges = 0, handleLastInsertId = 0;
+    bool inTransaction = false;
+    std::string sql;
+    bool strict = false, withoutRowid = false;
+    bool known = false;
+};
 
 }  // namespace
 
@@ -74,16 +141,11 @@ class RemoteSession : public std::enable_shared_from_this<RemoteSession>
 public:
     RemoteSession(std::string url, RemoteOptions options) : options_(std::move(options)), url_(std::move(url)), path_(url_)
     {
-        discard_.reserve(16);
         row_.reserve(32);
     }
-    ~RemoteSession() { shutdown(false); }
+    ~RemoteSession() { shutdown(); }
 
-    void open()
-    {
-        connectSocket();
-        hello();
-    }
+    void open() { connectAndOpen(); }
 
     // --- calls (all take the call lock; see CallGuard) ---
 
@@ -93,8 +155,12 @@ public:
         CallGuard guard(*this);
         checkTxn(txn);
         beginCall(txn != nullptr);
-        return run(r::Op::Exec, text, 0, txn ? txn->id : 0, params ? params->data() : nullptr, params ? params->size() : 0,
-                   named, consumer, into);
+        CallArgs args;
+        args.params = params ? params->data() : nullptr;
+        args.paramCount = params ? params->size() : 0;
+        args.named = named;
+        args.options = &options_;
+        return run(false, text, 0, txn ? txn->id : 0, args, consumer, into);
     }
 
     Result execPrepared(RemoteStatement& st, RemoteTxn* txn, ResultConsumer* consumer, Result* into)
@@ -104,7 +170,11 @@ public:
         beginCall(txn != nullptr);
         if (st.epoch != epoch_)
             reprepare(st);
-        return run(r::Op::ExecPrepared, {}, st.id, txn ? txn->id : 0, st.bound.data(), st.bound.size(), nullptr, consumer, into);
+        CallArgs args;
+        args.params = st.bound.data();
+        args.paramCount = st.bound.size();
+        args.options = &options_;
+        return run(true, {}, st.id, txn ? txn->id : 0, args, consumer, into);
     }
 
     std::shared_ptr<RemoteStatement> prepare(std::string_view text)
@@ -127,11 +197,7 @@ public:
         auto txn = std::make_shared<RemoteTxn>();
         txn->session = shared_from_this();
         txn->id = nextTxn_++;
-        detail::RequestFields fields;
-        fields.txn = txn->id;
-        fields.readOnly = readOnly;
-        const std::uint32_t id = send(r::Op::Begin, fields);
-        awaitTerminal(id);
+        record(call([&] { return sql_->Begin(txn->id, readOnly, callOptions()); }));
         txn->open = true;
         txn->epoch = epoch_;
         ++openTxns_;
@@ -145,10 +211,7 @@ public:
         beginCall(true);
         txn.open = false;
         --openTxns_;
-        detail::RequestFields fields;
-        fields.txn = txn.id;
-        const std::uint32_t id = send(commit ? r::Op::Commit : r::Op::Rollback, fields);
-        awaitTerminal(id);
+        record(call([&] { return commit ? sql_->Commit(txn.id, callOptions()) : sql_->Rollback(txn.id, callOptions()); }));
     }
 
     /// From destructors: the server rolls the transaction back; nothing waits for the answer.
@@ -160,13 +223,26 @@ public:
         if (txn.epoch != epoch_)
             return;  // it went with its connection
         --openTxns_;
-        fireAndForget(r::Op::Rollback, 0, txn.id);
+        try {
+            bufs::MessageBuilder mb;
+            mb.initRoot<r::SqlRollbackRequest>().setTxn(txn.id);
+            const auto sealed = mb.finish();
+            rpc_.notify(r::SqlMethods::Rollback, sealed.first, sealed.second);
+        } catch (...) {
+        }
     }
 
     void closeStatement(RemoteStatement& st) noexcept
     {
-        if (st.epoch == epoch_)
-            fireAndForget(r::Op::ClosePrepared, st.id, 0);
+        if (st.epoch != epoch_)
+            return;
+        try {
+            bufs::MessageBuilder mb;
+            mb.initRoot<r::SqlClosePreparedRequest>().setStatement(st.id);
+            const auto sealed = mb.finish();
+            rpc_.notify(r::SqlMethods::ClosePrepared, sealed.first, sealed.second);
+        } catch (...) {
+        }
     }
 
     std::vector<std::string> tables()
@@ -184,7 +260,7 @@ public:
     {
         CallGuard guard(*this);
         beginCall(false);
-        Terminal info;
+        Ended info;
         Result rows = describe(r::Catalog::Table_, name, &info);
         TableInfo out;
         out.name = std::string(name);
@@ -249,42 +325,14 @@ public:
         return other;
     }
 
-    /// From another thread: asks the server to stop the request this session is waiting for.
-    void interrupt() noexcept
-    {
-        const std::uint32_t id = current_.load();
-        if (id == 0 || !ws_.isOpen())
-            return;
-        try {
-            alignas(8) unsigned char buffer[128];
-            bufs::MessageBuilder mb(buffer, sizeof buffer);
-            auto q = mb.initRoot<r::Request>();
-            q.setId(interruptId_.fetch_add(1) | 0x80000000u);  // ids of immediate requests are never queued
-            q.setOp(r::Op::Interrupt);
-            q.setTarget(id);
-            const auto [data, size] = mb.finish();
-            ws_.sendBinary(data, size);
-        } catch (...) {
-        }
-    }
+    /// From another thread: asks the server to stop whatever this session is running.
+    void interrupt() noexcept { rpc_.cancelAll(); }
 
-    void shutdown(bool wait) noexcept
+    void shutdown() noexcept
     {
         if (closed_.exchange(true))
             return;
-        try {
-            if (ws_.isOpen()) {
-                if (wait) {
-                    const std::uint32_t id = send(r::Op::Goodbye, {});
-                    try {
-                        awaitTerminalBounded(id, std::chrono::seconds(5));
-                    } catch (...) {
-                    }
-                }
-                ws_.close();
-            }
-        } catch (...) {
-        }
+        rpc_.close();  // says goodbye, then closes
     }
 
     void close() noexcept
@@ -294,7 +342,7 @@ public:
             interrupt();
             lock.lock();
         }
-        shutdown(true);
+        shutdown();
     }
 
     const std::filesystem::path& path() const { return path_; }
@@ -316,67 +364,71 @@ private:
             lock = std::unique_lock<std::mutex>(s.callMutex_);
             s.owner_ = std::this_thread::get_id();
         }
-        ~CallGuard()
-        {
-            session.owner_ = std::thread::id();
-            session.current_ = 0;
-        }
+        ~CallGuard() { session.owner_ = std::thread::id(); }
         RemoteSession& session;
         std::unique_lock<std::mutex> lock;
     };
 
-    // ----------------------------------------------------------------------------------- connecting ---
-
-    void connectSocket()
+    rpc::CallOptions callOptions() const
     {
-        http::WebSocketClientOptions wo;
-        wo.subprotocols = {"libsql.v1"};
-        wo.connectTimeout = options_.connectTimeout();
-        wo.maxMessageBytes = options_.maxMessage();
-        wo.caFile = options_.caFile();
-        wo.insecureSkipVerify = options_.isInsecure();
-        if (!options_.authorization().empty())
-            wo.headers.emplace_back("Authorization", options_.authorization());
-        for (const auto& h : options_.headers())
-            wo.headers.push_back(h);
+        rpc::CallOptions c;
+        c.timeout = options_.requestTimeout();
+        return c;
+    }
+
+    /// Runs one rpc call and turns its failure into the sql::Error the server raised (or a connection error).
+    template <class Fn>
+    auto call(Fn&& fn) -> decltype(fn())
+    {
         try {
-            ws_.connect(url_, wo);
-        } catch (const http::WebSocketError& e) {
-            if (e.kind() == http::WebSocketError::Kind::Handshake && (e.status() == 401 || e.status() == 403))
-                throw Error(ErrorCode::PermissionDenied, std::string("the server refused the connection: ") + e.what());
-            if (e.kind() == http::WebSocketError::Kind::Usage)
-                throw Error(ErrorCode::InvalidArgument, e.what());
-            connectionError(e.what());
+            return fn();
+        } catch (const rpc::Error& e) {
+            throw detail::fromRpcStatus(e.status());
         }
     }
 
-    void hello()
+    // ----------------------------------------------------------------------------------- connecting ---
+
+    void connectAndOpen()
     {
-        consumed_ = 0;
-        const std::string client = options_.clientName().empty() ? std::string("libsql/") + version() + " C++"
-                                                                  : options_.clientName();
-        detail::RequestFields fields;
-        fields.protocol = detail::kProtocolVersion;
-        fields.client = client;
-        fields.token = options_.token();
-        fields.readOnly = options_.isReadOnly();
-        fields.window = options_.window();
-        fields.maxMessage = static_cast<std::uint32_t>(options_.maxMessage());
-        const std::uint32_t id = send(r::Op::Hello, fields);
-        Terminal t = awaitTerminal(id);
-        if (t.kind != r::Kind::Welcome)
-            throw Error(ErrorCode::Protocol, "the server did not answer hello with welcome");
-        window_ = t.window ? t.window : options_.window();
-        maxPipeline_ = t.maxPipeline;
+        const std::string_view url = url_;
+        const bool local = url.rfind("unix://", 0) == 0 || url.rfind("ipc://", 0) == 0;
+        if (!local) {
+            if (url.rfind("ws://", 0) != 0 && url.rfind("wss://", 0) != 0)
+                throw Error(ErrorCode::InvalidArgument, "a remote database URL starts with ws://, wss:// or unix://");
+            try {
+                http::parseWebSocketUrl(url);
+            } catch (const http::WebSocketError& e) {
+                throw Error(ErrorCode::InvalidArgument, e.what());
+            }
+        }
+        rpc::ClientOptions co;
+        co.token = options_.token();
+        if (!options_.authorization().empty())
+            co.headers.emplace_back("Authorization", options_.authorization());
+        for (const auto& h : options_.headers())
+            co.headers.push_back(h);
+        co.peer = options_.clientName().empty() ? std::string("libsql/") + version() + " C++" : options_.clientName();
+        co.connectTimeout = options_.connectTimeout();
+        co.pingInterval = options_.pingInterval();
+        co.window = options_.window();
+        co.maxMessage = options_.maxMessage();
+        co.caFile = options_.caFile();
+        co.insecureSkipVerify = options_.isInsecure();
+        try {
+            rpc_ = rpc::Client::connect(url_, co);
+        } catch (const rpc::Error& e) {
+            connectFailed(e);
+        }
+        sql_ = std::make_unique<r::SqlClient>(rpc_);
+        try {
+            call([&] { return sql_->Open(options_.isReadOnly(), co.peer, 0, callOptions()); });
+        } catch (...) {
+            rpc_.close();
+            throw;
+        }
         ++epoch_;
         inTransaction_ = false;
-    }
-
-    void reconnect()
-    {
-        ws_ = http::WebSocketClient();
-        connectSocket();
-        hello();
     }
 
     /// A transaction can be used while it is open and its connection is the current one.
@@ -396,249 +448,38 @@ private:
     {
         if (closed_.load())
             throw Error(ErrorCode::InvalidArgument, "the database is closed");
-        flushDeferred();
-        if (!ws_.isOpen() || ws_.peerClosed()) {
+        if (!rpc_.connected()) {
             const bool lostWork = openTxns_ > 0 || inTransaction_.load() || inTransaction;
             if (!options_.reconnects() || lostWork) {
                 // What lived on the connection is gone: later calls start from a clean slate.
                 ++epoch_;
                 openTxns_ = 0;
                 inTransaction_ = false;
-                discard_.clear();
                 connectionError(lostWork ? "the connection was lost; the transaction was rolled back"
                                          : "the connection was lost");
             }
-            discard_.clear();
             openTxns_ = 0;
-            reconnect();
+            connectAndOpen();
         }
-        flushCredit();
-    }
-
-    // ----------------------------------------------------------------------------------- sending ---
-
-    /// Sends a request built from `fields` (id and op are set here); returns its id.
-    std::uint32_t send(r::Op op, detail::RequestFields fields)
-    {
-        std::uint32_t id = nextId_++;
-        if (id == 0 || id >= 0x80000000u) {
-            nextId_ = 2;
-            id = 1;
-        }
-        fields.id = id;
-        fields.op = op;
-        const auto [data, size] = detail::buildRequest(builder_, fields);
-        try {
-            ws_.sendBinary(data, size);
-        } catch (const http::WebSocketError& e) {
-            connectionError(std::string("the connection was lost: ") + e.what());
-        }
-        return id;
-    }
-
-    void flushCredit()
-    {
-        if (consumed_ == 0 || !ws_.isOpen())
-            return;
-        const std::uint64_t c = consumed_;
-        consumed_ = 0;
-        detail::RequestFields fields;
-        fields.credit = c;
-        send(r::Op::Credit, fields);
-    }
-
-    void fireAndForget(r::Op op, std::uint32_t statement, std::uint32_t txn) noexcept
-    {
-        try {
-            std::unique_lock<std::mutex> lock(callMutex_, std::try_to_lock);
-            if (!lock.owns_lock() || owner_.load() == std::this_thread::get_id() || closed_.load() || !ws_.isOpen()) {
-                std::lock_guard<std::mutex> g(deferredMutex_);
-                deferred_.push_back({op, statement, txn, epoch_});
-                return;
-            }
-            sendFireAndForget(op, statement, txn);
-        } catch (...) {
-        }
-    }
-
-    void sendFireAndForget(r::Op op, std::uint32_t statement, std::uint32_t txn)
-    {
-        detail::RequestFields fields;
-        fields.statement = statement;
-        fields.txn = txn;
-        discard_.push_back(send(op, fields));
-    }
-
-    void flushDeferred()
-    {
-        std::vector<Deferred> work;
-        {
-            std::lock_guard<std::mutex> g(deferredMutex_);
-            work.swap(deferred_);
-        }
-        for (const Deferred& d : work)
-            if (d.epoch == epoch_ && ws_.isOpen())
-                sendFireAndForget(d.op, d.statement, d.txn);
     }
 
     // ----------------------------------------------------------------------------------- receiving ---
-
-    /// Waits for the terminal reply of `id`, discarding the answers of fire-and-forget requests; rows are an
-    /// error here (none are expected).
-    Terminal awaitTerminal(std::uint32_t id)
-    {
-        RowSink none;
-        return await(id, none, Clock::time_point::max());
-    }
-    void awaitTerminalBounded(std::uint32_t id, std::chrono::seconds limit)
-    {
-        RowSink none;
-        await(id, none, Clock::now() + limit);
-    }
 
     /// Where the rows of a request go.
     struct RowSink
     {
         ResultBuilder* builder = nullptr;
-        ResultConsumer* consumer = nullptr;
         bool begun = false;
         bool hadColumns = false;
-        bool stopSent = false;
-        bool swallowInterrupt = false;
-        bool terminal = false;  ///< the request's closing reply has been read
+        bool stopped = false;  ///< the consumer asked to stop; the call was cancelled
     };
 
-    /// A request left without its closing reply (a consumer threw, say): the server is told to stop it and
-    /// whatever it still sends for that id is read and dropped by the next calls.
-    void abandon(std::uint32_t id) noexcept
+    /// One ResultSet batch into the builder.
+    void feed(const rpc::Payload& payload, RowSink& sink)
     {
-        try {
-            current_ = id;
-            interrupt();
-            discard_.push_back(id);
-        } catch (...) {
-        }
-    }
-
-    Terminal await(std::uint32_t id, RowSink& sink, Clock::time_point hardLimit)
-    {
-        current_ = id;
-        const bool limited = options_.requestTimeout().count() > 0;
-        Clock::time_point deadline = limited ? Clock::now() + options_.requestTimeout() : Clock::time_point::max();
-        deadline = std::min(deadline, hardLimit);
-        bool timedOut = false;
-        for (;;) {
-            std::optional<http::WebSocketClient::Message> message;
-            try {
-                message = ws_.receive(deadline, options_.pingInterval());
-            } catch (const http::WebSocketError& e) {
-                if (e.kind() == http::WebSocketError::Kind::Closed)
-                    connectionError("the server closed the connection (" + std::to_string(e.closeCode()) + " " +
-                                    e.closeReason() + ")");
-                if (e.kind() == http::WebSocketError::Kind::TooBig)
-                    throw Error(ErrorCode::Protocol, "the server sent a message above the configured maximum");
-                connectionError(e.what());
-            }
-            if (!message) {
-                // The deadline passed. First ask the server to stop; if even that is not answered, give up.
-                if (hardLimit != Clock::time_point::max() && Clock::now() >= hardLimit)
-                    connectionError("no answer from the server");
-                if (timedOut)
-                    connectionError("no answer from the server after the request was interrupted");
-                timedOut = true;
-                sink.swallowInterrupt = false;
-                interrupt();
-                deadline = Clock::now() + std::chrono::seconds(5);
-                continue;
-            }
-            const char* data = message->data.data();
-            const std::size_t size = message->data.size();
-            if (size < 8 || !message->binary || !bufs::verify<r::Reply>(data, size))
-                throw Error(ErrorCode::Protocol, "the server sent a message that is not a reply");
-            const auto reply = bufs::root<r::Reply>(data);
-            const std::uint32_t replyId = reply.id();
-            const r::Kind kind = reply.kind();
-            if (kind == r::Kind::Closing)
-                connectionError("the server is shutting down");
-            if (replyId != id) {
-                auto it = std::find(discard_.begin(), discard_.end(), replyId);
-                if (it != discard_.end()) {
-                    if (kind == r::Kind::Rows) {
-                        consumed_ += detail::frameCost(size);  // dropped, but still acknowledged
-                        if (consumed_ >= window_ / 2)
-                            flushCredit();
-                    } else {
-                        discard_.erase(it);
-                    }
-                    continue;
-                }
-                throw Error(ErrorCode::Protocol, "the server sent a reply for an unknown request");
-            }
-            if (kind == r::Kind::Rows) {
-                consumed_ += detail::frameCost(size);
-                feed(data + bufs::messageSize(data), size - bufs::messageSize(data), sink, id);
-                if (consumed_ >= window_ / 2)
-                    flushCredit();
-                continue;
-            }
-            Terminal t;
-            readTerminal(reply, t);
-            sink.terminal = true;
-            if (t.kind == r::Kind::Error) {
-                if (sink.swallowInterrupt && t.code == detail::wireCode(ErrorCode::Interrupted)) {
-                    t.kind = r::Kind::Done;  // the consumer asked for the stop
-                    t.message.clear();
-                    return t;
-                }
-                throw Error(detail::errorCodeFrom(t.code), static_cast<Constraint>(t.constraint), t.message);
-            }
-            return t;
-        }
-    }
-
-    static void readTerminal(const r::Reply::Reader& reply, Terminal& t)
-    {
-        t.kind = reply.kind();
-        t.code = reply.code();
-        t.constraint = reply.constraint();
-        t.message.assign(reply.message());
-        t.changes = reply.changes();
-        t.lastInsertId = reply.lastInsertId();
-        t.totalChanges = reply.totalChanges();
-        t.inTransaction = reply.inTransaction();
-        t.elapsedUs = reply.elapsedUs();
-        t.parameters = reply.parameters();
-        t.writes = reply.writes();
-        t.protocol = reply.protocol();
-        t.window = reply.window();
-        t.maxMessage = reply.maxMessage();
-        t.maxPipeline = reply.maxPipeline();
-        t.readOnly = reply.readOnly();
-        t.sql.assign(reply.sql());
-        t.strict = reply.strict();
-        t.withoutRowid = reply.withoutRowid();
-        t.handleChanges = reply.handleChanges();
-        t.handleLastInsertId = reply.handleLastInsertId();
-        t.names.clear();
-        for (auto s : reply.parameterNames())
-            t.names.emplace_back(s);
-        t.columns.clear();
-        for (auto s : reply.columns())
-            t.columns.emplace_back(s);
-    }
-
-    /// One Rows frame: its ResultSet message into the builder.
-    void feed(const char* messageData, std::size_t messageSize, RowSink& sink, std::uint32_t id)
-    {
-        if (!sink.builder) {
-            // Rows nobody asked for (a Prepare that returned some?): protocol violation.
-            throw Error(ErrorCode::Protocol, "the server sent rows for a request that has none");
-        }
-        if (sink.stopSent)
-            return;  // the consumer stopped; the rest is read and dropped
         for (auto& s : slots_)
             s.clear();
-        auto batch = wire_::BatchView::open(reinterpret_cast<const std::uint8_t*>(messageData), messageSize, &slots_);
+        auto batch = wire_::BatchView::open(payload.data(), payload.size(), &slots_);
         if (!batch)
             throw Error(ErrorCode::Protocol, "the server sent rows that do not verify");
         ResultBuilder& rb = *sink.builder;
@@ -665,11 +506,7 @@ private:
                 row_[c] = cols_[c].value(i);  // a move: the cell keeps borrowing the frame
             rb.row(row_.data(), columns);
             if (rb.stopped) {
-                sink.stopSent = true;
-                sink.swallowInterrupt = true;
-                const std::uint32_t target = id;
-                current_ = target;
-                interrupt();
+                sink.stopped = true;
                 return;
             }
         }
@@ -704,10 +541,41 @@ private:
             cols_.resize(n, wire_::ColumnView(sql::wire::Column::Reader(), 0, nullptr));
     }
 
+    /// Reads a statement's stream to its end (or until the consumer stops it). Returns how it ended.
+    template <class Stream>
+    Ended drain(Stream& stream, RowSink& sink)
+    {
+        Ended ended;
+        try {
+            while (stream.next()) {
+                feed(stream.payload(), sink);
+                if (sink.stopped) {
+                    // The consumer has had enough: the server is told to stop; the rest is dropped.
+                    stream.cancel();
+                    return ended;
+                }
+            }
+        } catch (const rpc::Error& e) {
+            throw detail::fromRpcStatus(e.status());
+        }
+        const auto t = stream.trailer();
+        ended.known = true;
+        ended.changes = t.changes();
+        ended.lastInsertId = t.lastInsertId();
+        ended.totalChanges = t.totalChanges();
+        ended.inTransaction = t.inTransaction();
+        ended.handleChanges = t.handleChanges();
+        ended.handleLastInsertId = t.handleLastInsertId();
+        ended.sql.assign(t.sql());
+        ended.strict = t.strict();
+        ended.withoutRowid = t.withoutRowid();
+        return ended;
+    }
+
     // ----------------------------------------------------------------------------------- requests ---
 
-    Result run(r::Op op, std::string_view text, std::uint32_t statement, std::uint32_t txn, const Value* params,
-               std::size_t count, const NamedParams* named, ResultConsumer* consumer, Result* into)
+    Result run(bool prepared, std::string_view text, std::uint32_t statement, std::uint32_t txn, const CallArgs& args,
+               ResultConsumer* consumer, Result* into)
     {
         std::optional<ResultBuilder> built;  // not movable: constructed where it lives
         if (into)
@@ -718,44 +586,35 @@ private:
         rb.consumer = consumer;
         RowSink sink;
         sink.builder = &rb;
-        sink.consumer = consumer;
-        detail::RequestFields fields;
-        fields.sql = text;
-        fields.statement = statement;
-        fields.txn = txn;
-        fields.params = params;
-        fields.paramCount = count;
-        fields.named = named;
-        fields.options = !(!options_.batchRows() && !options_.batchBytes() && !options_.blobPrefix() &&
-                           options_.dictionary() && options_.narrowing());
-        fields.batchRows = static_cast<std::uint32_t>(options_.batchRows());
-        fields.batchBytes = static_cast<std::uint32_t>(options_.batchBytes());
-        fields.blobPrefix = static_cast<std::uint32_t>(options_.blobPrefix());
-        fields.noDictionary = !options_.dictionary();
-        fields.noNarrowing = !options_.narrowing();
-        const std::uint32_t id = send(op, fields);
-        Terminal t;
+        // Each lambda captures one pointer, so std::function keeps it in place instead of allocating.
+        const CallArgs* a = &args;
+        const rpc::Fill<r::ParamList> params = [a](r::ParamList::Builder& b) { fillParams(*a, b); };
+        const rpc::Fill<r::ResultOptions> options = [a](r::ResultOptions::Builder& o) { fillOptions(*a, o); };
+        Ended ended;
         try {
-            t = await(id, sink, Clock::time_point::max());
-        } catch (...) {
-            if (!sink.terminal && ws_.isOpen())
-                abandon(id);
-            current_ = 0;
-            throw;
+            if (prepared) {
+                auto stream = sql_->ExecPrepared(statement, params, txn, options, callOptions());
+                ended = drain(stream, sink);
+            } else {
+                auto stream = sql_->Exec(text, params, txn, options, 0, callOptions());
+                ended = drain(stream, sink);
+            }
+        } catch (const rpc::Error& e) {
+            throw detail::fromRpcStatus(e.status());
         }
-        current_ = 0;
-        record(t, sink.hadColumns);
-        rb.changed(t.changes);
-        rb.lastInsertId(t.lastInsertId);
+        if (ended.known)
+            record(ended);
+        rb.changed(ended.changes);
+        rb.lastInsertId(ended.lastInsertId);
         // A statement without columns gives the consumer its end() and nothing before it, as locally.
         if (consumer)
-            consumer->end(t.changes, t.lastInsertId);
+            consumer->end(ended.changes, ended.lastInsertId);
         if (into)
             return Result();
         return std::move(rb.own);
     }
 
-    void record(const Terminal& t, bool /*hadColumns*/)
+    void record(const Ended& t)
     {
         changes_ = t.handleChanges;
         lastInsertRowid_ = t.handleLastInsertId;
@@ -763,20 +622,27 @@ private:
         inTransaction_ = t.inTransaction;
     }
 
+    template <class Response>
+    void record(const Response& counters)
+    {
+        changes_ = counters->changes();
+        lastInsertRowid_ = counters->lastInsertId();
+        totalChanges_ = counters->totalChanges();
+        inTransaction_ = counters->inTransaction();
+    }
+
     void sendPrepare(RemoteStatement& st)
     {
-        detail::RequestFields fields;
-        fields.statement = st.id;
-        fields.sql = st.info.sql;
-        const std::uint32_t id = send(r::Op::Prepare, fields);
-        Terminal t = awaitTerminal(id);
-        if (t.kind != r::Kind::Prepared)
-            throw Error(ErrorCode::Protocol, "the server did not answer prepare with prepared");
-        st.info.parameters = t.parameters;
-        st.info.names = std::move(t.names);
-        st.info.names.resize(t.parameters);
-        st.info.columns = std::move(t.columns);
-        st.info.writes = t.writes;
+        auto info = call([&] { return sql_->Prepare(st.id, st.info.sql, callOptions()); });
+        st.info.parameters = info->parameters();
+        st.info.names.clear();
+        for (auto name : info->parameterNames())
+            st.info.names.emplace_back(name);
+        st.info.names.resize(st.info.parameters);
+        st.info.columns.clear();
+        for (auto column : info->columns())
+            st.info.columns.emplace_back(column);
+        st.info.writes = info->writes();
         st.epoch = epoch_;
     }
 
@@ -789,61 +655,45 @@ private:
             st.bound.resize(st.info.parameters);
     }
 
-    /// Describe: the rows as a Result; `terminal` (if given) gets the closing reply.
-    Result describe(r::Catalog what, std::string_view name, Terminal* terminal)
+    /// Describe: the rows as a Result; `ended` (if given) gets the closing trailer.
+    Result describe(r::Catalog what, std::string_view name, Ended* ended)
     {
         ResultBuilder rb;
         RowSink sink;
         sink.builder = &rb;
-        detail::RequestFields fields;
-        fields.what = what;
-        fields.name = name;
-        const std::uint32_t id = send(r::Op::Describe, fields);
-        Terminal t;
+        CallArgs args;
+        args.options = &options_;
+        const CallArgs* a = &args;
+        const rpc::Fill<r::ResultOptions> options = [a](r::ResultOptions::Builder& o) { fillOptions(*a, o); };
+        Ended result;
         try {
-            t = await(id, sink, Clock::time_point::max());
-        } catch (...) {
-            if (!sink.terminal && ws_.isOpen())
-                abandon(id);
-            current_ = 0;
-            throw;
+            auto stream = sql_->Describe(what, name, options, callOptions());
+            result = drain(stream, sink);
+        } catch (const rpc::Error& e) {
+            throw detail::fromRpcStatus(e.status());
         }
-        current_ = 0;
-        record(t, true);
-        if (terminal)
-            *terminal = std::move(t);
+        if (result.known)
+            record(result);
+        if (ended)
+            *ended = std::move(result);
         return std::move(rb.own);
     }
 
     // ----------------------------------------------------------------------------------- state ---
 
-    struct Deferred
-    {
-        r::Op op;
-        std::uint32_t statement, txn;
-        std::uint64_t epoch;
-    };
-
     RemoteOptions options_;
     std::string url_;
     std::filesystem::path path_;
-    http::WebSocketClient ws_;
-    bufs::MessageBuilder builder_;
+    rpc::Client rpc_;
+    std::unique_ptr<r::SqlClient> sql_;
     std::mutex callMutex_;
     std::atomic<std::thread::id> owner_{};
     std::atomic<bool> closed_{false};
-    std::atomic<std::uint32_t> current_{0};
-    std::atomic<std::uint32_t> interruptId_{1};
-    std::uint32_t nextId_ = 1, nextStatement_ = 1, nextTxn_ = 1;
-    std::uint64_t window_ = 1 << 20, consumed_ = 0;
-    std::uint16_t maxPipeline_ = 16;
+    std::uint32_t nextStatement_ = 1, nextTxn_ = 1;
     std::uint64_t epoch_ = 0;
     std::atomic<int> openTxns_{0};
     std::atomic<std::int64_t> changes_{0}, totalChanges_{0}, lastInsertRowid_{0};
     std::atomic<bool> inTransaction_{false};
-    std::vector<std::uint32_t> discard_;
-    std::mutex deferredMutex_;
-    std::vector<Deferred> deferred_;
     // Reused for every result.
     std::vector<Value> row_;
     std::vector<wire_::ColumnView> cols_;

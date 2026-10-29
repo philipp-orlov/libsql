@@ -16,6 +16,7 @@ option(SQL_BUILD_CONFORMANCE "Build the SQLite conformance harness (see tests/co
 option(SQL_ENABLE_ASAN "Build with address+undefined sanitizers" OFF)
 # Experimental: the binding has not been through the security/robustness review
 # the C++ library has. Never part of a product build.
+option(SQL_BUILD_C_API "Build libsql_c, the C interface (include/sql/sql_c.h) the C# binding loads" OFF)
 option(SQL_BUILD_PYTHON "Build the Python binding (see python/README.md)" OFF)
 
 set(SQL_NOSQL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libnosql"
@@ -23,6 +24,7 @@ set(SQL_NOSQL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libnosql"
 
 set(SQL_BUFS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libbufs" CACHE PATH "Source directory of libbufs")
 set(SQL_HTTP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libhttp" CACHE PATH "Source directory of libhttp, when it is not already part of the build")
+set(SQL_RPC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../librpc" CACHE PATH "Source directory of librpc, when it is not already part of the build")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -60,7 +62,7 @@ endif()
 
 # An extension module is a shared object, so everything linked into it --
 # libnosql included, which is added below -- has to be position independent.
-if(SQL_BUILD_PYTHON)
+if(SQL_BUILD_PYTHON OR SQL_BUILD_C_API)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
@@ -130,6 +132,17 @@ if((SQL_WITH_REMOTE OR SQL_BUILD_TOOLS) AND NOT TARGET http)
     endif()
 endif()
 
+# librpc carries the remote protocol (WebSocket and local sockets); rpcc, its protocol compiler, writes the service
+# stubs from include/sql/wire/remote.bufs.
+if(SQL_WITH_REMOTE AND NOT TARGET rpc)
+    if(NOT EXISTS "${SQL_RPC_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "librpc not found. Point -DSQL_RPC_DIR at it, or set -DSQL_WITH_REMOTE=OFF.")
+    endif()
+    set(RPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(RPC_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${SQL_RPC_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/librpc")
+endif()
+
 add_library(sql
     src/value.cpp
     src/database.cpp
@@ -170,7 +183,7 @@ target_link_libraries(sql PUBLIC nosql::nosql)
 
 if(SQL_WITH_BUFS)
     target_sources(sql PRIVATE src/bufs.cpp)
-    bufs_generate(sql SCHEMAS include/sql/wire/resultset.bufs include/sql/wire/remote.bufs
+    bufs_generate(sql SCHEMAS include/sql/wire/resultset.bufs
                   OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen/sql/wire)
     target_include_directories(sql PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/gen>)
     # bufs_generate links libbufs PRIVATE, and a static library re-exports that as LINK_ONLY, which an
@@ -182,7 +195,12 @@ if(SQL_WITH_BUFS)
 endif()
 
 if(SQL_WITH_REMOTE)
-    target_sources(sql PRIVATE src/remote/protocol.cpp src/remote/sql_socket.cpp src/remote/client.cpp)
+    target_sources(sql PRIVATE src/remote/sql_socket.cpp src/remote/client.cpp)
+    rpc_generate(sql SCHEMAS ${CMAKE_CURRENT_SOURCE_DIR}/include/sql/wire/remote.bufs
+                 INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include/sql/wire
+                 OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen/sql/wire NO_LINK)
+    set_property(TARGET sql APPEND PROPERTY LINK_LIBRARIES rpc)
+    set_property(TARGET sql APPEND PROPERTY INTERFACE_LINK_LIBRARIES $<BUILD_INTERFACE:rpc>)
     # Like libbufs, libhttp is a build-tree dependency: the plain LINK_LIBRARIES property builds sql itself against
     # it without putting it into the install export (a PRIVATE link of a static library would).
     set_property(TARGET sql APPEND PROPERTY LINK_LIBRARIES http)
@@ -212,6 +230,13 @@ set_target_properties(sql PROPERTIES
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+
+if(SQL_BUILD_C_API)
+    add_library(sql_c SHARED src/c_api.cpp)
+    target_link_libraries(sql_c PRIVATE sql)
+    set_target_properties(sql_c PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+    install(TARGETS sql_c LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 install(TARGETS sql EXPORT sql-targets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -256,4 +281,21 @@ if(SQL_BUILD_BENCHMARKS)
 endif()
 if(SQL_BUILD_PYTHON)
     add_subdirectory(python)
+endif()
+if(SQL_BUILD_C_API AND SQL_BUILD_TESTS)
+    find_program(SQL_DOTNET dotnet HINTS $ENV{DOTNET_ROOT} $ENV{HOME}/.dotnet)
+    if(SQL_DOTNET)
+        # The remote half of the tests needs the sql tool to serve a database.
+        set(served_by "")
+        if(TARGET sql_cli)
+            set(served_by $<TARGET_FILE:sql_cli>)
+        endif()
+        add_test(NAME csharp_binding
+                 COMMAND ${SQL_DOTNET} run --project ${CMAKE_CURRENT_SOURCE_DIR}/bindings/csharp/LibSql.Tests --
+                         ${CMAKE_CURRENT_BINARY_DIR}/csharp_work ${served_by})
+        set_tests_properties(csharp_binding PROPERTIES TIMEOUT 300
+            ENVIRONMENT "SQL_LIBRARY=$<TARGET_FILE:sql_c>;DOTNET_CLI_TELEMETRY_OPTOUT=1;DOTNET_NOLOGO=1;DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1")
+    else()
+        message(STATUS "libsql: C# tests skipped (dotnet not found)")
+    endif()
 endif()

@@ -33,6 +33,9 @@ struct WebOptions
     bool readOnly = false;
     /// Where the WebSocket route is served. The front end looks for it here, so change it only for other clients.
     std::string socketPath = "/api/v1/ws/sql";
+    /// Not empty: the database is also served to programs on this machine on a Unix socket (owner only), through
+    /// shared memory: `sql unix://<path>` or Database::connect("unix://<path>"). The token, if any, is still needed.
+    std::string unixSocket;
     /// When not empty the route needs it ("Authorization: Bearer <token>" in the handshake, or the token in the
     /// first message, which is how the page presents it). The page itself is public.
     std::string token;
@@ -53,7 +56,7 @@ public:
     WebServer& operator=(const WebServer&) = delete;
 
     /// Serves until `shouldStop` returns true (polled) or stop() is called.
-    void run(std::function<bool()> shouldStop = {});
+    void run(std::function<bool()> shouldStop = {}, std::function<void()> onListening = {});
     void stop();
 
 private:

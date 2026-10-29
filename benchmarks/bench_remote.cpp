@@ -64,6 +64,7 @@ struct Served
     std::unique_ptr<http::Server> server;
     std::unique_ptr<sql::remote::SqlSocket> socket;
     std::future<void> serving;
+    std::string localPath;
 
     explicit Served(unsigned workers = 4) : db(sql::Database::configure().busyTimeout(5s).open(dir.file("db")))
     {
@@ -75,6 +76,8 @@ struct Served
         server = std::make_unique<http::Server>(config);
         socket = std::make_unique<sql::remote::SqlSocket>(db, sql::remote::SqlSocketOptions().workers(workers).maxSessions(4096));
         socket->attach(*server, "/api/v1/ws/sql");
+        localPath = "/tmp/libsql-bench-" + std::to_string(::getpid()) + ".sock";
+        socket->listenLocal(localPath);
         serving = std::async(std::launch::async, [this] { server->run(); });
         std::this_thread::sleep_for(300ms);
     }
@@ -83,6 +86,11 @@ struct Served
         socket->shutdown(500ms);
         server->stop();
         serving.get();
+    }
+    /// The same database through the local socket (shared-memory rings).
+    sql::Database connectLocal(const sql::RemoteOptions& o = sql::RemoteOptions()) const
+    {
+        return sql::Database::connect("unix://" + localPath, o);
     }
     sql::Database connect(const sql::RemoteOptions& o = sql::RemoteOptions()) const
     {
@@ -103,6 +111,8 @@ void roundTrip(Served& s)
     sql::Database remote = s.connect();
     sql::Statement local = s.db.prepare("SELECT a, b FROM one WHERE a = ?");
     sql::Statement far = remote.prepare("SELECT a, b FROM one WHERE a = ?");
+    sql::Database nearby = s.connectLocal();
+    sql::Statement near = nearby.prepare("SELECT a, b FROM one WHERE a = ?");
     struct Sink final : sql::ResultConsumer
     {
         void begin(const sql::ResultShape&) override {}
@@ -122,10 +132,11 @@ void roundTrip(Served& s)
         }
         return us;
     };
-    auto l = measure(local, 20000), r = measure(far, 20000);
+    auto l = measure(local, 20000), r = measure(far, 20000), n = measure(near, 20000);
     std::printf("round trip, prepared point query (20,000 each)\n");
     std::printf("  local   median %7.1f us   p99 %7.1f us\n", percentile(l, 0.5), percentile(l, 0.99));
-    std::printf("  remote  median %7.1f us   p99 %7.1f us   (loopback WebSocket)\n\n", percentile(r, 0.5), percentile(r, 0.99));
+    std::printf("  remote  median %7.1f us   p99 %7.1f us   (loopback WebSocket)\n", percentile(r, 0.5), percentile(r, 0.99));
+    std::printf("  unix    median %7.1f us   p99 %7.1f us   (local socket, shared memory)\n\n", percentile(n, 0.5), percentile(n, 0.99));
 }
 
 void throughput(Served& s, int rows)

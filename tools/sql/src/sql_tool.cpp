@@ -44,6 +44,7 @@ constexpr const char* kUsage =
     "usage:\n"
     "  sql <database> [options]\n"
     "  sql ws://host:port/path [options]     a database served by another program\n"
+    "  sql unix:///path/to.sock [options]    the same, on this machine, through shared memory\n"
     "\n"
     "options:\n"
     "  -c SQL        run SQL, then exit; may be repeated\n"
@@ -58,6 +59,7 @@ constexpr const char* kUsage =
     "  --token T     with --listen, the WebSocket route (/api/v1/ws/sql) needs T; with a ws:// URL, the\n"
     "                token to present\n"
     "  --auth VALUE  with a ws:// URL, sent as the Authorization header (\"Bearer abc\")\n"
+    "  --unix PATH   with --listen, also serve the database to local programs on this Unix socket (sql unix://PATH)\n"
     "  --ws-path P   with --listen, the WebSocket route (default /api/v1/ws/sql; the page looks for that one)\n"
     "  --tls-cert F  with --listen, serve https and wss with this certificate (PEM); needs --tls-key\n"
     "  --tls-key F   the private key (PEM) of --tls-cert\n"
@@ -416,13 +418,15 @@ int serve(Database& db, sqlweb::WebOptions options)
         sqlweb::WebServer server(db, options);
         std::signal(SIGINT, requestStop);
         std::signal(SIGTERM, requestStop);
-        std::printf("sql: serving %s on %s://%s:%u/ (Ctrl-C to stop)\n", db.path().string().c_str(),
-                    options.tlsCertificate.empty() ? "http" : "https", options.host.c_str(), unsigned(options.port));
-        if (options.token.empty() && options.host != "127.0.0.1" && options.host != "localhost" && options.host != "::1")
-            std::printf(
-                "sql: warning: no --token is set; anyone who can reach this address can change the data\n");
-        std::fflush(stdout);
-        server.run([] { return stopRequested != 0; });
+        // Said once the sockets are bound: scripts wait for this line before they connect.
+        server.run([] { return stopRequested != 0; }, [&] {
+            std::printf("sql: serving %s on %s://%s:%u/ (Ctrl-C to stop)\n", db.path().string().c_str(),
+                        options.tlsCertificate.empty() ? "http" : "https", options.host.c_str(), unsigned(options.port));
+            if (options.token.empty() && options.host != "127.0.0.1" && options.host != "localhost" && options.host != "::1")
+                std::printf(
+                    "sql: warning: no --token is set; anyone who can reach this address can change the data\n");
+            std::fflush(stdout);
+        });
     } catch (const std::exception& e) {
         std::fprintf(stderr, "sql: %s\n", e.what());
         return kStatementError;
@@ -444,7 +448,7 @@ int main(int argc, char** argv)
     int listenPort = 0;
     std::string host = "127.0.0.1";
     std::string publicDir;
-    std::string token, authorization, socketPath = "/api/v1/ws/sql";
+    std::string token, authorization, socketPath = "/api/v1/ws/sql", unixSocket;
     std::string tlsCertificate, tlsKey, caFile;
     bool insecure = false;
 
@@ -508,6 +512,8 @@ int main(int argc, char** argv)
             authorization = value("--auth");
         } else if (arg == "--ws-path") {
             socketPath = value("--ws-path");
+        } else if (arg == "--unix") {
+            unixSocket = value("--unix");
         } else if (arg == "--tls-cert") {
             tlsCertificate = value("--tls-cert");
         } else if (arg == "--tls-key") {
@@ -546,7 +552,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "sql: --tls-cert and --tls-key go together\n");
         return kUsageError;
     }
-    const bool remote = path.rfind("ws://", 0) == 0 || path.rfind("wss://", 0) == 0;
+    const bool remote = path.rfind("ws://", 0) == 0 || path.rfind("wss://", 0) == 0 || path.rfind("unix://", 0) == 0;
     if (remote && listenPort != 0) {
         std::fprintf(stderr, "sql: --listen serves a database file; %s is a remote database\n", path.c_str());
         return kUsageError;
@@ -577,6 +583,7 @@ int main(int argc, char** argv)
         options.port = static_cast<std::uint16_t>(listenPort);
         options.readOnly = readOnly;
         options.socketPath = socketPath;
+        options.unixSocket = unixSocket;
         options.tlsCertificate = tlsCertificate;
         options.tlsKey = tlsKey;
         options.token = token;
