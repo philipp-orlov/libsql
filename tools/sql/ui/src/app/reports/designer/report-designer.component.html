@@ -1,0 +1,160 @@
+<div class="designer">
+  <div class="bar">
+    <label class="field open-field">Report
+      <select class="open" (change)="open($any($event.target).value)" aria-label="Open report">
+        <option value="" [selected]="!report()">Open…</option>
+        @for (n of names(); track n) {
+          <option [value]="n" [selected]="n === report()?.name">{{ n }}</option>
+        }
+      </select>
+    </label>
+    <form class="new" (submit)="$event.preventDefault(); create()">
+      <input placeholder="New report name" [value]="newName()" (input)="newName.set($any($event.target).value)" aria-label="New report name" />
+      <button mat-stroked-button type="submit" class="create" [disabled]="!newName().trim()"><mat-icon>add</mat-icon>New</button>
+    </form>
+    <span class="spacer"></span>
+    @if (report()) {
+      <button mat-icon-button class="undo" (click)="undo()" [disabled]="!canUndo()" aria-label="Undo" title="Undo (Ctrl+Z)"><mat-icon>undo</mat-icon></button>
+      <button mat-icon-button class="redo" (click)="redo()" [disabled]="!canRedo()" aria-label="Redo" title="Redo (Ctrl+Shift+Z)"><mat-icon>redo</mat-icon></button>
+      @if (dirty()) {
+        <span class="dirty"><i></i>Unsaved</span>
+      }
+      <button mat-flat-button class="save" (click)="save()" [disabled]="!dirty() && names().includes(report()!.name)" title="Save (Ctrl+S)"><mat-icon>save</mat-icon>Save</button>
+      <input #copyName class="save-as-name" placeholder="Save as…" (keydown.enter)="saveAs(copyName.value); copyName.value = ''" aria-label="Save as" />
+      <button mat-button class="delete" (click)="remove()"><mat-icon>delete</mat-icon>Delete</button>
+    }
+  </div>
+
+  @if (report(); as r) {
+    <div class="body">
+      <ui-split orientation="horizontal">
+        <ui-split-pane title="Data" icon="database" [size]="220" [minSize]="150">
+          <app-data-pane [datasets]="dataPane()" [parameters]="r.parameters" />
+        </ui-split-pane>
+
+        <ui-split-pane title="Design" icon="edit" [size]="500" [minSize]="320">
+          <mat-tab-group class="tabs" animationDuration="0ms" mat-stretch-tabs="false" mat-align-tabs="start" [selectedIndex]="tab()" (selectedIndexChange)="tab.set($event)">
+            <mat-tab label="General">
+              <div class="editor">
+                <div class="row">
+                  <label class="field">File name <input [value]="r.name" (change)="setField('name', $any($event.target).value.trim())" /></label>
+                  <label class="field wide">Title <input [value]="r.title ?? ''" (change)="setField('title', $any($event.target).value)" /></label>
+                </div>
+                <label class="field">Description <textarea rows="2" [value]="r.description ?? ''" (change)="setField('description', $any($event.target).value)"></textarea></label>
+                <div class="row">
+                  <label class="field">Paper
+                    <select (change)="setField('page.size', $any($event.target).value)">
+                      @for (s of sizes; track s) {
+                        <option [value]="s" [selected]="r.page.size === s">{{ s }}</option>
+                      }
+                    </select>
+                  </label>
+                  <label class="field">Orientation
+                    <select (change)="setField('page.orientation', $any($event.target).value)">
+                      <option value="portrait" [selected]="r.page.orientation === 'portrait'">Portrait</option>
+                      <option value="landscape" [selected]="r.page.orientation === 'landscape'">Landscape</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="row">
+                  @for (side of ['top', 'right', 'bottom', 'left']; track side) {
+                    <label class="field">Margin {{ side }} (pt)
+                      <input type="number" min="0" max="200" [value]="$any(r.page.margins)[side]" (change)="setMargin(side, $any($event.target).value)" />
+                    </label>
+                  }
+                </div>
+                <p class="hint">The file name is the report's name in the list; the title is what readers see. The page header and footer are on the Layout tab.</p>
+              </div>
+            </mat-tab>
+            <mat-tab label="Parameters">
+              <app-parameters-editor [report]="r" (edit)="apply($event)" />
+            </mat-tab>
+            <mat-tab label="Datasets">
+              <app-datasets-editor [report]="r" (edit)="apply($event)" (ran)="ran($event)" />
+            </mat-tab>
+            <mat-tab label="Layout">
+              <app-layout-editor [report]="r" [fields]="fields()" [selection]="picked()" (edit)="apply($event)" (opened)="picked.set($event)" />
+            </mat-tab>
+            <mat-tab label="JSON">
+              <div class="editor">
+                <p class="hint">The definition as stored. Edit it directly if you like; it applies as soon as it is valid JSON.</p>
+                <textarea class="json mono" spellcheck="false" [value]="json()" (input)="applyJson($any($event.target).value)" aria-label="Report definition"></textarea>
+                @if (jsonError()) {
+                  <p class="error" role="alert">{{ jsonError() }}</p>
+                }
+              </div>
+            </mat-tab>
+          </mat-tab-group>
+        </ui-split-pane>
+
+        <ui-split-pane title="Preview" icon="visibility" [minSize]="300">
+          <div paneActions class="preview-actions">
+            @if (busy()) {
+              <button mat-button class="stop" (click)="stop()"><mat-icon>stop</mat-icon>Stop</button>
+            }
+            <button mat-button class="refresh" (click)="refreshData()" [disabled]="busy() || r.datasets.length === 0" [class.stale]="stale()">
+              <mat-icon>refresh</mat-icon>
+              {{ stale() ? 'Run queries' : 'Refresh data' }}
+            </button>
+          </div>
+          <div class="preview">
+            @if (r.parameters.length) {
+              <div class="params" aria-label="Parameters of the preview">
+                @for (p of r.parameters; track p.name) {
+                  <label class="param">
+                    <span>{{ p.label || p.name }}</span>
+                    @if (choicesOf(p.name).length) {
+                      <select [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)">
+                        @if (!p.required) {
+                          <option value="">(any)</option>
+                        }
+                        @for (o of choicesOf(p.name); track o.value) {
+                          <option [value]="o.value" [selected]="form()[p.name] === '' + o.value">{{ o.label ?? o.value }}</option>
+                        }
+                      </select>
+                    } @else if (p.type === 'boolean') {
+                      <input type="checkbox" [checked]="form()[p.name] === 'true'" (change)="setValue(p.name, $any($event.target).checked ? 'true' : '')" />
+                    } @else if (p.type === 'date') {
+                      <input type="date" [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)" />
+                    } @else if (p.type === 'integer' || p.type === 'real') {
+                      <input type="number" [step]="p.type === 'integer' ? 1 : 'any'" [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)" />
+                    } @else {
+                      <input type="text" [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)" />
+                    }
+                  </label>
+                }
+              </div>
+            }
+            @if (error()) {
+              <p class="error" role="alert">{{ error() }}</p>
+            }
+            @if (problems().length || (layout()?.warnings ?? []).length) {
+              <details class="issues">
+                <summary><mat-icon>warning_amber</mat-icon>{{ problems().length + (layout()?.warnings ?? []).length }} to look at</summary>
+                @for (p of problems(); track p) {
+                  <p class="problem">{{ p }}</p>
+                }
+                @for (w of layout()?.warnings ?? []; track w) {
+                  <p class="warning">{{ w }}</p>
+                }
+              </details>
+            }
+            @if (stale() && r.datasets.length && !busy()) {
+              <p class="warning stale-note">The queries changed. They run again in a moment, or use Run queries.</p>
+            }
+            <div class="view"><app-report-viewer [pages]="pages()" [busy]="busy()" [pickable]="true" [picked]="picked()" (pick)="pick($event)" [(view)]="view" /></div>
+          </div>
+        </ui-split-pane>
+      </ui-split>
+    </div>
+  } @else {
+    <div class="none">
+      <mat-icon>design_services</mat-icon>
+      <h2>Design a report</h2>
+      <p>Open one from the list, or give a new report a name.</p>
+      @if (error()) {
+        <p class="error" role="alert">{{ error() }}</p>
+      }
+    </div>
+  }
+</div>

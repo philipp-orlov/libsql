@@ -39,10 +39,16 @@ struct WebOptions
     /// When not empty the route needs it ("Authorization: Bearer <token>" in the handshake, or the token in the
     /// first message, which is how the page presents it). The page itself is public.
     std::string token;
+    /// Where report definitions are kept (one JSON file each; /api/v1/reports). Empty: `<database file>.reports`.
+    std::string reportsDir;
     /// Both set: serve https and wss on `port` instead of http and ws (needs a libhttp built with OpenSSL).
     std::string tlsCertificate;
     std::string tlsKey;
 };
+
+/// True when this build has the report features (SQL_WITH_REPORTS, which needs SQL_WITH_REMOTE): the report files
+/// (/api/v1/reports), the embedded report font and the /reports page. Without them those routes do not exist.
+bool hasReports() noexcept;
 
 /// True when the binary carries its own index.html.
 bool hasEmbeddedIndex() noexcept;

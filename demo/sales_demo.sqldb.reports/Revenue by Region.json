@@ -1,0 +1,158 @@
+{
+  "format": 1,
+  "name": "Revenue by Region",
+  "title": "Revenue by Region and Country",
+  "description": "Every region with its countries, customers, orders, revenue, share of the region and margin.",
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": {
+      "top": 44,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "year",
+      "label": "Year",
+      "type": "integer",
+      "default": 2026,
+      "required": true,
+      "optionsSql": "SELECT DISTINCT year FROM sales ORDER BY 1 DESC"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "regions",
+      "sql": "SELECT region, round(sum(revenue)) AS revenue, round(sum(revenue) - sum(cost)) AS profit FROM sales WHERE year = :year GROUP BY region ORDER BY revenue DESC"
+    },
+    {
+      "name": "countries",
+      "sql": "SELECT region, country, count(DISTINCT customer_id) AS customers, count(DISTINCT order_id) AS orders, round(sum(revenue)) AS revenue, round(sum(cost)) AS cost FROM sales WHERE year = :year GROUP BY country ORDER BY region, revenue DESC"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 9,
+        "color": "#546e7a"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#546e7a",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "text",
+      "text": " Revenue by Region",
+      "style": {
+        "face": "bold",
+        "size": 22,
+        "color": "#ffffff",
+        "background": "#00897b"
+      }
+    },
+    {
+      "type": "text",
+      "text": "{{year}}   ·   {{Count()}} countries   ·   total {{Format(Sum(revenue), \"$#,##0\")}}",
+      "style": {
+        "size": 10,
+        "color": "#546e7a"
+      },
+      "dataset": "countries"
+    },
+    {
+      "type": "spacer",
+      "height": 6
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "dataset": "regions",
+      "category": "region",
+      "title": "Revenue and gross profit by region",
+      "height": 200,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#00897b"
+        },
+        {
+          "field": "profit",
+          "label": "Gross profit",
+          "color": "#fb8c00"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "dataset": "countries",
+      "zebra": true,
+      "grandTotal": true,
+      "groups": [
+        {
+          "field": "region",
+          "header": "{{region}}   ·   {{Format(Sum(revenue), \"$#,##0\")}}",
+          "subtotals": true
+        }
+      ],
+      "columns": [
+        {
+          "field": "country",
+          "header": "Country",
+          "width": 2.2
+        },
+        {
+          "field": "customers",
+          "header": "Customers",
+          "total": "sum"
+        },
+        {
+          "field": "orders",
+          "header": "Orders",
+          "total": "sum",
+          "format": "#,##0"
+        },
+        {
+          "field": "revenue",
+          "header": "Revenue",
+          "format": "$#,##0",
+          "total": "sum",
+          "width": 1.4
+        },
+        {
+          "expression": "revenue / Sum(revenue)",
+          "header": "Share of region",
+          "format": "0.0%"
+        },
+        {
+          "expression": "(revenue - cost) / revenue",
+          "header": "Margin",
+          "format": "0.0%"
+        }
+      ]
+    }
+  ]
+}

@@ -102,6 +102,8 @@ export interface SqlSocketOptions {
   window?: number;
   /** A ping request this often, while connected, so an idle timeout on the way does not cut the connection. */
   pingMs?: number;
+  /** Open the session read-only: the server then refuses every write on it (reports run this way). */
+  readOnly?: boolean;
   /** For tests: the WebSocket constructor to use instead of the browser's. */
   WebSocket?: WebSocketConstructor;
 }
@@ -204,7 +206,7 @@ export class SqlSocket {
         WebSocket: this.options.WebSocket,
         peer: 'sql-ui/1.0',
       });
-      const opened: Opened = await this.rpc.call(SqlMethods.Open, SqlOpenRequest.encode({ readOnly: false, client: 'sql-ui/1.0' }), Opened.decode);
+      const opened: Opened = await this.rpc.call(SqlMethods.Open, SqlOpenRequest.encode({ readOnly: this.options.readOnly ?? false, client: 'sql-ui/1.0' }), Opened.decode);
       this.welcomed = { ...emptyReply(), server: opened.server, session: Number(opened.session), readOnly: opened.readOnly };
     } catch (e) {
       this.rpc?.close();

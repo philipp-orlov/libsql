@@ -1,0 +1,158 @@
+:host {
+  display: block;
+  height: 100%;
+  min-height: 0;
+}
+
+.runner {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) 1fr;
+  height: 100%;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  padding: 8px;
+  border-right: 1px solid var(--mat-sys-outline-variant);
+
+  h2 {
+    margin: 4px 8px 8px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--mat-sys-on-surface-variant);
+  }
+}
+
+.entry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--mat-sys-surface-container);
+  }
+
+  &.active {
+    background: var(--mat-sys-secondary-container);
+    color: var(--mat-sys-on-secondary-container);
+  }
+
+  .title {
+    font-weight: 500;
+  }
+
+  .description {
+    font-size: 12px;
+    color: var(--mat-sys-on-surface-variant);
+  }
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.head {
+  padding: 8px 16px 0;
+
+  h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 500;
+  }
+
+  .description {
+    margin: 2px 0 0;
+    color: var(--mat-sys-on-surface-variant);
+  }
+}
+
+.params {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 16px;
+  padding: 8px 16px;
+}
+
+.param {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+
+  .label {
+    font-size: 12px;
+    color: var(--mat-sys-on-surface-variant);
+  }
+
+  input[type='text'],
+  input[type='number'],
+  input[type='date'],
+  select {
+    min-width: 140px;
+    padding: 4px 6px;
+  }
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.view {
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid var(--mat-sys-outline-variant);
+}
+
+.error,
+.warning,
+.problem {
+  margin: 4px 16px;
+  font-size: 13px;
+}
+
+.error,
+.problem {
+  color: var(--mat-sys-error);
+}
+
+.warning {
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.hint {
+  margin: 8px;
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.none {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--mat-sys-on-surface-variant);
+
+  mat-icon {
+    width: 48px;
+    height: 48px;
+    font-size: 48px;
+  }
+}

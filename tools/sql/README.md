@@ -34,10 +34,27 @@ The top bar shows which database the page edits and whether it is read-write or 
 | `--readonly` | Open the database read-only. The front end turns editing off. |
 | `--token T` | With `--listen`: the database needs T. With a `ws://` URL: the token to present. |
 | `--auth VALUE` | With a `ws://` URL: sent as the `Authorization` header, e.g. `"Bearer abc"`. |
+| `--reports DIR` | With `--listen`: keep report definitions (one JSON file each) in DIR. The default is `<database file>.reports`. |
 | `--ws-path P` | With `--listen`: where the WebSocket route is served. The default is `/api/v1/ws/sql`, which is where the page looks, so move it only for other clients. |
 | `--tls-cert F`, `--tls-key F` | With `--listen`: serve https and wss on PORT with this certificate and key (PEM). Needs OpenSSL at build time. |
 | `--ca FILE` | With a `wss://` URL: trust the certificates in FILE instead of the system's. |
 | `--insecure` | With a `wss://` URL: accept any certificate. For tests only. |
+
+## Reports
+
+The tabs **Reports** and **Report Designer** run and build reports: parameters, SQL datasets, grouped tables with subtotals, interactive charts (bars,
+stacked, horizontal, lines, areas, pies, donuts: tooltips, highlight across charts, legend toggles), sortable tables with foldable groups, a page header and
+footer, and **PDF** and **CSV** export of what is shown, with no libraries behind it. The designer has a data pane to drag fields from, a chart gallery, undo/redo,
+and edits an item when you click it in the preview. `/reports` is the runner on a page of its own, for
+customers. Reports are JSON files in `<database>.reports/` (or `--reports DIR`) and run on a read-only session. See [../../docs/reports.md](../../docs/reports.md);
+[../../demo](../../demo) has a database and six reports to try.
+
+```
+sql ../../demo/sales_demo.sqldb --listen 8080
+```
+
+The report features come with `SQL_WITH_REMOTE`; `-DSQL_WITH_REPORTS=OFF` builds the tool without them (no report code, routes, `/reports` page or
+embedded font, `--reports` refused, the two tabs hidden).
 
 ## Remote
 
@@ -196,6 +213,12 @@ of the repository, so a build of the tool needs no Node.js.
 
 - `web_server`: the server on a loopback socket: the route, its token, origin and `Host` checks, read-only
   sessions, a moved route, the built-in page and `--public`, and that no JSON API answers.
+- `ui_reports_unit` (when Node.js and the UI's packages are there): the report engine without a browser: the font reader and subsetter, the PDF
+  writer's structure, layout and pagination, groups and totals, charts, expressions, formats, CSV, SQL parameter binding, definition checks.
+- `web_ui_reports`, `web_ui_demo`, `web_ui_interactive` (when a browser is installed, and `SQL_WITH_REPORTS`): in headless Chrome, a customer runs a report,
+  sees it, exports PDF and CSV; a report that tries to write is refused; the designer saves; `/reports` has no database tools and asks for the token; every
+  report of the demo runs and exports; and with the real mouse: tooltips, highlight, selection, legend toggles, sorting, folding, and in the designer click-to-edit,
+  the chart gallery, undo and drag and drop.
 - `web_ui_e2e` (when Node.js and the UI's packages are there): the front end's data layer, bundled with esbuild,
   against the real binary: schema, browse with sort and filters, edits pending until written, WITHOUT ROWID
   tables, large integers and blobs, pragmas and the dump.
@@ -206,10 +229,12 @@ of the repository, so a build of the tool needs no Node.js.
 
 ```
 src/sql_tool.cpp     command line
-src/web_server.cpp   libhttp routes, the SQL socket on one worker, front end delivery
+src/web_server.cpp   libhttp routes, the SQL socket on one worker, front end delivery, the report routes
+src/reports.cpp      the report files on disk
 include/             headers of the web part
 ui/                  Angular front end
 public/index.html    the built front end
+fonts/               the report font (Liberation Sans, SIL Open Font License), embedded in the binary
 cmake/               EmbedIndexHtml.cmake
 tests/               back end tests
 ```

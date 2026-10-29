@@ -165,6 +165,11 @@ export class DatabaseService {
     await this.load();
   }
 
+  /** The token this page presents, if the server asked for one. */
+  get token(): string | null {
+    return this.storedToken();
+  }
+
   // -------------------------------------------------------------------------------------------------
 
   private pageToken: string | null = null;

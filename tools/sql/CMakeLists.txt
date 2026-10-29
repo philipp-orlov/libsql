@@ -1,6 +1,8 @@
 # The sql command line tool and, with SQL_TOOL_WEB, its browser front end:
 #   src/sql_tool.cpp       the command line (prompt, -c, -f, --listen)
-#   src/web_server.cpp     the HTTP server behind --listen: the page and the SQL WebSocket route (library sqlweb)
+#   src/web_server.cpp     the HTTP server behind --listen: the page, the SQL WebSocket route and the report files (library sqlweb)
+#   src/reports.cpp        the report definitions on disk (one JSON file each)
+#   fonts/                 the report font (Liberation Sans, SIL OFL), embedded for the designer and the PDF export
 #   ui/                    the Angular front end; `npm run b` there writes public/index.html
 #   public/index.html      the built front end, linked into the binary (cmake/EmbedIndexHtml.cmake)
 #   tests/                 tests of the web part, run by ctest with SQL_BUILD_TESTS
@@ -13,6 +15,11 @@ add_executable(sql_cli src/sql_tool.cpp)
 target_link_libraries(sql_cli PRIVATE sql)
 set_target_properties(sql_cli PROPERTIES OUTPUT_NAME sql)
 install(TARGETS sql_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+if(SQL_TOOL_WEB AND NOT SQL_WITH_REMOTE)
+    message(WARNING "the sql tool's web interface serves the remote layer: with SQL_WITH_REMOTE=OFF it is built without --listen.")
+    set(SQL_TOOL_WEB OFF)
+endif()
 
 if(SQL_TOOL_WEB AND NOT TARGET http)
     if(NOT EXISTS "${SQL_HTTP_DIR}/CMakeLists.txt")
@@ -40,6 +47,14 @@ if(SQL_TOOL_WEB)
     endif()
     sql_embed_index_html(sqlweb)
 
+    # The report features (designer, runner, report files, the embedded font) are part of the remote layer: they come
+    # with SQL_WITH_REMOTE, and SQL_WITH_REPORTS=OFF leaves them, and the font, out of the artifacts.
+    if(SQL_WITH_REMOTE AND SQL_WITH_REPORTS)
+        target_sources(sqlweb PRIVATE src/reports.cpp)
+        target_compile_definitions(sqlweb PUBLIC SQL_TOOL_REPORTS=1)
+        sql_embed_fonts(sqlweb)
+    endif()
+
     target_link_libraries(sql_cli PRIVATE sqlweb)
     target_compile_definitions(sql_cli PRIVATE SQL_TOOL_WEB=1)
 
@@ -63,6 +78,22 @@ if(SQL_TOOL_WEB)
                 add_test(NAME web_ui_browser COMMAND ${SQL_NODE} scripts/browser-e2e.mjs $<TARGET_FILE:sql_cli> ${SQL_CHROME}
                          WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
                 set_tests_properties(web_ui_browser PROPERTIES TIMEOUT 120)
+            endif()
+            # The report engine (layout, PDF, fonts, expressions, CSV) needs no browser and no server.
+            add_test(NAME ui_reports_unit COMMAND ${SQL_NODE} scripts/unit.mjs WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+            set_tests_properties(ui_reports_unit PROPERTIES TIMEOUT 120)
+            if(SQL_CHROME AND SQL_WITH_REMOTE AND SQL_WITH_REPORTS)
+                # Running, viewing, exporting and designing reports in the page, and the demo's reports.
+                add_test(NAME web_ui_reports COMMAND ${SQL_NODE} scripts/reports-e2e.mjs $<TARGET_FILE:sql_cli> ${SQL_CHROME}
+                         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+                set_tests_properties(web_ui_reports PROPERTIES TIMEOUT 180)
+                add_test(NAME web_ui_demo COMMAND ${SQL_NODE} scripts/demo-e2e.mjs $<TARGET_FILE:sql_cli> ${SQL_CHROME}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/../../demo WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+                set_tests_properties(web_ui_demo PROPERTIES TIMEOUT 180)
+                # The mouse on the charts and tables, and the designer's click, drag and undo.
+                add_test(NAME web_ui_interactive COMMAND ${SQL_NODE} scripts/interactive-e2e.mjs $<TARGET_FILE:sql_cli> ${SQL_CHROME}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/../../demo WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+                set_tests_properties(web_ui_interactive PROPERTIES TIMEOUT 240)
             endif()
             # The TypeScript generated from remote.bufs and the vendored librpc runtime match their sources.
             add_test(NAME ui_wire_up_to_date COMMAND ${SQL_NODE} scripts/vendor-librpc.mjs $<TARGET_FILE:rpcc> --check

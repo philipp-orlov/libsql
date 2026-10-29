@@ -1,0 +1,46 @@
+<div class="viewer" [class.busy]="busy()">
+  <div class="bar">
+    <button mat-icon-button class="first" (click)="index.set(0)" [disabled]="current() === 0" aria-label="First page"><mat-icon>first_page</mat-icon></button>
+    <button mat-icon-button class="prev" (click)="go(-1)" [disabled]="current() === 0" aria-label="Previous page"><mat-icon>chevron_left</mat-icon></button>
+    <span class="page">
+      Page
+      <input class="number" type="text" inputmode="numeric" [value]="count() ? current() + 1 : 0" (change)="jump($any($event.target).value)" aria-label="Page number" />
+      of {{ count() }}
+    </span>
+    <button mat-icon-button class="next" (click)="go(1)" [disabled]="current() >= count() - 1" aria-label="Next page"><mat-icon>chevron_right</mat-icon></button>
+    <button mat-icon-button class="last" (click)="index.set(count() - 1)" [disabled]="current() >= count() - 1" aria-label="Last page"><mat-icon>last_page</mat-icon></button>
+    @if (selected(); as key) {
+      <span class="chip selection" title="Click it again, or press Esc, to clear">
+        <mat-icon>filter_alt</mat-icon>{{ key }}
+        <button class="clear" (click)="selected.set(null); reset()" aria-label="Clear the selection"><mat-icon>close</mat-icon></button>
+      </span>
+    }
+    <span class="spacer"></span>
+    @if (changed()) {
+      <button mat-button class="reset-view" (click)="reset()"><mat-icon>restart_alt</mat-icon>Reset view</button>
+    }
+    <label class="zoom">
+      Zoom
+      <select (change)="setZoom($any($event.target).value)" aria-label="Zoom">
+        <option value="fit" selected>Fit width</option>
+        <option value="50">50%</option>
+        <option value="75">75%</option>
+        <option value="100">100%</option>
+        <option value="150">150%</option>
+        <option value="200">200%</option>
+      </select>
+    </label>
+  </div>
+  <div class="stage">
+    @if (count() > 0) {
+      <div class="sheet" #sheet [style.width]="width()" [class.pickable]="pickable()" (pointermove)="onMove($event)" (pointerleave)="onLeave()" (click)="onClick($event)">
+        <div class="canvas" #canvas></div>
+        <div class="picked" hidden></div>
+        <div class="outline" #outline hidden></div>
+      </div>
+    } @else if (!busy()) {
+      <p class="empty">Nothing to show yet.</p>
+    }
+    <div class="tip" #tip hidden role="tooltip"></div>
+  </div>
+</div>

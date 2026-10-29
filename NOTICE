@@ -3,3 +3,7 @@ Copyright (c) 2026 Philipp Orlov
 
 This product includes software developed by Philipp Orlov.
 Licensed under the Apache License, Version 2.0.
+
+The sql tool embeds Liberation Sans (tools/sql/fonts/), Copyright (c) 2010 Google Corporation with Reserved Font
+Arimo, Tinos and Cousine, and (c) 2012 Red Hat, Inc. with Reserved Font Name Liberation, under the SIL Open Font
+License, Version 1.1 (tools/sql/fonts/OFL.txt). It is a build option: SQL_WITH_REPORTS=OFF leaves it out.

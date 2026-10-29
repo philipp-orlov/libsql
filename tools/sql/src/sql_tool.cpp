@@ -60,6 +60,7 @@ constexpr const char* kUsage =
     "                token to present\n"
     "  --auth VALUE  with a ws:// URL, sent as the Authorization header (\"Bearer abc\")\n"
     "  --unix PATH   with --listen, also serve the database to local programs on this Unix socket (sql unix://PATH)\n"
+    "  --reports DIR with --listen, keep report definitions (one JSON file each) in DIR (default: <database>.reports)\n"
     "  --ws-path P   with --listen, the WebSocket route (default /api/v1/ws/sql; the page looks for that one)\n"
     "  --tls-cert F  with --listen, serve https and wss with this certificate (PEM); needs --tls-key\n"
     "  --tls-key F   the private key (PEM) of --tls-cert\n"
@@ -448,7 +449,7 @@ int main(int argc, char** argv)
     int listenPort = 0;
     std::string host = "127.0.0.1";
     std::string publicDir;
-    std::string token, authorization, socketPath = "/api/v1/ws/sql", unixSocket;
+    std::string token, authorization, socketPath = "/api/v1/ws/sql", unixSocket, reportsDir;
     std::string tlsCertificate, tlsKey, caFile;
     bool insecure = false;
 
@@ -514,6 +515,14 @@ int main(int argc, char** argv)
             socketPath = value("--ws-path");
         } else if (arg == "--unix") {
             unixSocket = value("--unix");
+        } else if (arg == "--reports") {
+            reportsDir = value("--reports");
+#ifdef SQL_TOOL_WEB
+            if (!sqlweb::hasReports()) {
+                std::fprintf(stderr, "sql: this build has no report features (SQL_WITH_REPORTS is off)\n");
+                return kUsageError;
+            }
+#endif
         } else if (arg == "--tls-cert") {
             tlsCertificate = value("--tls-cert");
         } else if (arg == "--tls-key") {
@@ -584,6 +593,7 @@ int main(int argc, char** argv)
         options.readOnly = readOnly;
         options.socketPath = socketPath;
         options.unixSocket = unixSocket;
+        options.reportsDir = reportsDir;
         options.tlsCertificate = tlsCertificate;
         options.tlsKey = tlsKey;
         options.token = token;

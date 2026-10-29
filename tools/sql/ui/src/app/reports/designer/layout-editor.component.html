@@ -1,0 +1,222 @@
+<div class="editor layout">
+  <p class="intro">
+    A report is a list of items shown one after the other. <b>Click an item in the preview</b> to edit it here. Text can hold <code>{{ '{{' }} expressions {{ '}}' }}</code>:
+    fields, parameters, <code>Sum(Amount)</code>, <code>Format(Now, 'yyyy-MM-dd')</code>, and in the header and footer <code>PageNumber</code> and <code>PageCount</code>.
+  </p>
+  @if (message()) {
+    <p class="notice" role="alert"><mat-icon>info</mat-icon>{{ message() }}</p>
+  }
+
+  <datalist id="dataset-names">
+    @for (n of datasetNames(); track n) {
+      <option [value]="n"></option>
+    }
+  </datalist>
+
+  <ng-template #styleForm let-section="section" let-i="i" let-style="style">
+    <div class="group-label">Look</div>
+    <div class="row">
+      <label class="field">Font
+        <select (change)="set(section, i, 'style.face', $any($event.target).value)">
+          <option value="regular" [selected]="(style?.face ?? 'regular') === 'regular'">Regular</option>
+          <option value="bold" [selected]="style?.face === 'bold'">Bold</option>
+        </select>
+      </label>
+      <label class="field">Size <input type="number" min="5" max="72" step="0.5" [value]="style?.size ?? ''" placeholder="10" (change)="setNumber(section, i, 'style.size', $any($event.target).value)" /></label>
+      <label class="field">Align
+        <select (change)="set(section, i, 'style.align', $any($event.target).value)">
+          <option value="" [selected]="!style?.align">Default</option>
+          <option value="left" [selected]="style?.align === 'left'">Left</option>
+          <option value="center" [selected]="style?.align === 'center'">Center</option>
+          <option value="right" [selected]="style?.align === 'right'">Right</option>
+        </select>
+      </label>
+      <label class="field">Text color <input type="color" [value]="style?.color ?? '#000000'" (change)="set(section, i, 'style.color', $any($event.target).value)" /></label>
+      <label class="field">Background
+        <span class="inline">
+          <input type="color" [value]="style?.background ?? '#ffffff'" (change)="set(section, i, 'style.background', $any($event.target).value)" />
+          <button mat-button (click)="set(section, i, 'style.background', '')" [disabled]="!style?.background">None</button>
+        </span>
+      </label>
+    </div>
+  </ng-template>
+
+  @for (section of sections; track section) {
+    <h3>{{ titles[section] }}</h3>
+    @for (item of items(section); track $index; let i = $index) {
+      <section class="card item" [class.active]="open() === key(section, i)" [attr.data-type]="item.type">
+        <div class="item-head">
+          <span class="badge" [attr.data-type]="item.type"><mat-icon>{{ icon(item) }}</mat-icon></span>
+          <button class="summary" (click)="toggle(section, i)" [attr.aria-expanded]="open() === key(section, i)">{{ summary(item) }}</button>
+          <span class="tools">
+            <button mat-icon-button (click)="shift(section, i, -1)" [disabled]="i === 0" aria-label="Move up"><mat-icon>arrow_upward</mat-icon></button>
+            <button mat-icon-button (click)="shift(section, i, 1)" [disabled]="i === items(section).length - 1" aria-label="Move down"><mat-icon>arrow_downward</mat-icon></button>
+            <button mat-icon-button (click)="duplicate(section, i)" aria-label="Duplicate"><mat-icon>content_copy</mat-icon></button>
+            <button mat-icon-button class="delete" (click)="remove(section, i)" aria-label="Delete item"><mat-icon>delete</mat-icon></button>
+          </span>
+        </div>
+
+        @if (open() === key(section, i)) {
+          <div class="body">
+          @switch (item.type) {
+            @case ('text') {
+              <label class="field">Text
+                <textarea rows="3" [value]="asText(item).text" (change)="set(section, i, 'text', $any($event.target).value)"></textarea>
+              </label>
+              <label class="field">Rows for Sum(), Count()… come from the dataset (optional)
+                <input list="dataset-names" [value]="asText(item).dataset ?? ''" (change)="set(section, i, 'dataset', $any($event.target).value)" />
+              </label>
+              <ng-container *ngTemplateOutlet="styleForm; context: { section: section, i: i, style: asText(item).style }" />
+            }
+            @case ('spacer') {
+              <label class="field">Height (points) <input type="number" min="0" max="400" [value]="$any(item).height" (change)="setNumber(section, i, 'height', $any($event.target).value)" /></label>
+            }
+            @case ('table') {
+              <div class="row">
+                <label class="field">Dataset
+                  <input list="dataset-names" [value]="asTable(item).dataset" (change)="setDataset(section, i, $any($event.target).value)" />
+                </label>
+                <label class="check"><input type="checkbox" [checked]="!!asTable(item).zebra" (change)="set(section, i, 'zebra', $any($event.target).checked)" /> Striped rows</label>
+                <label class="check"><input type="checkbox" [checked]="!!asTable(item).grandTotal" (change)="set(section, i, 'grandTotal', $any($event.target).checked)" /> Grand total</label>
+              </div>
+              <datalist [id]="'cols-' + key(section, i)">
+                @for (c of columnsOf(asTable(item).dataset); track c) {
+                  <option [value]="c"></option>
+                }
+              </datalist>
+
+              <div class="shelf" [class.over]="over() === 'groups' + key(section, i)" (dragover)="dragOver($event, 'groups' + key(section, i))" (dragleave)="dragLeave('groups' + key(section, i))" (drop)="drop($event, 'groups', section, i)">
+                <div class="shelf-title"><mat-icon>account_tree</mat-icon>Groups<span>rows are grouped by these, in this order</span></div>
+                @for (g of asTable(item).groups ?? []; track $index; let k = $index) {
+                  <div class="entry">
+                    <div class="row">
+                      <label class="field">Group by <input class="mono" [attr.list]="'cols-' + key(section, i)" [value]="g.field" (change)="set(section, i, 'groups.' + k + '.field', $any($event.target).value.trim())" /></label>
+                      <label class="field wide">Heading <input placeholder="{{ '{{' }}Field{{ '}}' }}" [value]="g.header ?? ''" (change)="set(section, i, 'groups.' + k + '.header', $any($event.target).value)" /></label>
+                      <label class="field">Order
+                        <select (change)="set(section, i, 'groups.' + k + '.sort', $any($event.target).value)">
+                          <option value="" [selected]="!g.sort">Ascending</option>
+                          <option value="desc" [selected]="g.sort === 'desc'">Descending</option>
+                        </select>
+                      </label>
+                      <label class="check"><input type="checkbox" [checked]="!!g.subtotals" (change)="set(section, i, 'groups.' + k + '.subtotals', $any($event.target).checked)" /> Subtotals</label>
+                      <label class="check"><input type="checkbox" [checked]="!!g.pageBreak" (change)="set(section, i, 'groups.' + k + '.pageBreak', $any($event.target).checked)" /> New page</label>
+                      <span class="tools">
+                        <button mat-icon-button (click)="moveIn(section, i, 'groups', k, -1)" [disabled]="k === 0" aria-label="Move group up"><mat-icon>arrow_upward</mat-icon></button>
+                        <button mat-icon-button (click)="removeFrom(section, i, 'groups', k)" aria-label="Delete group"><mat-icon>close</mat-icon></button>
+                      </span>
+                    </div>
+                  </div>
+                } @empty {
+                  <p class="drop-hint">Drop a field here to group by it</p>
+                }
+                <button mat-button class="add-group" (click)="addTo(section, i, 'groups', { field: '', subtotals: true })"><mat-icon>add</mat-icon>Group</button>
+              </div>
+
+              <div class="shelf" [class.over]="over() === 'columns' + key(section, i)" (dragover)="dragOver($event, 'columns' + key(section, i))" (dragleave)="dragLeave('columns' + key(section, i))" (drop)="drop($event, 'columns', section, i)">
+                <div class="shelf-title"><mat-icon>view_column</mat-icon>Columns<span>drop fields to add them</span></div>
+                @for (c of asTable(item).columns; track $index; let k = $index) {
+                  <div class="entry">
+                    <div class="row">
+                      <label class="field">Field <input class="mono" [attr.list]="'cols-' + key(section, i)" [value]="c.field ?? ''" (change)="set(section, i, 'columns.' + k + '.field', $any($event.target).value.trim())" /></label>
+                      <label class="field">Heading <input [value]="c.header ?? ''" (change)="set(section, i, 'columns.' + k + '.header', $any($event.target).value)" /></label>
+                      <label class="field">Expression <input class="mono" placeholder="Qty * Price" [value]="c.expression ?? ''" (change)="set(section, i, 'columns.' + k + '.expression', $any($event.target).value)" /></label>
+                      <label class="field">Format <input class="mono" placeholder="#,##0.00" [value]="c.format ?? ''" (change)="set(section, i, 'columns.' + k + '.format', $any($event.target).value)" /></label>
+                      <label class="field">Width <input type="number" min="0.1" step="0.1" placeholder="1" [value]="c.width ?? ''" (change)="setNumber(section, i, 'columns.' + k + '.width', $any($event.target).value)" /></label>
+                      <label class="field">Align
+                        <select (change)="set(section, i, 'columns.' + k + '.align', $any($event.target).value)">
+                          <option value="" [selected]="!c.align">Auto</option>
+                          <option value="left" [selected]="c.align === 'left'">Left</option>
+                          <option value="center" [selected]="c.align === 'center'">Center</option>
+                          <option value="right" [selected]="c.align === 'right'">Right</option>
+                        </select>
+                      </label>
+                      <label class="field">Total
+                        <select (change)="set(section, i, 'columns.' + k + '.total', $any($event.target).value)">
+                          <option value="" [selected]="!c.total">None</option>
+                          @for (t of ['sum', 'avg', 'min', 'max', 'count']; track t) {
+                            <option [value]="t" [selected]="c.total === t">{{ t }}</option>
+                          }
+                        </select>
+                      </label>
+                      <span class="tools">
+                        <button mat-icon-button (click)="moveIn(section, i, 'columns', k, -1)" [disabled]="k === 0" aria-label="Move column left"><mat-icon>arrow_upward</mat-icon></button>
+                        <button mat-icon-button (click)="moveIn(section, i, 'columns', k, 1)" [disabled]="k === asTable(item).columns.length - 1" aria-label="Move column right"><mat-icon>arrow_downward</mat-icon></button>
+                        <button mat-icon-button class="delete-column" (click)="removeFrom(section, i, 'columns', k)" aria-label="Delete column"><mat-icon>close</mat-icon></button>
+                      </span>
+                    </div>
+                  </div>
+                } @empty {
+                  <p class="drop-hint">Drop fields here to make columns</p>
+                }
+                <div class="row">
+                  <button mat-button class="add-column" (click)="addTo(section, i, 'columns', newColumn(section, i))"><mat-icon>add</mat-icon>Column</button>
+                  <button mat-button class="add-all" (click)="addAllColumns(section, i)" [disabled]="columnsOf(asTable(item).dataset).length === 0">Add all fields</button>
+                </div>
+              </div>
+              <ng-container *ngTemplateOutlet="styleForm; context: { section: section, i: i, style: asTable(item).style }" />
+            }
+            @case ('chart') {
+              <div class="group-label">Chart type</div>
+              <div class="gallery" role="radiogroup" aria-label="Chart type">
+                @for (t of chartTypes; track t.id) {
+                  <button class="type" [class.on]="isType(asChart(item), t)" role="radio" [attr.aria-checked]="isType(asChart(item), t)" [title]="t.label" (click)="setType(section, i, t)">
+                    <mat-icon>{{ t.icon }}</mat-icon>
+                    <span>{{ t.label }}</span>
+                  </button>
+                }
+              </div>
+              <datalist [id]="'cols-' + key(section, i)">
+                @for (c of columnsOf(asChart(item).dataset); track c) {
+                  <option [value]="c"></option>
+                }
+              </datalist>
+              <div class="row">
+                <label class="field">Dataset <input list="dataset-names" [value]="asChart(item).dataset" (change)="setDataset(section, i, $any($event.target).value)" /></label>
+                <label class="field wide">Title <input [value]="asChart(item).title ?? ''" (change)="set(section, i, 'title', $any($event.target).value)" /></label>
+                <label class="field">Height <input type="number" min="80" max="800" [value]="asChart(item).height" (change)="setNumber(section, i, 'height', $any($event.target).value)" /></label>
+              </div>
+
+              <div class="shelf" [class.over]="over() === 'category' + key(section, i)" (dragover)="dragOver($event, 'category' + key(section, i))" (dragleave)="dragLeave('category' + key(section, i))" (drop)="drop($event, 'category', section, i)">
+                <div class="shelf-title"><mat-icon>category</mat-icon>Category<span>one mark per value</span></div>
+                <div class="row">
+                  <label class="field wide"><input class="mono" [attr.list]="'cols-' + key(section, i)" [value]="asChart(item).category" placeholder="Drop a field, or type its name" (change)="set(section, i, 'category', $any($event.target).value.trim())" /></label>
+                </div>
+              </div>
+
+              <div class="shelf" [class.over]="over() === 'series' + key(section, i)" (dragover)="dragOver($event, 'series' + key(section, i))" (dragleave)="dragLeave('series' + key(section, i))" (drop)="drop($event, 'series', section, i)">
+                <div class="shelf-title"><mat-icon>stacked_line_chart</mat-icon>Series {{ asChart(item).chart === 'pie' ? '(a pie draws the first)' : '' }}<span>numbers to plot</span></div>
+                @for (s of asChart(item).series; track $index; let k = $index) {
+                  <div class="entry">
+                    <div class="row">
+                      <input type="color" class="swatch" [value]="s.color ?? '#4e79a7'" (change)="set(section, i, 'series.' + k + '.color', $any($event.target).value)" aria-label="Series color" />
+                      <label class="field">Field <input class="mono" [attr.list]="'cols-' + key(section, i)" [value]="s.field" (change)="set(section, i, 'series.' + k + '.field', $any($event.target).value.trim())" /></label>
+                      <label class="field">Legend label <input [value]="s.label ?? ''" (change)="set(section, i, 'series.' + k + '.label', $any($event.target).value)" /></label>
+                      <span class="tools"><button mat-icon-button (click)="removeFrom(section, i, 'series', k)" aria-label="Delete series"><mat-icon>close</mat-icon></button></span>
+                    </div>
+                  </div>
+                } @empty {
+                  <p class="drop-hint">Drop a number field here</p>
+                }
+                <button mat-button class="add-series" (click)="addTo(section, i, 'series', newSeries(section, i))"><mat-icon>add</mat-icon>Series</button>
+              </div>
+
+              <div class="row">
+                <label class="check"><input type="checkbox" [checked]="asChart(item).legend !== false" (change)="set(section, i, 'legend', $any($event.target).checked)" /> Legend</label>
+                <label class="check"><input type="checkbox" [checked]="!!asChart(item).labels" (change)="set(section, i, 'labels', $any($event.target).checked)" /> Values on the marks</label>
+                <label class="field">Number format <input class="mono" placeholder="#,##0.##" [value]="asChart(item).format ?? ''" (change)="set(section, i, 'format', $any($event.target).value)" /></label>
+              </div>
+            }
+          }
+          </div>
+        }
+      </section>
+    } @empty {
+      <p class="empty">Nothing here.</p>
+    }
+    <div class="adders">
+      @for (type of allowed(section); track type) {
+        <button class="adder" [class]="'adder add-' + type" (click)="add(section, type)" [attr.data-type]="type"><mat-icon>{{ iconFor(type) }}</mat-icon>{{ label(type) }}</button>
+      }
+    </div>
+  }
+</div>

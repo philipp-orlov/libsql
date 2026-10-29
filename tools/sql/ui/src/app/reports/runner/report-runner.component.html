@@ -1,0 +1,108 @@
+<div class="runner">
+  <aside class="list">
+    <h2>Reports</h2>
+    @if (loading() && reports().length === 0) {
+      <p class="hint">Loading…</p>
+    }
+    @for (report of reports(); track report.name) {
+      <button class="entry" [class.active]="selected()?.name === report.name" (click)="select(report)">
+        <span class="title">{{ report.title || report.name }}</span>
+        @if (report.description) {
+          <span class="description">{{ report.description }}</span>
+        }
+      </button>
+    } @empty {
+      @if (!loading()) {
+        <p class="hint">There are no reports yet.</p>
+      }
+    }
+    @for (problem of problems(); track problem) {
+      <p class="problem">{{ problem }}</p>
+    }
+  </aside>
+
+  <section class="main">
+    @if (selected(); as report) {
+      <header class="head">
+        <h1>{{ report.title || report.name }}</h1>
+        @if (report.description) {
+          <p class="description">{{ report.description }}</p>
+        }
+      </header>
+
+      <form class="params" (submit)="$event.preventDefault(); run()">
+        @for (p of report.parameters; track p.name) {
+          <label class="param">
+            <span class="label">{{ p.label || p.name }}@if (p.required) {<b> *</b>}</span>
+            @if (hasChoices(p)) {
+              <select [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)" [attr.aria-label]="p.label || p.name">
+                @if (!p.required) {
+                  <option value="">(any)</option>
+                }
+                @for (o of optionsOf(p); track o.value) {
+                  <option [value]="o.value" [selected]="form()[p.name] === '' + o.value">{{ o.label ?? o.value }}</option>
+                }
+              </select>
+            } @else if (p.type === 'boolean') {
+              <input type="checkbox" [checked]="form()[p.name] === 'true'" (change)="setValue(p.name, $any($event.target).checked ? 'true' : '')" />
+            } @else if (p.type === 'date') {
+              <input type="date" [value]="form()[p.name]" (input)="setValue(p.name, $any($event.target).value)" />
+            } @else if (p.type === 'integer' || p.type === 'real') {
+              <input type="number" [step]="p.type === 'integer' ? 1 : 'any'" [value]="form()[p.name]" (input)="setValue(p.name, $any($event.target).value)" />
+            } @else {
+              <input type="text" [value]="form()[p.name]" (input)="setValue(p.name, $any($event.target).value)" />
+            }
+          </label>
+        }
+        <span class="buttons">
+          <button mat-flat-button type="submit" class="run" [disabled]="running() || !svc.fontsReady()">
+            <mat-icon>play_arrow</mat-icon>
+            View report
+          </button>
+          @if (running()) {
+            <button mat-button type="button" class="stop" (click)="stop()"><mat-icon>stop</mat-icon>Stop</button>
+          }
+          <button mat-button type="button" class="pdf" (click)="exportPdf()" [disabled]="!layout()">
+            <mat-icon>picture_as_pdf</mat-icon>
+            PDF
+          </button>
+          @if (tables().length > 1) {
+            <button mat-button type="button" class="csv" [matMenuTriggerFor]="csvMenu" [disabled]="!layout()">
+              <mat-icon>table_view</mat-icon>
+              CSV
+            </button>
+            <mat-menu #csvMenu="matMenu">
+              @for (t of tables(); track t.title) {
+                <button mat-menu-item (click)="exportCsv(t)">{{ t.title }}</button>
+              }
+            </mat-menu>
+          } @else {
+            <button mat-button type="button" class="csv" (click)="exportCsv(tables()[0])" [disabled]="!layout() || tables().length === 0">
+              <mat-icon>table_view</mat-icon>
+              CSV
+            </button>
+          }
+        </span>
+      </form>
+
+      @if (error()) {
+        <p class="error" role="alert">{{ error() }}</p>
+      }
+      @for (w of warnings(); track w) {
+        <p class="warning">{{ w }}</p>
+      }
+
+      <div class="view">
+        <app-report-viewer [pages]="pages()" [busy]="running()" [(view)]="view" />
+      </div>
+    } @else {
+      <div class="none">
+        <mat-icon>assessment</mat-icon>
+        <p>Choose a report.</p>
+        @if (error()) {
+          <p class="error" role="alert">{{ error() }}</p>
+        }
+      </div>
+    }
+  </section>
+</div>

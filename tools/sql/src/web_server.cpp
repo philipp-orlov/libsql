@@ -14,7 +14,20 @@
 #include "http/http_context.hpp"
 #include "http/server.hpp"
 #include "managed.hpp"
+#ifdef SQL_TOOL_REPORTS
+#include "reports.hpp"
+#endif
 #include "sql/remote/sql_socket.hpp"
+
+#if defined(SQL_TOOL_REPORTS) && defined(SQL_EMBEDDED_FONTS)
+// The report fonts (fonts/*.ttf, gzipped), embedded the same way as the page.
+extern "C" {
+extern const char _binary_LiberationSans_Regular_ttf_gz_start[];
+extern const char _binary_LiberationSans_Regular_ttf_gz_end[];
+extern const char _binary_LiberationSans_Bold_ttf_gz_start[];
+extern const char _binary_LiberationSans_Bold_ttf_gz_end[];
+}
+#endif
 
 #ifdef SQL_EMBEDDED_INDEX_HTML
 // Defined by objcopy (see cmake/EmbedIndexHtml.cmake) from the gzipped public/index.html; they mark where
@@ -73,7 +86,11 @@ http::ServerConfig makeConfig(const WebOptions& options)
     config.ioThreads = 2;
     // One worker, so that the one Database handle is only ever used from one thread.
     config.workerThreads = 1;
+#ifdef SQL_TOOL_REPORTS
+    config.maxBodyBytes = ReportStore::kMaxBytes + 4096;  // report definitions are the only thing put here
+#else
     config.maxBodyBytes = 64 * 1024;  // there is nothing to post: the page and the socket
+#endif
     config.serverHeader = "sql";
     // A page from another site must not reach an API that listens on a private address (DNS rebinding).
     if (isLoopback(options.host)) {
@@ -96,6 +113,15 @@ http::ServerConfig makeConfig(const WebOptions& options)
 
 }  // namespace
 
+bool hasReports() noexcept
+{
+#ifdef SQL_TOOL_REPORTS
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool hasEmbeddedIndex() noexcept
 {
 #ifdef SQL_EMBEDDED_INDEX_HTML
@@ -107,11 +133,137 @@ bool hasEmbeddedIndex() noexcept
 
 struct WebServer::Impl
 {
-    Impl(sql::Database& db, WebOptions o) : options(std::move(o)), server(makeConfig(options))
+    Impl(sql::Database& db, WebOptions o)
+        : options(std::move(o)),
+          server(makeConfig(options))
+#ifdef SQL_TOOL_REPORTS
+          ,
+          reports(reportsDirectory(options, db))
+#endif
     {
         registerSocket(db);
+#ifdef SQL_TOOL_REPORTS
+        registerReports();
+#endif
         registerFrontEnd();
     }
+
+#ifdef SQL_TOOL_REPORTS
+    static std::filesystem::path reportsDirectory(const WebOptions& options, sql::Database& db)
+    {
+        if (!options.reportsDir.empty())
+            return options.reportsDir;
+        const std::string path = db.path().string();
+        return path.empty() || path == ":memory:" ? std::filesystem::path("reports") : std::filesystem::path(path + ".reports");
+    }
+
+    // ---- reports ----------------------------------------------------------------------------------------------
+
+    static void json(http::HttpContext& context, int status, std::string_view body)
+    {
+        context.status(status).header("Cache-Control", "no-store").header("X-Content-Type-Options", "nosniff");
+        context.text(body, "application/json; charset=utf-8");
+    }
+
+    static void failure(http::HttpContext& context, int status, std::string_view message)
+    {
+        std::string body = "{\"error\":\"";
+        for (char c : message) {
+            if (c == '"' || c == '\\')
+                body += '\\';
+            if (static_cast<unsigned char>(c) >= 0x20)
+                body += c;
+        }
+        json(context, status, body + "\"}");
+    }
+
+    // The same token as the SQL route's; the page presents it as a bearer header.
+    bool authorized(http::HttpContext& context) const
+    {
+        if (options.token.empty())
+            return true;
+        const std::string_view header = context.request().headers.get("Authorization");
+        const std::string expected = "Bearer " + options.token;
+        if (header.size() != expected.size())
+            return false;
+        unsigned char diff = 0;  // no early exit on the first difference
+        for (std::size_t i = 0; i < header.size(); ++i)
+            diff |= static_cast<unsigned char>(header[i] ^ expected[i]);
+        return diff == 0;
+    }
+
+    void registerReports()
+    {
+        server.onGet("/api/v1/reports", [this](http::HttpContext& context) {
+            if (!authorized(context))
+                return failure(context, 401, "a token is needed");
+            std::string body = "[";
+            for (const ReportInfo& r : reports.list()) {
+                if (body.size() > 1)
+                    body += ',';
+                body += "{\"name\":\"" + r.name + "\",\"size\":" + std::to_string(r.size) + ",\"modified\":" + std::to_string(r.modified) + "}";
+            }
+            json(context, 200, body + "]");
+        });
+        server.onGet("/api/v1/reports/{name}", [this](http::HttpContext& context) {
+            if (!authorized(context))
+                return failure(context, 401, "a token is needed");
+            const std::string name(context.routeParam("name"));
+            if (!ReportStore::validName(name))
+                return failure(context, 400, "not a valid report name");
+            const auto text = reports.read(name);
+            if (!text)
+                return failure(context, 404, "no such report");
+            json(context, 200, *text);
+        });
+        server.onPut("/api/v1/reports/{name}", [this](http::HttpContext& context) {
+            if (!authorized(context))
+                return failure(context, 401, "a token is needed");
+            if (options.readOnly)
+                return failure(context, 403, "this server is read-only: reports cannot be changed");
+            const std::string name(context.routeParam("name"));
+            if (!ReportStore::validName(name))
+                return failure(context, 400, "not a valid report name");
+            if (context.request().headers.get("Content-Type").substr(0, 16) != "application/json")
+                return failure(context, 415, "send the report as application/json");
+            const std::string_view body = context.request().body.view();
+            if (body.size() > ReportStore::kMaxBytes)
+                return failure(context, 413, "the report is too large");
+            if (!ReportStore::validJson(body))
+                return failure(context, 400, "the report is not valid JSON");
+            try {
+                reports.write(name, body);
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "sql: saving report %s: %s\n", name.c_str(), e.what());
+                return failure(context, 500, "the report could not be saved");
+            }
+            json(context, 200, "{}");
+        });
+        server.onDelete("/api/v1/reports/{name}", [this](http::HttpContext& context) {
+            if (!authorized(context))
+                return failure(context, 401, "a token is needed");
+            if (options.readOnly)
+                return failure(context, 403, "this server is read-only: reports cannot be changed");
+            const std::string name(context.routeParam("name"));
+            if (!ReportStore::validName(name))
+                return failure(context, 400, "not a valid report name");
+            if (!reports.remove(name))
+                return failure(context, 404, "no such report");
+            json(context, 200, "{}");
+        });
+#ifdef SQL_EMBEDDED_FONTS
+        // The faces reports are drawn and exported with. The names never change for a version, so they may be cached.
+        auto font = [](const char* begin, const char* end) {
+            return [begin, end](http::HttpContext& context) {
+                context.header("Cache-Control", "public, max-age=86400").header("Content-Encoding", "gzip").header("X-Content-Type-Options", "nosniff");
+                context.bytes(begin, static_cast<std::size_t>(end - begin), "font/ttf");
+            };
+        };
+        server.onGet("/fonts/LiberationSans-Regular.ttf", font(_binary_LiberationSans_Regular_ttf_gz_start, _binary_LiberationSans_Regular_ttf_gz_end));
+        server.onGet("/fonts/LiberationSans-Bold.ttf", font(_binary_LiberationSans_Bold_ttf_gz_start, _binary_LiberationSans_Bold_ttf_gz_end));
+#endif
+    }
+#endif  // SQL_TOOL_REPORTS
 
     // The database over a WebSocket route, run on the server's one worker: every session shares the one Database
     // handle, so changes pending through any of them are the same transaction.
@@ -189,6 +341,13 @@ struct WebServer::Impl
             server.onGet(path, [this](http::HttpContext& context) { serveIndex(context); });
             server.onHead(path, [this](http::HttpContext& context) { serveIndex(context); });
         }
+#ifdef SQL_TOOL_REPORTS
+        // /reports is the runner alone, for customers (the same page; it looks at its address to decide).
+        for (const char* path : {"/reports", "/reports/"}) {
+            server.onGet(path, [this](http::HttpContext& context) { serveIndex(context); });
+            server.onHead(path, [this](http::HttpContext& context) { serveIndex(context); });
+        }
+#endif
         const bool haveDirectory = std::filesystem::is_directory(options.publicDir);
         if (haveDirectory)
             server.onStaticFiles("/", options.publicDir);
@@ -200,6 +359,9 @@ struct WebServer::Impl
 
     WebOptions options;
     http::Server server;
+#ifdef SQL_TOOL_REPORTS
+    ReportStore reports;
+#endif
     std::unique_ptr<sql::remote::SqlSocket> sqlSocket;  // after the server: it goes first, after shutdownSocket()
 };
 

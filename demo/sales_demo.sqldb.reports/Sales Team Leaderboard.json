@@ -1,0 +1,174 @@
+{
+  "format": 1,
+  "name": "Sales Team Leaderboard",
+  "title": "Sales Team Leaderboard",
+  "description": "Who sold what, against the annual quota.",
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": {
+      "top": 44,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "year",
+      "label": "Year",
+      "type": "integer",
+      "default": 2026,
+      "required": true,
+      "optionsSql": "SELECT DISTINCT year FROM sales ORDER BY 1 DESC"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "reps",
+      "sql": "SELECT e.name AS rep, e.title, e.region, e.annual_quota AS quota, count(DISTINCT s.order_id) AS orders, round(coalesce(sum(s.revenue), 0)) AS revenue FROM employees e LEFT JOIN sales s ON s.rep = e.name AND s.year = :year GROUP BY e.id ORDER BY revenue DESC"
+    },
+    {
+      "name": "channels",
+      "sql": "SELECT channel, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY channel ORDER BY revenue DESC"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 9,
+        "color": "#546e7a"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#546e7a",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "text",
+      "text": " Sales Team Leaderboard {{year}}",
+      "style": {
+        "face": "bold",
+        "size": 22,
+        "color": "#ffffff",
+        "background": "#e53935"
+      }
+    },
+    {
+      "type": "text",
+      "text": "Annual quotas; a year in progress is measured against the whole year. {{Count()}} people, {{Format(Sum(revenue) / Sum(quota), \"0%\")}} of the combined quota reached.",
+      "style": {
+        "size": 10,
+        "color": "#546e7a"
+      },
+      "dataset": "reps"
+    },
+    {
+      "type": "spacer",
+      "height": 6
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "dataset": "reps",
+      "category": "rep",
+      "title": "Revenue against quota",
+      "height": 240,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#e53935"
+        },
+        {
+          "field": "quota",
+          "label": "Annual quota",
+          "color": "#b0bec5"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "dataset": "reps",
+      "zebra": true,
+      "grandTotal": true,
+      "columns": [
+        {
+          "field": "rep",
+          "header": "Account executive",
+          "width": 2.2
+        },
+        {
+          "field": "region",
+          "header": "Region",
+          "width": 1.8
+        },
+        {
+          "field": "orders",
+          "header": "Orders",
+          "width": 0.8,
+          "total": "sum"
+        },
+        {
+          "field": "revenue",
+          "header": "Revenue",
+          "format": "$#,##0",
+          "width": 1.3,
+          "total": "sum"
+        },
+        {
+          "field": "quota",
+          "header": "Annual quota",
+          "format": "$#,##0",
+          "width": 1.3,
+          "total": "sum"
+        },
+        {
+          "expression": "revenue / quota",
+          "header": "Of quota",
+          "format": "0%",
+          "width": 0.9
+        }
+      ]
+    },
+    {
+      "type": "spacer",
+      "height": 8
+    },
+    {
+      "type": "chart",
+      "chart": "pie",
+      "donut": true,
+      "dataset": "channels",
+      "category": "channel",
+      "title": "Revenue by sales channel",
+      "height": 210,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue"
+        }
+      ]
+    }
+  ]
+}

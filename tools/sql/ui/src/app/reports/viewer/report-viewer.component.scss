@@ -1,0 +1,253 @@
+:host {
+  display: block;
+  height: 100%;
+  min-height: 0;
+  outline: none;
+}
+
+.viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.busy .stage {
+  opacity: 0.5;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.page {
+  margin: 0 8px;
+}
+
+.number {
+  width: 3em;
+  text-align: center;
+}
+
+.zoom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 12px;
+  background: var(--mat-sys-secondary-container);
+  color: var(--mat-sys-on-secondary-container);
+  font-size: 12px;
+
+  mat-icon {
+    width: 16px;
+    height: 16px;
+    font-size: 16px;
+  }
+
+  .clear {
+    display: inline-flex;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+  }
+}
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  background: var(--mat-sys-surface-container);
+}
+
+.sheet {
+  position: relative;
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: 0 1px 6px rgb(0 0 0 / 35%);
+  line-height: 0;
+
+  &.pickable {
+    cursor: pointer;
+  }
+
+  .picked,
+  .outline {
+    position: absolute;
+    z-index: 2;
+    box-sizing: border-box;
+    border-radius: 3px;
+    pointer-events: none;
+  }
+
+  .picked {
+    border: 2px solid #1976d2;
+    background: rgb(25 118 210 / 7%);
+  }
+
+  .outline {
+    border: 1px dashed #1976d2;
+  }
+}
+
+// What is inside the page is the SVG the viewer wrote (innerHTML), so these rules reach it through ::ng-deep.
+.sheet ::ng-deep {
+  svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .bar,
+  .point,
+  .slice {
+    transition: opacity 0.12s ease, transform 0.15s ease;
+  }
+
+  // the marks of what the pointer is on stay; the others fade (Tableau's "highlight")
+  svg.focus .bar:not(.hl),
+  svg.focus .point:not(.hl),
+  svg.focus .slice:not(.hl) {
+    opacity: 0.28;
+  }
+
+  .slice {
+    transform-box: view-box;
+  }
+
+  .slice:hover,
+  .slice.hl {
+    transform: translate(var(--dx), var(--dy));
+  }
+
+  .slot:hover {
+    fill: rgb(25 118 210 / 7%);
+  }
+
+  .row:hover {
+    fill: rgb(25 118 210 / 8%);
+  }
+
+  .th,
+  .fold,
+  .legend {
+    cursor: pointer;
+  }
+
+  .th:hover {
+    fill: rgb(25 118 210 / 10%);
+  }
+
+  .fold:hover {
+    fill: rgb(25 118 210 / 6%);
+  }
+
+  // charts grow in when a page is drawn
+  .bar {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    animation: grow 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+
+  .slice {
+    animation: fade 0.4s ease both;
+  }
+
+  @keyframes grow {
+    from {
+      transform: scaleY(0);
+    }
+  }
+
+  @keyframes fade {
+    from {
+      opacity: 0;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet ::ng-deep .bar,
+  .sheet ::ng-deep .slice {
+    animation: none;
+    transition: none;
+  }
+}
+
+.tip {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  left: 0;
+  min-width: 140px;
+  max-width: 320px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgb(33 37 41 / 94%);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 30%);
+  pointer-events: none;
+
+  // the rows are made by the component with the DOM, so the scoped styles do not reach them
+  ::ng-deep {
+    .t {
+      margin-bottom: 3px;
+      font-weight: 600;
+    }
+
+    .r {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+
+      i {
+        flex: none;
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+      }
+
+      span {
+        flex: 1;
+        color: #cfd4da;
+      }
+
+      b {
+        margin-left: 12px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+
+      &.bold {
+        margin-top: 2px;
+        padding-top: 2px;
+        border-top: 1px solid rgb(255 255 255 / 25%);
+      }
+    }
+  }
+}
+
+.empty {
+  text-align: center;
+  color: var(--mat-sys-on-surface-variant);
+}

@@ -1,0 +1,229 @@
+{
+  "format": 1,
+  "name": "Executive Dashboard",
+  "title": "Executive Sales Dashboard",
+  "description": "Revenue, orders, customers and margin at a glance, with the trend by month and the split by region, category, country and segment.",
+  "page": {
+    "size": "A4",
+    "orientation": "landscape",
+    "margins": {
+      "top": 44,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "year",
+      "label": "Year",
+      "type": "integer",
+      "default": 2026,
+      "required": true,
+      "optionsSql": "SELECT DISTINCT year FROM sales ORDER BY 1 DESC"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "kpi",
+      "sql": "SELECT round(sum(revenue)) AS revenue, count(DISTINCT order_id) AS orders, count(DISTINCT customer_id) AS customers, round(sum(revenue) / count(DISTINCT order_id)) AS avg_order, round(100.0 * (sum(revenue) - sum(cost)) / sum(revenue), 1) AS margin FROM sales WHERE year = :year"
+    },
+    {
+      "name": "monthly",
+      "sql": "SELECT month, round(sum(revenue)) AS revenue, round(sum(revenue) - sum(cost)) AS profit FROM sales WHERE year = :year GROUP BY month ORDER BY month"
+    },
+    {
+      "name": "regions",
+      "sql": "SELECT region, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY region ORDER BY revenue DESC"
+    },
+    {
+      "name": "categories",
+      "sql": "SELECT category, round(sum(cost)) AS cost, round(sum(revenue) - sum(cost)) AS profit FROM sales WHERE year = :year GROUP BY category ORDER BY sum(revenue) DESC"
+    },
+    {
+      "name": "countries",
+      "sql": "SELECT country, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY country ORDER BY revenue DESC LIMIT 10"
+    },
+    {
+      "name": "segments",
+      "sql": "SELECT segment, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY segment ORDER BY revenue DESC"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 9,
+        "color": "#546e7a"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#546e7a",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "text",
+      "text": " Executive Sales Dashboard",
+      "style": {
+        "face": "bold",
+        "size": 26,
+        "color": "#ffffff",
+        "background": "#0d47a1"
+      }
+    },
+    {
+      "type": "text",
+      "text": "Fiscal year {{year}}   ·   all amounts in US dollars   ·   cancelled orders excluded   ·   generated {{Format(Now, \"yyyy-MM-dd\")}}",
+      "style": {
+        "size": 10,
+        "color": "#546e7a"
+      }
+    },
+    {
+      "type": "spacer",
+      "height": 6
+    },
+    {
+      "type": "text",
+      "text": " Revenue  {{Format(First(revenue), \"$#,##0\")}}      Orders  {{Format(First(orders), \"#,##0\")}}      Customers  {{First(customers)}}      Average order  {{Format(First(avg_order), \"$#,##0\")}}      Gross margin  {{First(margin)}}%",
+      "dataset": "kpi",
+      "style": {
+        "face": "bold",
+        "size": 12,
+        "color": "#0d47a1",
+        "background": "#e3f2fd"
+      }
+    },
+    {
+      "type": "spacer",
+      "height": 10
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "dataset": "monthly",
+      "category": "month",
+      "title": "Revenue and gross profit by month",
+      "height": 210,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#1976d2"
+        },
+        {
+          "field": "profit",
+          "label": "Gross profit",
+          "color": "#43a047"
+        }
+      ]
+    },
+    {
+      "type": "chart",
+      "chart": "area",
+      "dataset": "monthly",
+      "category": "month",
+      "title": "Revenue trend",
+      "height": 170,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#fb8c00"
+        }
+      ]
+    },
+    {
+      "type": "chart",
+      "chart": "pie",
+      "donut": true,
+      "dataset": "regions",
+      "category": "region",
+      "title": "Revenue by region",
+      "height": 220,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue"
+        }
+      ]
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "stacked": true,
+      "labels": true,
+      "dataset": "categories",
+      "category": "category",
+      "title": "What a dollar of revenue is made of, by product category (cost and gross profit)",
+      "height": 230,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "cost",
+          "label": "Cost",
+          "color": "#b0bec5"
+        },
+        {
+          "field": "profit",
+          "label": "Gross profit",
+          "color": "#00897b"
+        }
+      ]
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "horizontal": true,
+      "labels": true,
+      "dataset": "countries",
+      "category": "country",
+      "title": "Top 10 countries by revenue",
+      "height": 250,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#e53935"
+        }
+      ]
+    },
+    {
+      "type": "chart",
+      "chart": "pie",
+      "donut": true,
+      "dataset": "segments",
+      "category": "segment",
+      "title": "Revenue by customer segment",
+      "height": 230,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue"
+        }
+      ]
+    }
+  ]
+}

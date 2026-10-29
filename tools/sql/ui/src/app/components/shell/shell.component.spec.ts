@@ -1,17 +1,22 @@
-import { provideZonelessChangeDetection } from '@angular/core';
+import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 
 import { FakeDatabase, databaseProviders, fakeDatabase, fakeInfo, fakeNotice, query, settle } from '../../testing/test-helpers';
+import { ReportService } from '../../reports/report.service';
 import { ShellComponent } from './shell.component';
 
 describe('ShellComponent', () => {
   let db: FakeDatabase;
   let notice: ReturnType<typeof fakeNotice>;
+  /** Whether the server has the report features (a build without SQL_WITH_REPORTS has not). */
+  const reportsAvailable = signal<boolean | null>(true);
 
   beforeEach(() => {
+    reportsAvailable.set(true);
     db = fakeDatabase();
     notice = fakeNotice();
-    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection(), ...databaseProviders(db, notice)] });
+    const reports = { available: reportsAvailable, probe: jasmine.createSpy('probe').and.resolveTo(true) };
+    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection(), ...databaseProviders(db, notice), { provide: ReportService, useValue: reports }] });
   });
 
   async function create() {
@@ -31,10 +36,23 @@ describe('ShellComponent', () => {
     expect(query(el, '.status').textContent).toContain('libsql 0.2.0');
   });
 
-  it('has the four tabs of DB Browser and the Visualize tab', async () => {
+  const tabs = (el: HTMLElement): (string | undefined)[] => Array.from(el.querySelectorAll('.mdc-tab')).map(tab => tab.textContent?.trim());
+
+  it('has the four tabs of DB Browser, Visualize and the two report tabs', async () => {
     const { el } = await create();
-    const labels = Array.from(el.querySelectorAll('.mdc-tab')).map(tab => tab.textContent?.trim());
-    expect(labels).toEqual(['Database Structure', 'Browse Data', 'Edit Pragmas', 'Execute SQL', 'Visualize']);
+    expect(tabs(el)).toEqual(['Database Structure', 'Browse Data', 'Edit Pragmas', 'Execute SQL', 'Visualize', 'Reports', 'Report Designer']);
+  });
+
+  it('hides the report tabs when the server has no reports, and the designer when the database is read-only', async () => {
+    reportsAvailable.set(false);
+    const { el, fixture } = await create();
+    expect(tabs(el)).toEqual(['Database Structure', 'Browse Data', 'Edit Pragmas', 'Execute SQL', 'Visualize']);
+
+    reportsAvailable.set(true);
+    db.info.set({ ...fakeInfo(), readOnly: true });
+    await fixture.whenStable();
+    await settle();
+    expect(tabs(el)).toEqual(['Database Structure', 'Browse Data', 'Edit Pragmas', 'Execute SQL', 'Visualize', 'Reports']);
   });
 
   it('keeps Write Changes and Revert Changes off until something is pending', async () => {

@@ -1,0 +1,215 @@
+{
+  "format": 1,
+  "name": "Top Customers",
+  "title": "Top Customers",
+  "description": "The customers that bought the most in a year, with where they are and what kind of customer they are.",
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": {
+      "top": 44,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "year",
+      "label": "Year",
+      "type": "integer",
+      "default": 2026,
+      "required": true,
+      "optionsSql": "SELECT DISTINCT year FROM sales ORDER BY 1 DESC"
+    },
+    {
+      "name": "top",
+      "label": "How many",
+      "type": "integer",
+      "default": 15,
+      "required": true,
+      "options": [
+        {
+          "value": 5
+        },
+        {
+          "value": 10
+        },
+        {
+          "value": 15
+        },
+        {
+          "value": 25
+        },
+        {
+          "value": 50
+        }
+      ]
+    }
+  ],
+  "datasets": [
+    {
+      "name": "top",
+      "sql": "SELECT row_number() OVER (ORDER BY sum(revenue) DESC) AS rank, customer, country, segment, industry, count(DISTINCT order_id) AS orders, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY customer_id ORDER BY revenue DESC LIMIT :top"
+    },
+    {
+      "name": "segments",
+      "sql": "SELECT segment, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY segment ORDER BY revenue DESC"
+    },
+    {
+      "name": "industries",
+      "sql": "SELECT industry, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY industry ORDER BY revenue DESC LIMIT 8"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 9,
+        "color": "#546e7a"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#546e7a",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "text",
+      "text": " Top {{top}} Customers of {{year}}",
+      "style": {
+        "face": "bold",
+        "size": 22,
+        "color": "#ffffff",
+        "background": "#8e24aa"
+      }
+    },
+    {
+      "type": "text",
+      "text": "Together {{Format(Sum(revenue), \"$#,##0\")}} from {{Sum(orders)}} orders",
+      "style": {
+        "size": 10,
+        "color": "#546e7a"
+      },
+      "dataset": "top"
+    },
+    {
+      "type": "spacer",
+      "height": 6
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "horizontal": true,
+      "labels": true,
+      "dataset": "top",
+      "category": "customer",
+      "title": "Revenue by customer",
+      "height": 300,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#8e24aa"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "dataset": "top",
+      "zebra": true,
+      "grandTotal": true,
+      "columns": [
+        {
+          "field": "rank",
+          "header": "#",
+          "width": 0.45,
+          "align": "center"
+        },
+        {
+          "field": "customer",
+          "header": "Customer",
+          "width": 3
+        },
+        {
+          "field": "country",
+          "header": "Country",
+          "width": 1.5
+        },
+        {
+          "field": "segment",
+          "header": "Segment",
+          "width": 1.3
+        },
+        {
+          "field": "orders",
+          "header": "Orders",
+          "width": 0.8,
+          "total": "sum"
+        },
+        {
+          "field": "revenue",
+          "header": "Revenue",
+          "format": "$#,##0",
+          "width": 1.3,
+          "total": "sum"
+        }
+      ]
+    },
+    {
+      "type": "spacer",
+      "height": 8
+    },
+    {
+      "type": "chart",
+      "chart": "pie",
+      "donut": true,
+      "dataset": "segments",
+      "category": "segment",
+      "title": "All customers: revenue by segment",
+      "height": 200,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue"
+        }
+      ]
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "horizontal": true,
+      "labels": true,
+      "dataset": "industries",
+      "category": "industry",
+      "title": "All customers: revenue by industry",
+      "height": 220,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#fb8c00"
+        }
+      ]
+    }
+  ]
+}

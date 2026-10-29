@@ -1,0 +1,124 @@
+:host {
+  display: block;
+  height: 100%;
+  overflow: auto;
+}
+
+.pane {
+  padding: 8px 6px 16px;
+  font-size: 13px;
+}
+
+h4 {
+  margin: 14px 6px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding: 4px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--mat-sys-surface-container);
+  }
+
+  mat-icon {
+    width: 18px;
+    height: 18px;
+    font-size: 18px;
+  }
+
+  .db {
+    margin-left: 2px;
+    color: var(--mat-sys-primary);
+  }
+
+  .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .count {
+    color: var(--mat-sys-on-surface-variant);
+    font-weight: 400;
+    font-size: 11px;
+  }
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 1px 0 1px 18px;
+  padding: 3px 8px;
+  border-radius: 14px;
+  cursor: grab;
+  user-select: none;
+
+  &:hover {
+    background: var(--mat-sys-surface-container-high);
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+
+  mat-icon {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    font-size: 16px;
+  }
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  // Tableau's colors: dimensions blue, measures green, dates blue too, parameters grey
+  &.text mat-icon,
+  &.date mat-icon {
+    color: #4e79a7;
+  }
+
+  &.number mat-icon {
+    color: #59a14f;
+  }
+
+  &.param mat-icon {
+    color: #9c755f;
+  }
+}
+
+.hint,
+.tip {
+  margin: 4px 8px 4px 20px;
+  color: var(--mat-sys-on-surface-variant);
+  font-size: 12px;
+}
+
+.tip {
+  margin: 14px 8px 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--mat-sys-outline-variant);
+}

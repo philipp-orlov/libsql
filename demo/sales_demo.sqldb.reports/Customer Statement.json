@@ -1,0 +1,182 @@
+{
+  "format": 1,
+  "name": "Customer Statement",
+  "title": "Customer Statement",
+  "description": "Everything one customer ordered: details, a chart of their spending and every order with its lines.",
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": {
+      "top": 44,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "customer",
+      "label": "Customer",
+      "type": "integer",
+      "default": 62,
+      "required": true,
+      "optionsSql": "SELECT id, name FROM customers ORDER BY name"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "info",
+      "sql": "SELECT c.name, c.city, c.country, c.region, c.segment, c.industry, c.customer_since, c.contact, c.credit_limit, e.name AS rep FROM customers c LEFT JOIN employees e ON e.id = c.rep_id WHERE c.id = :customer"
+    },
+    {
+      "name": "lines",
+      "sql": "SELECT o.id AS order_id, o.order_date, o.status, o.channel, p.name AS product, i.quantity, i.unit_price, round(i.quantity * i.unit_price * (1 - o.discount), 2) AS amount FROM orders o JOIN order_items i ON i.order_id = o.id JOIN products p ON p.id = i.product_id WHERE o.customer_id = :customer ORDER BY o.order_date, o.id, p.name"
+    },
+    {
+      "name": "monthly",
+      "sql": "SELECT month, round(sum(revenue)) AS revenue FROM sales WHERE customer_id = :customer GROUP BY month ORDER BY month"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 9,
+        "color": "#546e7a"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#546e7a",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "text",
+      "text": " Customer Statement",
+      "style": {
+        "face": "bold",
+        "size": 22,
+        "color": "#ffffff",
+        "background": "#43a047"
+      }
+    },
+    {
+      "type": "text",
+      "text": "{{First(name)}}",
+      "dataset": "info",
+      "style": {
+        "face": "bold",
+        "size": 18,
+        "color": "#0d47a1"
+      }
+    },
+    {
+      "type": "text",
+      "text": "{{First(city)}}, {{First(country)}}  ({{First(region)}})",
+      "dataset": "info",
+      "style": {
+        "size": 11
+      }
+    },
+    {
+      "type": "text",
+      "text": "{{First(segment)}} customer in {{First(industry)}} since {{First(customer_since)}}   ·   contact {{First(contact)}}   ·   account manager {{First(rep)}}   ·   credit limit {{Format(First(credit_limit), \"$#,##0\")}}",
+      "dataset": "info",
+      "style": {
+        "size": 10,
+        "color": "#546e7a"
+      }
+    },
+    {
+      "type": "spacer",
+      "height": 8
+    },
+    {
+      "type": "text",
+      "text": " {{Count()}} order lines   ·   {{Format(Sum(amount), \"$#,##0.00\")}} ordered (cancelled orders included in the lines below)",
+      "dataset": "lines",
+      "style": {
+        "face": "bold",
+        "size": 12,
+        "color": "#0d47a1",
+        "background": "#e8f5e9"
+      }
+    },
+    {
+      "type": "spacer",
+      "height": 8
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "dataset": "monthly",
+      "category": "month",
+      "title": "Spending by month (cancelled orders excluded)",
+      "height": 180,
+      "labels": true,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#43a047"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "dataset": "lines",
+      "grandTotal": true,
+      "groups": [
+        {
+          "field": "order_id",
+          "header": "Order {{order_id}}   ·   {{First(order_date)}}   ·   {{First(status)}}   ·   {{First(channel)}}",
+          "subtotals": true
+        }
+      ],
+      "columns": [
+        {
+          "field": "product",
+          "header": "Product",
+          "width": 3.4
+        },
+        {
+          "field": "quantity",
+          "header": "Qty",
+          "width": 0.6,
+          "total": "sum",
+          "format": "#,##0"
+        },
+        {
+          "field": "unit_price",
+          "header": "Unit price",
+          "format": "#,##0.00",
+          "width": 1.1
+        },
+        {
+          "field": "amount",
+          "header": "Amount",
+          "format": "#,##0.00",
+          "total": "sum",
+          "width": 1.1
+        }
+      ]
+    }
+  ]
+}

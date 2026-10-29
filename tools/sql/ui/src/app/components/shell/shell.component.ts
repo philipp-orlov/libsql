@@ -9,10 +9,13 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { WorkspaceService } from '../../services/workspace.service';
+import { ReportService } from '../../reports/report.service';
 import { BrowseComponent } from '../browse/browse.component';
 import { ExecuteSqlComponent } from '../execute-sql/execute-sql.component';
 import { PragmasComponent } from '../pragmas/pragmas.component';
 import { StructureComponent } from '../structure/structure.component';
+import { ReportDesignerComponent } from '../../reports/designer/report-designer.component';
+import { ReportRunnerComponent } from '../../reports/runner/report-runner.component';
 import { VisualizeComponent } from '../visualize/visualize.component';
 
 @Component({
@@ -29,6 +32,8 @@ import { VisualizeComponent } from '../visualize/visualize.component';
     PragmasComponent,
     ExecuteSqlComponent,
     VisualizeComponent,
+    ReportRunnerComponent,
+    ReportDesignerComponent,
   ],
   templateUrl: './shell.component.html',
   styleUrl: './shell.component.scss',
@@ -38,10 +43,12 @@ export class ShellComponent implements OnInit {
   protected readonly db = inject(DatabaseService);
   protected readonly workspace = inject(WorkspaceService);
   private readonly notice = inject(NoticeService);
+  protected readonly reports = inject(ReportService);
 
   protected readonly readOnly = computed(() => this.db.info()?.readOnly ?? false);
 
   async ngOnInit(): Promise<void> {
+    void this.reports.probe();
     try {
       await this.db.load();
     } catch (failure) {

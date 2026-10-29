@@ -41,6 +41,20 @@
         <app-visualize />
       </ng-template>
     </mat-tab>
+    @if (reports.available() !== false) {
+      <mat-tab label="Reports">
+        <ng-template matTabContent>
+          <app-report-runner />
+        </ng-template>
+      </mat-tab>
+    }
+    @if (!readOnly() && reports.available() !== false) {
+      <mat-tab label="Report Designer">
+        <ng-template matTabContent>
+          <app-report-designer />
+        </ng-template>
+      </mat-tab>
+    }
   </mat-tab-group>
 
   <footer class="status">

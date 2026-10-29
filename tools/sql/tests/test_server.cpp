@@ -19,6 +19,9 @@
 #include <thread>
 #include <vector>
 
+#ifdef SQL_TOOL_REPORTS
+#include "reports.hpp"
+#endif
 #include "sql_test.hpp"
 #include "web_server.hpp"
 
@@ -294,6 +297,167 @@ TEST(a_missing_public_directory_still_serves_the_database)
     CHECK_EQ(s.get("/").status, 404);
     CHECK_EQ(tst::only(sql::Database::connect(s.url()).exec("SELECT count(*) FROM t")), std::string("2"));
 }
+
+#ifdef SQL_TOOL_REPORTS
+// ---- reports --------------------------------------------------------------------------------------------------------
+
+namespace {
+const std::string kJson = "Content-Type: application/json\r\n";
+sqlweb::WebOptions reportsIn(const tst::Scratch& scratch, sqlweb::WebOptions o = {})
+{
+    o.reportsDir = scratch.file("reports").string();
+    return o;
+}
+}  // namespace
+
+TEST(report_names_and_documents_are_checked)
+{
+    using sqlweb::ReportStore;
+    for (const char* ok : {"Sales", "Sales 2026", "q3_report-final.v2", "a"})
+        CHECK(ReportStore::validName(ok));
+    for (const char* bad : {"", ".hidden", " lead", "a/b", "a\\b", "a..b", "ends.", "tab\there", "caf\xc3\xa9"})
+        CHECK(!ReportStore::validName(bad));
+    CHECK(!ReportStore::validName(std::string("nul\0x", 5)));
+    CHECK(!ReportStore::validName(std::string(81, 'x')));
+    CHECK(ReportStore::validName(std::string(80, 'x')));
+
+    for (const char* ok : {"{}", "[]", "0", "-1.5e+3", "\"s\"", "null", " {\"a\": [1, 2, {\"b\": true}], \"c\": \"\\u00e9\\n\"} \n"})
+        CHECK(ReportStore::validJson(ok));
+    for (const char* bad : {"", "{", "{\"a\":}", "{\"a\":1,}", "[1,]", "01", "1.", "'x'", "{a:1}", "\"\\x\"", "\"\t\"", "{} {}", "tru", "NaN", "[1 2]"})
+        CHECK(!ReportStore::validJson(bad));
+    CHECK(!ReportStore::validJson(std::string(100, '[') + std::string(100, ']')));  // nested too deep
+}
+
+TEST(reports_are_saved_listed_read_and_deleted)
+{
+    tst::Scratch scratch("web-reports");
+    Running s(reportsIn(scratch));
+    CHECK_EQ(s.get("/api/v1/reports").body, std::string("[]"));
+    CHECK_EQ(s.get("/api/v1/reports/Sales").status, 404);
+
+    const std::string doc = R"({"format":1,"name":"Sales","body":[]})";
+    const Response put = s.send("PUT", "/api/v1/reports/Sales", doc, kJson);
+    CHECK_EQ(put.status, 200);
+    CHECK_EQ(put.header("cache-control"), std::string("no-store"));
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/Q3%20results", doc, kJson).status, 200);
+
+    const Response got = s.get("/api/v1/reports/Sales");
+    CHECK_EQ(got.status, 200);
+    CHECK_EQ(got.body, doc);
+    CHECK(got.header("content-type").find("application/json") == 0);
+    CHECK_EQ(got.header("x-content-type-options"), std::string("nosniff"));
+    CHECK_EQ(s.get("/api/v1/reports/Q3%20results").body, doc);
+
+    const Response list = s.get("/api/v1/reports");
+    CHECK(list.body.find("\"name\":\"Q3 results\"") != std::string::npos);
+    CHECK(list.body.find("\"name\":\"Sales\",\"size\":" + std::to_string(doc.size())) != std::string::npos);
+    CHECK(list.body.find("Q3 results") < list.body.find("Sales"));  // by name
+
+    const std::string newer = R"({"format":1,"name":"Sales","body":[{"type":"rule"}]})";
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/Sales", newer, kJson).status, 200);
+    CHECK_EQ(s.get("/api/v1/reports/Sales").body, newer);
+    CHECK(!std::filesystem::exists(scratch.file("reports") / "Sales.json.tmp"));
+
+    CHECK_EQ(s.send("DELETE", "/api/v1/reports/Sales").status, 200);
+    CHECK_EQ(s.get("/api/v1/reports/Sales").status, 404);
+    CHECK_EQ(s.send("DELETE", "/api/v1/reports/Sales").status, 404);
+    CHECK(s.get("/api/v1/reports").body.find("Sales") == std::string::npos);
+}
+
+TEST(bad_report_requests_are_refused)
+{
+    tst::Scratch scratch("web-reports-bad");
+    Running s(reportsIn(scratch));
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/a..b", "{}", kJson).status, 400);
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/.hidden", "{}", kJson).status, 400);
+    // an encoded slash makes a path no route matches: refused all the same, and nothing is written outside
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/..%2F..%2Fescape", "{}", kJson).status, 404);
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/ok", "not json", kJson).status, 400);
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/ok", "{}", "Content-Type: text/plain\r\n").status, 415);
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/ok", "{\"a\":\"" + std::string(sqlweb::ReportStore::kMaxBytes, 'x') + "\"}", kJson).status, 413);
+    CHECK_EQ(s.get("/api/v1/reports/..%2F..%2Fetc%2Fpasswd").status, 404);
+    CHECK(!std::filesystem::exists(scratch.file("reports")) || std::filesystem::is_empty(scratch.file("reports")));
+    CHECK(!std::filesystem::exists(scratch.file("escape.json")));
+}
+
+TEST(a_token_protects_the_reports_and_fonts_and_page_stay_open)
+{
+    tst::Scratch scratch("web-reports-token");
+    sqlweb::WebOptions options;
+    options.token = "s3cret";
+    Running s(reportsIn(scratch, options));
+    const std::string bearer = "Authorization: Bearer s3cret\r\n";
+    CHECK_EQ(s.get("/api/v1/reports").status, 401);
+    CHECK_EQ(s.get("/api/v1/reports", "Authorization: Bearer wrong\r\n").status, 401);
+    CHECK_EQ(s.get("/api/v1/reports", "Authorization: Bearer s3cret!\r\n").status, 401);
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/x", "{}", kJson).status, 401);
+    CHECK_EQ(s.send("DELETE", "/api/v1/reports/x").status, 401);
+    CHECK_EQ(s.get("/api/v1/reports", bearer).status, 200);
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/x", "{}", kJson + bearer).status, 200);
+    CHECK_EQ(s.get("/api/v1/reports/x").status, 401);
+    CHECK_EQ(s.get("/api/v1/reports/x", bearer).body, std::string("{}"));
+    if (sqlweb::hasEmbeddedIndex())
+        CHECK_EQ(s.get("/reports").status, 200);
+}
+
+TEST(a_read_only_server_keeps_its_reports_as_they_are)
+{
+    tst::Scratch scratch("web-reports-readonly");
+    sqlweb::ReportStore(scratch.file("reports")).write("Kept", "{\"a\":1}");
+    sqlweb::WebOptions options;
+    options.readOnly = true;
+    Running s(reportsIn(scratch, options));
+    CHECK_EQ(s.get("/api/v1/reports/Kept").body, std::string("{\"a\":1}"));
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/Kept", "{}", kJson).status, 403);
+    CHECK_EQ(s.send("DELETE", "/api/v1/reports/Kept").status, 403);
+    CHECK_EQ(s.get("/api/v1/reports/Kept").body, std::string("{\"a\":1}"));
+}
+
+TEST(reports_default_to_a_directory_beside_the_database)
+{
+    Running s;
+    CHECK_EQ(s.send("PUT", "/api/v1/reports/Beside", "{}", kJson).status, 200);
+    CHECK(std::filesystem::exists(s.db.path().string() + ".reports/Beside.json"));
+}
+
+TEST(the_runner_page_and_the_report_fonts_are_served)
+{
+    Running s;
+    if (sqlweb::hasEmbeddedIndex()) {
+        for (const char* path : {"/reports", "/reports/"}) {
+            const Response r = s.get(path, "Accept-Encoding: gzip\r\n");
+            CHECK_EQ(r.status, 200);
+            CHECK(r.header("content-type").find("text/html") == 0);
+            CHECK_EQ(r.header("cache-control"), std::string("no-cache"));
+        }
+    }
+    for (const char* face : {"Regular", "Bold"}) {
+        const Response font = s.get(std::string("/fonts/LiberationSans-") + face + ".ttf", "Accept-Encoding: gzip\r\n");
+        if (font.status == 404)
+            continue;  // built without the embedded fonts
+        CHECK_EQ(font.status, 200);
+        CHECK_EQ(font.header("content-type"), std::string("font/ttf"));
+        CHECK_EQ(font.header("content-encoding"), std::string("gzip"));
+        CHECK(font.header("cache-control").find("max-age") != std::string::npos);
+        CHECK(font.body.size() > 100000 / 3);  // gzipped TrueType
+        CHECK_EQ(static_cast<unsigned char>(font.body[0]), 0x1f);
+        CHECK_EQ(static_cast<unsigned char>(font.body[1]), 0x8b);
+    }
+}
+
+#else
+
+TEST(a_build_without_reports_has_none_of_their_routes)
+{
+    Running s;
+    CHECK(!sqlweb::hasReports());
+    CHECK_EQ(s.get("/api/v1/reports").status, 404);
+    CHECK_EQ(s.get("/api/v1/reports/x").status, 404);
+    CHECK_EQ(s.get("/reports").status, 404);
+    CHECK_EQ(s.get("/fonts/LiberationSans-Regular.ttf").status, 404);
+}
+
+#endif  // SQL_TOOL_REPORTS
 
 int main()
 {

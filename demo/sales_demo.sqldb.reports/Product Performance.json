@@ -1,0 +1,188 @@
+{
+  "format": 1,
+  "name": "Product Performance",
+  "title": "Product Performance",
+  "description": "Units, revenue and margin of every product, by category.",
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": {
+      "top": 44,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "year",
+      "label": "Year",
+      "type": "integer",
+      "default": 2026,
+      "required": true,
+      "optionsSql": "SELECT DISTINCT year FROM sales ORDER BY 1 DESC"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "products",
+      "sql": "SELECT category, product, sum(quantity) AS units, round(sum(revenue)) AS revenue, round(sum(cost)) AS cost FROM sales WHERE year = :year GROUP BY product_id ORDER BY category, revenue DESC"
+    },
+    {
+      "name": "best",
+      "sql": "SELECT product, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY product_id ORDER BY revenue DESC LIMIT 10"
+    },
+    {
+      "name": "quarters",
+      "sql": "SELECT quarter, round(coalesce(sum(CASE WHEN category = 'Compute' THEN revenue END), 0)) AS Compute, round(coalesce(sum(CASE WHEN category = 'Networking' THEN revenue END), 0)) AS Networking, round(coalesce(sum(CASE WHEN category = 'Storage' THEN revenue END), 0)) AS Storage, round(coalesce(sum(CASE WHEN category = 'Software' THEN revenue END), 0)) AS Software, round(coalesce(sum(CASE WHEN category = 'Services' THEN revenue END), 0)) AS Services, round(coalesce(sum(CASE WHEN category = 'Accessories' THEN revenue END), 0)) AS Accessories FROM sales WHERE year = :year GROUP BY quarter ORDER BY quarter"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 9,
+        "color": "#546e7a"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#546e7a",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "text",
+      "text": " Product Performance {{year}}",
+      "style": {
+        "face": "bold",
+        "size": 22,
+        "color": "#ffffff",
+        "background": "#fb8c00"
+      }
+    },
+    {
+      "type": "text",
+      "text": "{{Format(Sum(units), \"#,##0\")}} units sold, {{Format(Sum(revenue), \"$#,##0\")}} revenue, {{Format((Sum(revenue) - Sum(cost)) / Sum(revenue), \"0.0%\")}} gross margin",
+      "style": {
+        "size": 10,
+        "color": "#546e7a"
+      },
+      "dataset": "products"
+    },
+    {
+      "type": "spacer",
+      "height": 6
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "horizontal": true,
+      "labels": true,
+      "dataset": "best",
+      "category": "product",
+      "title": "The ten best sellers by revenue",
+      "height": 290,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#fb8c00"
+        }
+      ]
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "stacked": true,
+      "dataset": "quarters",
+      "category": "quarter",
+      "title": "Revenue by quarter and category",
+      "height": 240,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "Compute"
+        },
+        {
+          "field": "Networking"
+        },
+        {
+          "field": "Storage"
+        },
+        {
+          "field": "Software"
+        },
+        {
+          "field": "Services"
+        },
+        {
+          "field": "Accessories"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "dataset": "products",
+      "zebra": true,
+      "grandTotal": true,
+      "groups": [
+        {
+          "field": "category",
+          "header": "{{category}}",
+          "subtotals": true
+        }
+      ],
+      "columns": [
+        {
+          "field": "product",
+          "header": "Product",
+          "width": 3.2
+        },
+        {
+          "field": "units",
+          "header": "Units",
+          "format": "#,##0",
+          "total": "sum",
+          "width": 0.9
+        },
+        {
+          "field": "revenue",
+          "header": "Revenue",
+          "format": "$#,##0",
+          "total": "sum",
+          "width": 1.3
+        },
+        {
+          "expression": "revenue - cost",
+          "header": "Gross profit",
+          "format": "$#,##0",
+          "total": "sum",
+          "width": 1.3
+        },
+        {
+          "expression": "(revenue - cost) / revenue",
+          "header": "Margin",
+          "format": "0.0%",
+          "width": 0.9
+        }
+      ]
+    }
+  ]
+}

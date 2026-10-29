@@ -1,0 +1,52 @@
+<div class="editor datasets">
+  <p class="intro">A dataset is one SELECT. Tables, charts and text boxes of the report use its rows. Parameters are written <code>:name</code>. Reports run on a read-only session: they cannot change data.</p>
+  <div class="tabs" role="tablist">
+    @for (d of report().datasets; track $index; let i = $index) {
+      <button class="tab" role="tab" [class.active]="i === index" (click)="selected.set(i)">{{ d.name }}</button>
+    }
+    <button mat-icon-button class="add" (click)="add()" aria-label="Add dataset"><mat-icon>add</mat-icon></button>
+  </div>
+  @if (report().datasets[index]; as d) {
+    <section class="card">
+      <div class="row">
+        <label class="field">Name <input class="mono" [value]="d.name" (change)="rename(index, $any($event.target).value.trim())" /></label>
+        <span class="hint">Uses: {{ usedParameters(d.sql).length ? ':' + usedParameters(d.sql).join(', :') : 'no parameters' }}</span>
+        <span class="tools">
+          <button mat-flat-button class="run" (click)="run(index)" [disabled]="running()"><mat-icon>play_arrow</mat-icon>Run</button>
+          <button mat-icon-button class="delete" (click)="remove(index)" aria-label="Delete dataset"><mat-icon>delete</mat-icon></button>
+        </span>
+      </div>
+      <app-sql-editor class="sql" [value]="d.sql" (valueChange)="setSql(index, $event)" [schema]="db.schema()" [functions]="db.info()?.functions ?? []" (run)="run(index)" />
+      @if (error()) {
+        <p class="error" role="alert">{{ error() }}</p>
+      }
+      @if (sample(); as s) {
+        @if (s.name === d.name) {
+          <div class="sample">
+            <table>
+              <thead>
+                <tr>
+                  @for (c of s.data.columns; track $index) {
+                    <th>{{ c }}</th>
+                  }
+                </tr>
+              </thead>
+              <tbody>
+                @for (row of s.data.rows; track $index) {
+                  <tr>
+                    @for (cell of row; track $index) {
+                      <td [class.num]="isNumber(cell)">{{ text(cell) }}</td>
+                    }
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="hint">{{ s.data.rows.length }} row{{ s.data.rows.length === 1 ? '' : 's' }}{{ s.truncated ? ' shown (more exist)' : '' }}, {{ s.data.columns.length }} columns.</p>
+        }
+      }
+    </section>
+  } @else {
+    <p class="empty">This report has no datasets. Add one to give it rows.</p>
+  }
+</div>
