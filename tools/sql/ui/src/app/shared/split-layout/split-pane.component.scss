@@ -1,11 +1,50 @@
+/* A pane is a card: the host is the slot the split sizes (its padding is the gutter, half on each side of a sash) and
+   .card, inside it, is the rounded surface, the way the panels of a VS Code window float on the darker workbench. */
 :host {
   position: relative;
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
   min-width: 0;
   min-height: 0;
   overflow: visible;
-  background: var(--ui-split-pane-background, transparent);
+  padding: 6px 3px;
+}
+
+:host(:not(.horizontal)) {
+  padding: 3px 6px;
+}
+
+:host(.horizontal:first-child),
+:host(.horizontal.maximized) {
+  padding-left: 6px;
+}
+
+:host(.horizontal:last-child),
+:host(.horizontal.maximized) {
+  padding-right: 6px;
+}
+
+:host(:not(.horizontal):first-child),
+:host(:not(.horizontal).maximized) {
+  padding-top: 6px;
+}
+
+:host(:not(.horizontal):last-child),
+:host(:not(.horizontal).maximized) {
+  padding-bottom: 6px;
+}
+
+.card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--mat-sys-outline-variant);
+  border-radius: var(--ui-split-radius, 10px);
+  background: var(--ui-split-pane-background, var(--mat-sys-surface));
 }
 
 :host(.hidden) {
@@ -17,7 +56,7 @@
   flex: none;
   align-items: center;
   gap: 6px;
-  min-height: 36px;
+  min-height: 34px;
   padding: 0 4px 0 12px;
   border-bottom: 1px solid var(--mat-sys-outline-variant);
   background: var(--ui-split-header-background, var(--mat-sys-surface-container-low));
@@ -98,14 +137,18 @@
   &::after {
     position: absolute;
     content: '';
-    background: var(--mat-sys-outline-variant);
+    border-radius: 2px;
   }
 
   &:hover,
   &.dragging,
   &:focus-visible {
-    background: color-mix(in srgb, var(--mat-sys-primary) 55%, transparent);
+    background: transparent;
     outline: none;
+
+    &::after {
+      background: color-mix(in srgb, var(--mat-sys-primary) 70%, transparent);
+    }
   }
 
   &.dragging {

@@ -36,6 +36,7 @@ import { SplitComponent } from './split.component';
     '(keydown.escape)': 'onEscape($event)',
   },
   template: `
+    <div class="card">
     @if (!headerless()) {
       <header class="pane-header" (dblclick)="onHeaderDoubleClick($event)">
         @if (icon()) {
@@ -62,6 +63,7 @@ import { SplitComponent } from './split.component';
       </header>
     }
     <div class="pane-body"><ng-content /></div>
+    </div>
     @if (hasSash()) {
       <div
         class="sash"

@@ -9,15 +9,6 @@
   height: 100%;
 }
 
-.toolbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--mat-sys-outline-variant);
-}
-
 .table-select {
   width: 220px;
 }
@@ -27,10 +18,6 @@
   height: 24px;
   margin: 0 8px;
   background: var(--mat-sys-outline-variant);
-}
-
-.spacer {
-  flex: 1;
 }
 
 .toggle-panel.on {

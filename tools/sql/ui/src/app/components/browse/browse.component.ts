@@ -14,7 +14,8 @@ import { NoticeService } from '../../services/notice.service';
 import { WorkspaceService } from '../../services/workspace.service';
 import { CellRef, DataGridComponent, GridCellDirective, GroupDescriptor, SortDescriptor, effectiveSort } from '../../shared/data-grid';
 import { cellColumn, cellEditText, cellKind, cellText, inputToCell, isEditableCell, toCsv } from '../../utils/cell';
-import { downloadText } from '../../utils/download';
+import { downloadBlob, downloadText } from '../../utils/download';
+import { ExportFormat, ReportService } from '../../reports/report.service';
 import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
 import { RecordDialogComponent } from '../record-dialog/record-dialog.component';
 
@@ -34,6 +35,7 @@ export class BrowseComponent {
   private readonly dialog = inject(MatDialog);
   private readonly notice = inject(NoticeService);
   private readonly workspace = inject(WorkspaceService);
+  protected readonly reports = inject(ReportService);
 
   protected readonly pageSizes = PAGE_SIZES;
   protected readonly cellText = cellText;
@@ -213,25 +215,42 @@ export class BrowseComponent {
     }
   }
 
-  /** Saves every row the filter matches, the way the grid shows them, up to a limit. */
+  /** Every row the filter matches, in the order the grid shows them, up to a limit. */
+  private async exportRows(page: BrowseReply): Promise<Cell[][]> {
+    const sort = this.sortSpecs();
+    const wanted = Math.min(page.total, EXPORT_LIMIT);
+    const rows: Cell[][] = [];
+    for (let offset = 0; offset < wanted; offset += EXPORT_PAGE_ROWS) {
+      const part = await this.db.browse({ table: page.table, offset, limit: EXPORT_PAGE_ROWS, sort, filters: this.filters() });
+      rows.push(...part.rows);
+    }
+    if (page.total > EXPORT_LIMIT) {
+      this.notice.info(`Only the first ${EXPORT_LIMIT} of ${page.total} rows were exported.`);
+    }
+    return rows;
+  }
+
+  /** Saves the rows the filter matches as CSV. */
   protected async exportCsv(): Promise<void> {
+    await this.exportAs(async (page, rows) => downloadText(`${page.table}.csv`, toCsv(page.columns.map(column => column.name), rows), 'text/csv'));
+  }
+
+  /** Saves the rows the filter matches as a PDF, an Excel workbook or a Word document, the way a report would. */
+  protected async exportReport(format: ExportFormat): Promise<void> {
+    await this.exportAs(async (page, rows) => {
+      const blob = await this.reports.exportRows(format, { title: page.table, columns: page.columns.map(column => column.name), rows });
+      downloadBlob(`${page.table}.${format}`, blob);
+    });
+  }
+
+  private async exportAs(save: (page: BrowseReply, rows: Cell[][]) => Promise<void>): Promise<void> {
     const page = this.page();
     if (!page || this.exporting()) {
       return;
     }
     this.exporting.set(true);
     try {
-      const sort = this.sortSpecs();
-      const wanted = Math.min(page.total, EXPORT_LIMIT);
-      const rows: Cell[][] = [];
-      for (let offset = 0; offset < wanted; offset += EXPORT_PAGE_ROWS) {
-        const part = await this.db.browse({ table: page.table, offset, limit: EXPORT_PAGE_ROWS, sort, filters: this.filters() });
-        rows.push(...part.rows);
-      }
-      downloadText(`${page.table}.csv`, toCsv(page.columns.map(column => column.name), rows), 'text/csv');
-      if (page.total > EXPORT_LIMIT) {
-        this.notice.info(`Only the first ${EXPORT_LIMIT} of ${page.total} rows were exported.`);
-      }
+      await save(page, await this.exportRows(page));
     } catch (failure) {
       this.notice.error(failure);
     } finally {

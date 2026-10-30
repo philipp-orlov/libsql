@@ -121,11 +121,12 @@
 }
 
 .params {
-  display: flex;
+  // as high as every tab's bar, taller once the parameters wrap
   flex-wrap: wrap;
-  align-items: flex-end;
+  height: auto;
+  min-height: 48px;
   gap: 8px 16px;
-  padding: 8px 16px;
+  padding: 3px 16px;
 }
 
 .param-field {

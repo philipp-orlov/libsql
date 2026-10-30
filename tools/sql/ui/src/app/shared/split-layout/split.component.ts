@@ -42,6 +42,8 @@ export type SplitOrientation = 'horizontal' | 'vertical';
       min-width: 0;
       min-height: 0;
       overflow: hidden;
+      /* the gutter the pane cards float on */
+      background: var(--ui-split-background, var(--mat-sys-surface-container));
     }
     :host(.vertical) {
       flex-direction: column;

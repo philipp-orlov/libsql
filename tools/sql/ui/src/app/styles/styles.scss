@@ -48,6 +48,30 @@ body {
   --mat-snack-bar-supporting-text-color: var(--mat-sys-on-error);
 }
 
+// The command bar at the top of every tab: one height, one border, whatever it holds.
+.tab-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  box-sizing: border-box;
+  gap: 4px;
+  height: 48px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+  background: var(--mat-sys-surface);
+
+  .spacer {
+    flex: 1;
+  }
+
+  mat-form-field {
+    --mat-form-field-container-height: 36px;
+    --mat-form-field-container-vertical-padding: 6px;
+    --mat-form-field-container-text-size: 13px;
+    --mat-select-trigger-text-size: 13px;
+  }
+}
+
 // The text of a NULL or BLOB cell, which is not data.
 .placeholder {
   color: var(--mat-sys-outline);

@@ -40,7 +40,7 @@
         }
       </header>
 
-      <form class="params" (submit)="$event.preventDefault(); run()">
+      <form class="params tab-bar" (submit)="$event.preventDefault(); run()">
         @for (p of report.parameters; track p.name) {
           @if (hasChoices(p)) {
             <app-select [label]="(p.label || p.name) + (p.required ? ' *' : '')" [value]="form()[p.name]" [options]="choiceOptions(p)" [width]="200" (valueChange)="setValue(p.name, $event)" />

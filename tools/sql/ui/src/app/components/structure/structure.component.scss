@@ -9,17 +9,6 @@
   height: 100%;
 }
 
-.actions {
-  display: flex;
-  flex: none;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--mat-sys-outline-variant);
-}
-
-.spacer {
-  flex: 1;
-}
-
 .tree {
   flex: 1;
   min-height: 0;

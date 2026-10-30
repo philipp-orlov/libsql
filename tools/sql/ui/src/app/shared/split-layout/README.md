@@ -32,4 +32,4 @@ Nest a `ui-split` inside a pane to build a grid (columns of rows or the other wa
 `ui-split-pane`: `title`, `icon`, `size` (px; omit for the flexible pane), `minSize` (px, default 120), `maximizable`
 (default true), `headerless`. Give the host a height if the split itself is not in a sized container; the split fills
 its parent (`width/height: 100%`). Colours come from `--mat-sys-*`; override `--ui-split-header-background` and
-`--ui-split-pane-background` to taste.
+`--ui-split-pane-background` (the card), `--ui-split-background` (the gutter) and `--ui-split-radius` to taste.

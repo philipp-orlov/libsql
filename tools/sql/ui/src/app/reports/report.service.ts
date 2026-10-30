@@ -16,6 +16,7 @@ import {
   FontFace,
   layoutReport,
   LayoutResult,
+  newReport,
   ViewState,
   ParamDef,
   ParamOption,
@@ -307,6 +308,44 @@ export class ReportService {
     );
     return new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
   }
+
+  /** The rows of a table (or any result) as a PDF, an Excel workbook or a Word document. */
+  async exportRows(format: ExportFormat, source: RowsExport): Promise<Blob> {
+    const report = rowsReport(source.title, source.columns);
+    const run: RunResult = { datasets: { rows: { columns: source.columns, rows: source.rows.map(row => row.map(plain)) } }, subs: {}, warnings: [] };
+    switch (format) {
+      case 'pdf':
+        return this.pdf(await this.layout(report, {}, run.datasets, undefined, run.subs), report);
+      case 'xlsx':
+        return this.xlsx(report, {}, run);
+      case 'docx':
+        return this.docx(report, {}, run);
+    }
+  }
+}
+
+/** Rows of a result as one table of a throwaway report, so that they leave as the same PDF, Excel and Word files a report does. */
+export interface RowsExport {
+  title: string;
+  columns: string[];
+  rows: unknown[][];
+}
+
+export type ExportFormat = 'pdf' | 'xlsx' | 'docx';
+
+/** The report behind {@link ReportService.exportRows}: a heading and one table of every column, landscape once it is wide. */
+export function rowsReport(title: string, columns: string[]): ReportDef {
+  const base = newReport(title);
+  return {
+    ...base,
+    page: { ...base.page, orientation: columns.length > 5 ? 'landscape' : 'portrait' },
+    datasets: [{ name: 'rows', sql: 'SELECT 1' }],
+    body: [
+      { type: 'text', text: '{{ReportName}}', style: { face: 'bold', size: 16 } },
+      { type: 'spacer', height: 6 },
+      { type: 'table', dataset: 'rows', zebra: true, columns: columns.map(field => ({ field, header: field })) },
+    ],
+  };
 }
 
 /** A cell of a result as a plain value. */

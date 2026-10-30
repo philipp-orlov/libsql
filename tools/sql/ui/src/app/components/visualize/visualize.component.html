@@ -1,5 +1,5 @@
 <div class="visualize">
-  <div class="actions">
+  <div class="actions tab-bar">
     <button mat-button class="refresh" (click)="refresh()" [disabled]="store.loading()"><mat-icon>refresh</mat-icon> Refresh</button>
     <button mat-button class="check" (click)="check()" [disabled]="store.checking() || store.loading()" matTooltip="Recompute the hash of every page and run the structural check">
       <mat-icon>fact_check</mat-icon> Check integrity

@@ -1,7 +1,7 @@
 <div class="browse">
-  <div class="toolbar">
+  <div class="toolbar tab-bar">
     <span class="label">Table:</span>
-    <mat-form-field class="table-select" subscriptSizing="dynamic">
+    <mat-form-field class="table-select" appearance="outline" subscriptSizing="dynamic">
       <mat-select [value]="table()" (selectionChange)="selectTable($event.value)" placeholder="Select a table" aria-label="Table">
         @for (name of tableNames(); track name) {
           <mat-option [value]="name">{{ name }}</mat-option>
@@ -23,9 +23,23 @@
     </button>
     <span class="spacer"></span>
     <button mat-button class="export" (click)="exportCsv()" [disabled]="!page() || exporting()" matTooltip="Save the rows that match the filter as CSV">
-      <mat-icon>download</mat-icon>
-      Export CSV
+      <mat-icon>table_view</mat-icon>
+      CSV
     </button>
+    @if (reports.available() !== false) {
+      <button mat-button class="export-pdf" (click)="exportReport('pdf')" [disabled]="!page() || exporting()" matTooltip="Save the rows that match the filter as a PDF">
+        <mat-icon>picture_as_pdf</mat-icon>
+        PDF
+      </button>
+      <button mat-button class="export-xlsx" (click)="exportReport('xlsx')" [disabled]="!page() || exporting()" matTooltip="Save the rows that match the filter as an Excel workbook">
+        <mat-icon>grid_on</mat-icon>
+        Excel
+      </button>
+      <button mat-button class="export-docx" (click)="exportReport('docx')" [disabled]="!page() || exporting()" matTooltip="Save the rows that match the filter as a Word document">
+        <mat-icon>description</mat-icon>
+        Word
+      </button>
+    }
     <button mat-button class="toggle-panel" (click)="panelOpen.set(!panelOpen())" [class.on]="panelOpen()" matTooltip="Show the value of the selected cell in full">
       <mat-icon>edit_note</mat-icon>
       Edit Cell

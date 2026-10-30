@@ -11,17 +11,7 @@
 }
 
 .bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 6px 12px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--mat-sys-outline-variant);
-  background: var(--mat-sys-surface);
-
-  .spacer {
-    flex: 1;
-  }
+  gap: 8px;
 
   .new {
     display: flex;

@@ -1,5 +1,5 @@
 <div class="designer">
-  <div class="bar">
+  <div class="bar tab-bar">
     <app-select class="open" label="Report" [value]="report()?.name ?? ''" [options]="names()" [width]="230" (valueChange)="open($event)" />
     <form class="new" (submit)="$event.preventDefault(); create()">
       <app-text class="new-name" label="New report name" [live]="true" [value]="newName()" (valueChange)="newName.set($event)" />
