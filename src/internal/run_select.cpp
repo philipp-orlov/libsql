@@ -1442,12 +1442,20 @@ private:
 
     void added(const Value* row)
     {
+        bytes_ += bytesOf(row, rows_.width());
         if (keep_ >= 0) {
-            if (rows_.size() >= pruneAt_)
+            // Rows past the cut are dropped when there are twice as many as can matter, or when the memory limit
+            // is passed and the drop would free a worthwhile share of it (at least doubling since the last prune,
+            // so a retained set that is itself over the limit is not re-sorted on every row).
+            if (rows_.size() >= pruneAt_ ||
+                (bytes_ > limit_ && rows_.size() > std::size_t(keep_) && bytes_ >= 2 * prunedBytes_))
                 prune();
+            // What the cut needs does not fit either: it goes to disk as a sorted run, like an unlimited sort, and
+            // emit() merges the runs under the same limit and offset.
+            if (spill_ && bytes_ > limit_ && rows_.size() > 1)
+                writeRun();
             return;
         }
-        bytes_ += bytesOf(row, rows_.width());
         if (spill_ && bytes_ > limit_ && rows_.size() > 1)
             writeRun();
     }
@@ -1473,6 +1481,10 @@ private:
         }
         // Rows 0..keep_-1 are now the best so far, in order.
         pruned_ = rows_.size() == std::size_t(keep_) && keep_ > 0;
+        bytes_ = 0;
+        for (std::size_t i = 0; i < rows_.size(); ++i)
+            bytes_ += bytesOf(rows_.row(i), width);
+        prunedBytes_ = bytes_;
     }
 
     /// Sorts what is in memory and appends it to the file as one run.
@@ -1509,6 +1521,8 @@ private:
         spilled_ += rows_.size();
         rows_.reset(width);
         bytes_ = 0;
+        prunedBytes_ = 0;
+        pruned_ = false;  // the rows the cut was measured against are on disk now
     }
 
     struct Run
@@ -1625,6 +1639,7 @@ private:
     bool spill_ = false;
     std::uint64_t limit_ = 64ull << 20;
     std::uint64_t bytes_ = 0;
+    std::uint64_t prunedBytes_ = 0;  // what the last prune left in memory
     std::uint64_t spilled_ = 0;
     TempFile file_;
     std::uint64_t fileEnd_ = 0;

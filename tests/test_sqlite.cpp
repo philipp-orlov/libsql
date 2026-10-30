@@ -609,6 +609,36 @@ TEST(largeSortsSpillAndMergeInOrder)
     CHECK_EQ(tst::only(db.exec("SELECT json_object('n', id) AS j FROM t ORDER BY v, id FOR JSON PATH")), doc);
 }
 
+TEST(limitedSortsOfWideRowsHonorTheMemoryLimit)
+{
+    tst::Scratch s("sqlite");
+    // 128 KiB of sort memory against ~6 MiB of wide rows, of which a large LIMIT + OFFSET must keep half.
+    Database db = Database::configure().sortMemoryLimit(128 << 10).open(s.file());
+    db.exec("CREATE TABLE w (id INTEGER PRIMARY KEY, k, pad TEXT, b BLOB)");
+    {
+        Transaction t = db.begin();
+        Statement ins = db.prepare("INSERT INTO w (k, pad, b) VALUES (?, ?, zeroblob(512))");
+        for (int i = 0; i < 3000; ++i) {
+            const Value k = i % 11 == 0 ? Value() : Value(std::int64_t((i * 7919) % 40));  // many ties
+            ins.exec(t, {k, Value(std::string(1500, char('a' + i % 26)) + std::to_string(i))});
+        }
+        t.commit();
+    }
+    const char* queries[] = {
+        "SELECT id, k, length(pad) FROM w ORDER BY k LIMIT 1500 OFFSET 20",
+        "SELECT id, pad FROM w ORDER BY k DESC NULLS FIRST LIMIT 1800",
+        "SELECT id FROM w ORDER BY k, pad DESC LIMIT 5 OFFSET 2000",
+        "SELECT id FROM w ORDER BY pad LIMIT 0",
+        "SELECT count(*), sum(length(pad)) FROM (SELECT pad FROM w ORDER BY k LIMIT 2500 OFFSET 100)",
+    };
+    for (const char* q : queries) {
+        db.exec("PRAGMA temp_store = MEMORY");  // never spills: the reference answer, ties in arrival order
+        const std::string inMemory = tst::flatten(db.exec(q));
+        db.exec("PRAGMA temp_store = FILE");
+        CHECK_EQ(tst::flatten(db.exec(q)), inMemory);
+    }
+}
+
 TEST(unprefixedNamesBindAnyPrefix)
 {
     tst::Scratch s("sqlite");
