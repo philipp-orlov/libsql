@@ -243,15 +243,24 @@ std::size_t descComponentLength(std::string_view in)
     const unsigned char tag = static_cast<unsigned char>(~static_cast<unsigned char>(in[0]));
     switch (tag) {
         case kKeyNull: return 1;
-        case kKeyNumber: return 11;
-        case kKeyDatetime: return 9;
+        case kKeyNumber:
+            if (in.size() < 11)
+                corrupt("truncated number key");
+            return 11;
+        case kKeyDatetime:
+            if (in.size() < 9)
+                corrupt("truncated datetime key");
+            return 9;
         case kKeyText:
         case kKeyBlob:
             // Complemented terminator is ff ff; complemented escape is ff 00.
             for (std::size_t i = 1; i + 1 < in.size(); ++i) {
                 if (static_cast<unsigned char>(in[i]) == 0xff) {
-                    if (static_cast<unsigned char>(in[i + 1]) == 0xff)
+                    const unsigned char next = static_cast<unsigned char>(in[i + 1]);
+                    if (next == 0xff)
                         return i + 2;
+                    if (next != 0x00)
+                        corrupt("bad escape in key field");
                     ++i;
                 }
             }

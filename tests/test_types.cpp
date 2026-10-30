@@ -3,6 +3,11 @@
 
 #include "sql_test.hpp"
 
+#include "internal/encoding.hpp"
+
+#include <memory>
+#include <string>
+
 using namespace sql;
 
 TEST(datetimeRoundTrips)
@@ -210,6 +215,69 @@ TEST(datetimesSortChronologically)
     CHECK_EQ(tst::flatten(db.exec("SELECT id FROM t ORDER BY at")), std::string("2;3;1"));
     CHECK_EQ(tst::flatten(db.exec("SELECT id FROM t WHERE at > '2024-01-01' ORDER BY id")),
              std::string("1;3"));
+}
+
+namespace {
+
+/// `key` copied into an allocation of exactly its size, so a sanitizer sees any read past it.
+struct Exact {
+    std::unique_ptr<char[]> bytes;
+    std::size_t size;
+    Exact(const std::string& key, std::size_t n) : bytes(new char[n ? n : 1]), size(n)
+    {
+        std::copy(key.data(), key.data() + n, bytes.get());
+    }
+    std::string_view view() const { return {bytes.get(), size}; }
+};
+
+std::string descKey(const Value& v)
+{
+    std::string out;
+    internal::appendKey(out, v, internal::Collation::Binary, true);
+    return out;
+}
+
+}  // namespace
+
+TEST(truncatedDescendingKeysAreRejected)
+{
+    const Value fixed[] = {Value(42), Value(2.5), Value(Datetime{123456789})};
+    for (const Value& v : fixed) {
+        const std::string key = descKey(v);
+        for (std::size_t n = 1; n < key.size(); ++n) {
+            Exact decode(key, n);
+            std::string_view in = decode.view();
+            CHECK_THROWS(internal::decodeKey(in), ErrorCode::Internal);
+            Exact skip(key, n);
+            in = skip.view();
+            CHECK_THROWS(internal::skipKeys(in, 1), ErrorCode::Internal);
+        }
+        Exact whole(key, key.size());
+        std::string_view in = whole.view();
+        internal::skipKeys(in, 1);
+        CHECK(in.empty());
+    }
+    // Complemented text/blob fields: unterminated or with a malformed escape.
+    for (const Value& v : {Value(std::string("a\0b", 3)), Value::blob("a\0b", 3)}) {
+        const std::string key = descKey(v);
+        for (std::size_t n = 1; n < key.size(); ++n) {
+            Exact cut(key, n);
+            std::string_view in = cut.view();
+            CHECK_THROWS(internal::skipKeys(in, 1), ErrorCode::Internal);
+        }
+    }
+    std::string bad = descKey(Value("ab"));
+    bad[2] = char(0xff);
+    bad[3] = char(0x7f);
+    std::string_view in = bad;
+    CHECK_THROWS(internal::skipKeys(in, 1), ErrorCode::Internal);
+    // Composite prefix: the second component is the truncated one.
+    std::string composite = descKey(Value(1)) + descKey(Value(2));
+    composite.pop_back();
+    Exact two(composite, composite.size());
+    in = two.view();
+    internal::skipKeys(in, 1);
+    CHECK_THROWS(internal::skipKeys(in, 1), ErrorCode::Internal);
 }
 
 int main()

@@ -1,6 +1,7 @@
 add_library(sql_testmain STATIC test_main.cpp)
 target_link_libraries(sql_testmain PUBLIC sql)
-target_include_directories(sql_testmain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(sql_testmain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
 foreach(name types ddl dml query join index group prepare consume handles blobs composite json limits locale reader soak sqlite alloc_budget storage)
     add_executable(test_${name} test_${name}.cpp)
