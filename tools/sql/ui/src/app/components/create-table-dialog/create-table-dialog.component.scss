@@ -1,0 +1,41 @@
+.content {
+  min-width: 760px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.name {
+  width: 280px;
+}
+
+.columns {
+  border-collapse: collapse;
+  width: 100%;
+
+  th {
+    text-align: left;
+    font-weight: 500;
+    padding: 0 4px;
+  }
+
+  td {
+    padding: 0 2px;
+  }
+
+  .type {
+    width: 130px;
+  }
+}
+
+.preview {
+  margin: 12px 0 0;
+  padding: 8px;
+  max-height: 180px;
+  overflow: auto;
+  background: var(--mat-sys-surface-container);
+  font-size: 12px;
+}

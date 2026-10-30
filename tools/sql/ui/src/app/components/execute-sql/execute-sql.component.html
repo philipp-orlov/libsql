@@ -1,0 +1,71 @@
+<div class="execute">
+  <mat-tab-group class="editors" animationDuration="0ms" mat-stretch-tabs="false" mat-align-tabs="start" [selectedIndex]="selected()" (selectedIndexChange)="selected.set($event)">
+    @for (editor of editors(); track editor.id) {
+      <mat-tab>
+        <ng-template mat-tab-label>
+          <span class="tab-title">{{ editor.title }}</span>
+          <button mat-icon-button class="close-tab" (click)="closeEditor(editor.id); $event.stopPropagation()" aria-label="Close tab">
+            <mat-icon>close</mat-icon>
+          </button>
+        </ng-template>
+
+        <div class="editor">
+          <div class="actions tab-bar">
+            <button mat-button class="run" (click)="run(editor, box)" [disabled]="editor.running" matTooltip="Execute all, or the selection (Ctrl+Enter)">
+              <mat-icon>play_arrow</mat-icon>
+              Execute
+            </button>
+            <button mat-button class="open-file" (click)="file.click()" matTooltip="Load an SQL file into this tab">
+              <mat-icon>folder_open</mat-icon>
+              Open SQL file
+            </button>
+            <input #file type="file" accept=".sql,.txt,text/plain" hidden (change)="openFile(editor, file)" />
+            <button mat-button class="save-file" (click)="saveFile(editor)" [disabled]="editor.sql === ''">
+              <mat-icon>save_alt</mat-icon>
+              Save SQL file
+            </button>
+            <button mat-button class="export" (click)="exportCsv(editor)" [disabled]="!editor.result || editor.result.columns.length === 0">
+              <mat-icon>download</mat-icon>
+              Save as CSV
+            </button>
+          </div>
+
+          <app-sql-editor
+            #box
+            class="sql"
+            [value]="editor.sql"
+            (valueChange)="setSql(editor.id, $event)"
+            [schema]="db.schema()"
+            [functions]="db.info()?.functions ?? []"
+            (run)="run(editor, box)"
+          />
+
+          <div class="results">
+            @if (editor.result; as result) {
+              @if (result.columns.length > 0) {
+                <app-data-grid class="grid" [data]="rowsOf(result)" [columns]="columnsOf(result)" [filterable]="true" [rowNumbers]="true">
+                  <ng-template gridCell let-value let-text="text">
+                    @switch (kindOf(value)) {
+                      @case ('null') {
+                        <span class="placeholder">NULL</span>
+                      }
+                      @case ('blob') {
+                        <span class="placeholder">{{ text }}</span>
+                      }
+                      @default {
+                        <span class="value" [title]="text">{{ text }}</span>
+                      }
+                    }
+                  </ng-template>
+                </app-data-grid>
+              }
+            }
+          </div>
+
+          <pre class="message" [class.failed]="editor.failed">{{ editor.message }}</pre>
+        </div>
+      </mat-tab>
+    }
+  </mat-tab-group>
+  <button mat-icon-button class="add-tab" (click)="addEditor()" matTooltip="Open a new tab" aria-label="Open a new tab"><mat-icon>add</mat-icon></button>
+</div>

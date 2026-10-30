@@ -1,0 +1,66 @@
+:host {
+  display: block;
+  height: 100%;
+}
+
+.viewport {
+  height: 100%;
+  min-height: 160px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  height: 20px;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.offset {
+  width: 70px;
+  flex: none;
+  padding-right: 10px;
+  text-align: right;
+  color: var(--mat-sys-outline);
+}
+
+.hex {
+  display: flex;
+  flex: none;
+  padding-right: 14px;
+}
+
+.byte {
+  width: 22px;
+  text-align: center;
+  cursor: pointer;
+  border-radius: 2px;
+  // regions are painted light so that the digits stay readable
+  background-blend-mode: normal;
+
+  &.gap {
+    margin-right: 8px;
+  }
+
+  &:hover {
+    outline: 1px solid var(--mat-sys-primary);
+  }
+}
+
+.ascii {
+  display: flex;
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.char {
+  width: 8px;
+  text-align: center;
+}
+
+.hl {
+  outline: 2px solid var(--mat-sys-primary);
+  outline-offset: -1px;
+  background: var(--mat-sys-primary-container) !important;
+  color: var(--mat-sys-on-primary-container);
+}

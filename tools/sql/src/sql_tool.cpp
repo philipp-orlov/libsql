@@ -1,0 +1,611 @@
+// Copyright (c) 2026 Philipp Orlov
+// SPDX-License-Identifier: Apache-2.0
+
+// sql -- command line front end for a libsql database.
+//
+//   sql <database> [-c SQL] [-f FILE] [options]
+//
+// With no -c and no -f it reads statements from stdin, which makes it both a
+// prompt to poke at a database with and a pipe to feed a schema through.
+// With --listen it serves a browser front end for the database instead.
+
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#ifdef _WIN32
+#include <io.h>
+#define SQL_ISATTY _isatty(_fileno(stdin))
+#else
+#include <unistd.h>
+#define SQL_ISATTY isatty(fileno(stdin))
+#endif
+
+#include "sql/sql.hpp"
+
+#ifdef SQL_TOOL_WEB
+#include "web_server.hpp"
+#endif
+
+namespace {
+
+using namespace sql;
+
+constexpr const char* kUsage =
+    "sql -- libsql command line\n"
+    "\n"
+    "usage:\n"
+    "  sql <database> [options]\n"
+    "  sql ws://host:port/path [options]     a database served by another program\n"
+    "  sql unix:///path/to.sock [options]    the same, on this machine, through shared memory\n"
+    "\n"
+    "options:\n"
+    "  -c SQL        run SQL, then exit; may be repeated\n"
+    "  -f FILE       run the statements in FILE; may be repeated\n"
+    "  -i            keep reading stdin after any -c or -f\n"
+    "  --mode M      output as table (default), csv or list\n"
+    "  --no-header   leave the column names out\n"
+    "  --readonly    open an existing database and refuse to write to it\n"
+    "  --listen PORT serve a web interface on PORT, after any -c or -f\n"
+    "  --host ADDR   with --listen, bind to ADDR (default 127.0.0.1; use --token when it is not loopback)\n"
+    "  --public DIR  with --listen, serve the files of DIR instead of the built-in page\n"
+    "  --token T     with --listen, the WebSocket route (/api/v1/ws/sql) needs T; with a ws:// URL, the\n"
+    "                token to present\n"
+    "  --auth VALUE  with a ws:// URL, sent as the Authorization header (\"Bearer abc\")\n"
+    "  --unix PATH   with --listen, also serve the database to local programs on this Unix socket (sql unix://PATH)\n"
+    "  --reports DIR with --listen, keep report definitions (one JSON file each) in DIR (default: <database>.reports)\n"
+    "  --ws-path P   with --listen, the WebSocket route (default /api/v1/ws/sql; the page looks for that one)\n"
+    "  --tls-cert F  with --listen, serve https and wss with this certificate (PEM); needs --tls-key\n"
+    "  --tls-key F   the private key (PEM) of --tls-cert\n"
+    "  --ca FILE     with a wss:// URL, trust the certificates in FILE (PEM) instead of the system's\n"
+    "  --insecure    with a wss:// URL, accept any certificate (testing only)\n"
+    "  -h, --help    this text\n"
+    "\n"
+    "dot commands, when reading statements from stdin:\n"
+    "  .tables               names of the tables\n"
+    "  .schema [TABLE]       the CREATE statements, as they were written\n"
+    "  .dump [TABLE]         a script that rebuilds the schema and the rows\n"
+    "  .indexes [TABLE]      indexes, with the columns they cover\n"
+    "  .mode table|csv|list  change the output format\n"
+    "  .headers on|off       show or hide the column names\n"
+    "  .help                 this text\n"
+    "  .quit                 leave\n"
+    "\n"
+    "exit status: 0 ok, 1 bad usage, 2 statement or store error\n";
+
+constexpr int kOk = 0;
+constexpr int kUsageError = 1;
+constexpr int kStatementError = 2;
+
+enum class Mode
+{
+    Table,
+    Csv,
+    List,
+};
+
+struct Settings
+{
+    Mode mode = Mode::Table;
+    bool headers = true;
+};
+
+// ------------------------------------------------------------- printing ---
+
+std::string cell(const Value& v, Mode mode)
+{
+    if (v.isNull())
+        return mode == Mode::Table ? "NULL" : "";
+    return v.toText();
+}
+
+std::string csvField(const std::string& s)
+{
+    if (s.find_first_of(",\"\n\r") == std::string::npos)
+        return s;
+    std::string out = "\"";
+    for (const char c : s) {
+        if (c == '"')
+            out += "\"\"";
+        else
+            out += c;
+    }
+    return out + "\"";
+}
+
+void printSeparated(const Result& r, const Settings& settings, char sep, bool quote)
+{
+    auto emit = [&](const std::string& s) { return quote ? csvField(s) : s; };
+    if (settings.headers) {
+        for (std::size_t i = 0; i < r.columns().size(); ++i) {
+            if (i)
+                std::putchar(sep);
+            std::fputs(emit(r.columns()[i]).c_str(), stdout);
+        }
+        std::putchar('\n');
+    }
+    for (const Row& row : r) {
+        for (std::size_t i = 0; i < row.size(); ++i) {
+            if (i)
+                std::putchar(sep);
+            std::fputs(emit(cell(row[i], settings.mode)).c_str(), stdout);
+        }
+        std::putchar('\n');
+    }
+}
+
+void printTable(const Result& r, const Settings& settings)
+{
+    const std::size_t columns = r.columns().size();
+    std::vector<std::size_t> width(columns, 0);
+    for (std::size_t i = 0; i < columns; ++i)
+        width[i] = settings.headers ? r.columns()[i].size() : 0;
+
+    std::vector<std::vector<std::string>> text;
+    text.reserve(r.size());
+    for (const Row& row : r) {
+        std::vector<std::string> line;
+        line.reserve(columns);
+        for (std::size_t i = 0; i < columns && i < row.size(); ++i) {
+            line.push_back(cell(row[i], settings.mode));
+            width[i] = std::max(width[i], line.back().size());
+        }
+        text.push_back(std::move(line));
+    }
+
+    auto rule = [&] {
+        std::putchar('+');
+        for (std::size_t i = 0; i < columns; ++i) {
+            for (std::size_t k = 0; k < width[i] + 2; ++k)
+                std::putchar('-');
+            std::putchar('+');
+        }
+        std::putchar('\n');
+    };
+    auto line = [&](const std::vector<std::string>& fields) {
+        std::putchar('|');
+        for (std::size_t i = 0; i < columns; ++i) {
+            const std::string& s = i < fields.size() ? fields[i] : std::string();
+            std::printf(" %-*s |", int(width[i]), s.c_str());
+        }
+        std::putchar('\n');
+    };
+
+    if (columns == 0)
+        return;
+    rule();
+    if (settings.headers) {
+        line(r.columns());
+        rule();
+    }
+    for (const auto& row : text)
+        line(row);
+    rule();
+}
+
+void report(const Result& r, const Settings& settings)
+{
+    if (!r.columns().empty()) {
+        switch (settings.mode) {
+            case Mode::Table: printTable(r, settings); break;
+            case Mode::Csv: printSeparated(r, settings, ',', true); break;
+            case Mode::List: printSeparated(r, settings, '|', false); break;
+        }
+        std::printf("%zu row%s\n", r.size(), r.size() == 1 ? "" : "s");
+    } else if (r.changes() != 0) {
+        std::printf("%llu row%s changed\n", (unsigned long long)r.changes(),
+                    r.changes() == 1 ? "" : "s");
+    }
+}
+
+// -------------------------------------------------------- dot commands ----
+
+std::string quoteName(const std::string& name)
+{
+    std::string out = "\"";
+    for (const char c : name) {
+        if (c == '"')
+            out += '"';
+        out += c;
+    }
+    return out + "\"";
+}
+
+/// Runs `text`, binding `name` to ?1 when the text uses it.
+Result query(Database& db, const char* text, const std::string& name)
+{
+    Statement s = db.prepare(text);
+    if (s.parameters() > 0)
+        s.bind(1, Value(name));
+    return s.exec();
+}
+
+/// The CREATE statements exactly as they were written, in creation order.
+void printSchema(Database& db, const std::string& only)
+{
+    const Result r = only.empty()
+        ? query(db, "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL", only)
+        : query(db, "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL AND tbl_name = ?1 COLLATE NOCASE",
+                only);
+    for (const Row& row : r)
+        std::printf("%s;\n", row[0].toText().c_str());
+}
+
+/// Writes a script that rebuilds the database: tables and their rows first,
+/// then indexes, views and triggers, all inside one transaction.
+void dump(Database& db, const std::string& only)
+{
+    std::printf("BEGIN TRANSACTION;\n");
+    const char* tablesSql = only.empty()
+        ? "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND sql IS NOT NULL"
+        : "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND sql IS NOT NULL AND name = ?1 "
+          "COLLATE NOCASE";
+    for (const Row& table : query(db, tablesSql, only)) {
+        const std::string name = table[0].toText();
+        std::printf("%s;\n", table[1].toText().c_str());
+        const TableInfo info = db.table(name);
+        std::string columns, values;
+        for (const ColumnInfo& c : info.columns) {
+            if (c.generated)
+                continue;
+            if (!columns.empty()) {
+                columns += ',';
+                values += "||','||";
+            }
+            columns += quoteName(c.name);
+            values += "quote(" + quoteName(c.name) + ")";
+        }
+        if (columns.empty())
+            continue;
+        const std::string prefix = "INSERT INTO " + quoteName(name) + "(" + columns + ") VALUES(";
+        const Result rows = db.exec("SELECT " + values + " FROM " + quoteName(name));
+        for (const Row& row : rows)
+            std::printf("%s%s);\n", prefix.c_str(), row[0].toText().c_str());
+    }
+    const char* restSql = only.empty()
+        ? "SELECT sql FROM sqlite_schema WHERE type <> 'table' AND sql IS NOT NULL"
+        : "SELECT sql FROM sqlite_schema WHERE type <> 'table' AND sql IS NOT NULL AND tbl_name = ?1 "
+          "COLLATE NOCASE";
+    for (const Row& row : query(db, restSql, only))
+        std::printf("%s;\n", row[0].toText().c_str());
+    std::printf("COMMIT;\n");
+}
+
+/// Returns false when the command asked to quit.
+bool dotCommand(Database& db, Settings& settings, std::string_view line)
+{
+    std::vector<std::string> words;
+    for (std::size_t i = 0; i < line.size();) {
+        while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i])))
+            ++i;
+        const std::size_t start = i;
+        while (i < line.size() && !std::isspace(static_cast<unsigned char>(line[i])))
+            ++i;
+        if (i > start)
+            words.emplace_back(line.substr(start, i - start));
+    }
+    if (words.empty())
+        return true;
+
+    const std::string& command = words[0];
+    const std::string argument = words.size() > 1 ? words[1] : std::string();
+
+    if (command == ".quit" || command == ".exit")
+        return false;
+    if (command == ".help") {
+        std::fputs(kUsage, stdout);
+    } else if (command == ".tables") {
+        for (const std::string& name : db.tables())
+            std::printf("%s\n", name.c_str());
+    } else if (command == ".schema") {
+        printSchema(db, argument);
+    } else if (command == ".dump") {
+        dump(db, argument);
+    } else if (command == ".indexes") {
+        for (const IndexInfo& ix : db.indexes(argument)) {
+            std::printf("%s on %s (", ix.name.c_str(), ix.table.c_str());
+            for (std::size_t i = 0; i < ix.columns.size(); ++i)
+                std::printf("%s%s", i ? ", " : "", ix.columns[i].c_str());
+            std::printf(")%s\n", ix.unique ? " unique" : "");
+        }
+    } else if (command == ".mode") {
+        if (argument == "table")
+            settings.mode = Mode::Table;
+        else if (argument == "csv")
+            settings.mode = Mode::Csv;
+        else if (argument == "list")
+            settings.mode = Mode::List;
+        else
+            std::fprintf(stderr, "sql: .mode wants table, csv or list\n");
+    } else if (command == ".headers") {
+        settings.headers = argument != "off";
+    } else {
+        std::fprintf(stderr, "sql: unknown command '%s'; try .help\n", command.c_str());
+    }
+    return true;
+}
+
+// --------------------------------------------------------------- input ----
+
+bool blank(std::string_view text)
+{
+    for (const char c : text) {
+        if (!std::isspace(static_cast<unsigned char>(c)))
+            return false;
+    }
+    return true;
+}
+
+/// Runs one batch and prints whatever it produced. Returns false on error.
+bool run(Database& db, const Settings& settings, const std::string& text)
+{
+    try {
+        report(db.exec(text), settings);
+        return true;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "sql: %s\n", e.what());
+        return false;
+    }
+}
+
+bool readAll(const char* path, std::string& out)
+{
+    std::FILE* f = std::fopen(path, "rb");
+    if (!f)
+        return false;
+    char buffer[8192];
+    std::size_t n;
+    while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0)
+        out.append(buffer, n);
+    std::fclose(f);
+    return true;
+}
+
+int prompt(Database& db, Settings& settings)
+{
+    const bool tty = SQL_ISATTY != 0;
+    std::string pending;
+    char line[4096];
+
+    if (tty)
+        std::printf("libsql %s -- .help for commands, .quit to leave\n", version());
+    for (;;) {
+        if (tty) {
+            std::printf("%s ", pending.empty() ? "sql>" : "...>");
+            std::fflush(stdout);
+        }
+        if (!std::fgets(line, sizeof line, stdin))
+            break;
+
+        if (pending.empty() && line[0] == '.') {
+            try {
+                if (!dotCommand(db, settings, line))
+                    break;
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "sql: %s\n", e.what());
+            }
+            continue;
+        }
+        pending += line;
+        if (!sql::complete(pending))
+            continue;
+        if (!blank(pending))
+            run(db, settings, pending);
+        pending.clear();
+    }
+    if (!blank(pending))
+        run(db, settings, pending);
+    return kOk;
+}
+
+#ifdef SQL_TOOL_WEB
+volatile std::sig_atomic_t stopRequested = 0;
+
+void requestStop(int)
+{
+    stopRequested = 1;
+}
+
+int serve(Database& db, sqlweb::WebOptions options)
+{
+    try {
+        sqlweb::WebServer server(db, options);
+        std::signal(SIGINT, requestStop);
+        std::signal(SIGTERM, requestStop);
+        // Said once the sockets are bound: scripts wait for this line before they connect.
+        server.run([] { return stopRequested != 0; }, [&] {
+            std::printf("sql: serving %s on %s://%s:%u/ (Ctrl-C to stop)\n", db.path().string().c_str(),
+                        options.tlsCertificate.empty() ? "http" : "https", options.host.c_str(), unsigned(options.port));
+            if (options.token.empty() && options.host != "127.0.0.1" && options.host != "localhost" && options.host != "::1")
+                std::printf(
+                    "sql: warning: no --token is set; anyone who can reach this address can change the data\n");
+            std::fflush(stdout);
+        });
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "sql: %s\n", e.what());
+        return kStatementError;
+    }
+    return kOk;
+}
+#endif
+
+}  // namespace
+
+int main(int argc, char** argv)
+{
+    Settings settings;
+    std::string path;
+    std::vector<std::string> batches;
+    bool interactive = false;
+    bool readOnly = false;
+    bool modeGiven = false;
+    int listenPort = 0;
+    std::string host = "127.0.0.1";
+    std::string publicDir;
+    std::string token, authorization, socketPath = "/api/v1/ws/sql", unixSocket, reportsDir;
+    std::string tlsCertificate, tlsKey, caFile;
+    bool insecure = false;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        auto value = [&](const char* flag) -> const char* {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "sql: %s needs a value\n", flag);
+                std::exit(kUsageError);
+            }
+            return argv[++i];
+        };
+
+        if (arg == "-h" || arg == "--help") {
+            std::fputs(kUsage, stdout);
+            return kOk;
+        } else if (arg == "-c") {
+            batches.emplace_back(value("-c"));
+        } else if (arg == "-f") {
+            const char* file = value("-f");
+            std::string text;
+            if (!readAll(file, text)) {
+                std::fprintf(stderr, "sql: cannot read %s\n", file);
+                return kUsageError;
+            }
+            batches.push_back(std::move(text));
+        } else if (arg == "-i") {
+            interactive = true;
+        } else if (arg == "--mode") {
+            const std::string_view mode = value("--mode");
+            modeGiven = true;
+            if (mode == "table")
+                settings.mode = Mode::Table;
+            else if (mode == "csv")
+                settings.mode = Mode::Csv;
+            else if (mode == "list")
+                settings.mode = Mode::List;
+            else {
+                std::fprintf(stderr, "sql: --mode wants table, csv or list\n");
+                return kUsageError;
+            }
+        } else if (arg == "--no-header") {
+            settings.headers = false;
+        } else if (arg == "--readonly") {
+            readOnly = true;
+        } else if (arg == "--listen") {
+            const std::string_view text = value("--listen");
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), listenPort);
+            if (parsed.ec != std::errc() || parsed.ptr != text.data() + text.size() ||
+                listenPort < 1 || listenPort > 65535) {
+                std::fprintf(stderr, "sql: --listen wants a port from 1 to 65535\n");
+                return kUsageError;
+            }
+        } else if (arg == "--host") {
+            host = value("--host");
+        } else if (arg == "--public") {
+            publicDir = value("--public");
+        } else if (arg == "--token") {
+            token = value("--token");
+        } else if (arg == "--auth") {
+            authorization = value("--auth");
+        } else if (arg == "--ws-path") {
+            socketPath = value("--ws-path");
+        } else if (arg == "--unix") {
+            unixSocket = value("--unix");
+        } else if (arg == "--reports") {
+            reportsDir = value("--reports");
+#ifdef SQL_TOOL_WEB
+            if (!sqlweb::hasReports()) {
+                std::fprintf(stderr, "sql: this build has no report features (SQL_WITH_REPORTS is off)\n");
+                return kUsageError;
+            }
+#endif
+        } else if (arg == "--tls-cert") {
+            tlsCertificate = value("--tls-cert");
+        } else if (arg == "--tls-key") {
+            tlsKey = value("--tls-key");
+        } else if (arg == "--ca") {
+            caFile = value("--ca");
+        } else if (arg == "--insecure") {
+            insecure = true;
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::fprintf(stderr, "sql: unknown option: %s\n\n", argv[i]);
+            std::fputs(kUsage, stderr);
+            return kUsageError;
+        } else if (path.empty()) {
+            path = arg;
+        } else {
+            std::fprintf(stderr, "sql: unexpected argument: %s\n", argv[i]);
+            return kUsageError;
+        }
+    }
+
+    if (path.empty()) {
+        std::fputs(kUsage, stderr);
+        return kUsageError;
+    }
+#ifndef SQL_TOOL_WEB
+    if (listenPort != 0) {
+        std::fprintf(stderr, "sql: this build has no web interface\n");
+        return kUsageError;
+    }
+#endif
+    // Piped batches default to something a script can parse.
+    if (!modeGiven && !batches.empty())
+        settings.mode = Mode::List;
+
+    if (tlsCertificate.empty() != tlsKey.empty()) {
+        std::fprintf(stderr, "sql: --tls-cert and --tls-key go together\n");
+        return kUsageError;
+    }
+    const bool remote = path.rfind("ws://", 0) == 0 || path.rfind("wss://", 0) == 0 || path.rfind("unix://", 0) == 0;
+    if (remote && listenPort != 0) {
+        std::fprintf(stderr, "sql: --listen serves a database file; %s is a remote database\n", path.c_str());
+        return kUsageError;
+    }
+    Database db;
+    try {
+        if (remote) {
+            RemoteOptions options;
+            options.readOnly(readOnly).token(token).authorization(authorization).caFile(caFile).insecureSkipVerify(insecure);
+            db = Database::connect(path, options);
+        } else {
+            db = Database::configure().readOnly(readOnly).createIfMissing(!readOnly).open(path);
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "sql: %s\n", e.what());
+        return kStatementError;
+    }
+
+    int status = kOk;
+    for (const std::string& batch : batches) {
+        if (!run(db, settings, batch))
+            status = kStatementError;
+    }
+#ifdef SQL_TOOL_WEB
+    if (listenPort != 0) {
+        sqlweb::WebOptions options;
+        options.host = host;
+        options.port = static_cast<std::uint16_t>(listenPort);
+        options.readOnly = readOnly;
+        options.socketPath = socketPath;
+        options.unixSocket = unixSocket;
+        options.reportsDir = reportsDir;
+        options.tlsCertificate = tlsCertificate;
+        options.tlsKey = tlsKey;
+        options.token = token;
+        if (!publicDir.empty()) {
+            options.publicDir = publicDir;
+            options.publicDirOverridden = true;
+        }
+        const int served = serve(db, std::move(options));
+        return served != kOk ? served : status;
+    }
+#endif
+    if (batches.empty() || interactive)
+        prompt(db, settings);
+    return status;
+}

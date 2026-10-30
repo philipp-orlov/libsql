@@ -1,0 +1,86 @@
+// https://material.angular.io/guide/theming
+
+@use '@angular/material' as mat;
+@use 'fonts';
+
+html {
+  // follows the browser's setting unless the theme button in the toolbar chose one
+  color-scheme: light dark;
+  @include mat.theme(
+    (
+      color: mat.$azure-palette,
+      typography: Roboto,
+      // Denser than -1 hides the label of a form field.
+      density: -1,
+    )
+  );
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: Roboto, 'Helvetica Neue', sans-serif;
+  font-size: 14px;
+  background: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+}
+
+// Raw SQL, cell text and table definitions.
+.mono {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+.notice-error {
+  --mat-snack-bar-button-color: var(--mat-sys-on-error);
+  --mat-snack-bar-container-color: var(--mat-sys-error);
+  --mat-snack-bar-supporting-text-color: var(--mat-sys-on-error);
+}
+
+// The command bar at the top of every tab: one height, one border, whatever it holds.
+.tab-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  box-sizing: border-box;
+  gap: 4px;
+  height: 48px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+  background: var(--mat-sys-surface);
+
+  .spacer {
+    flex: 1;
+  }
+
+  mat-form-field {
+    --mat-form-field-container-height: 36px;
+    --mat-form-field-container-vertical-padding: 6px;
+    --mat-form-field-container-text-size: 13px;
+    --mat-select-trigger-text-size: 13px;
+  }
+}
+
+// The text of a NULL or BLOB cell, which is not data.
+.placeholder {
+  color: var(--mat-sys-outline);
+  font-style: italic;
+}
+
+// The dropdown, autocomplete and date panels of the report editors (overlays: outside any component's styles).
+.report-panel {
+  --mat-option-label-text-size: 13px;
+  --mat-option-label-text-line-height: 18px;
+  --mat-option-label-text-tracking: 0;
+}

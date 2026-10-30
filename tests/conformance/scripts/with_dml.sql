@@ -1,0 +1,13 @@
+-- A WITH clause in front of INSERT, UPDATE and DELETE.
+CREATE TABLE t (a, b);
+INSERT INTO t VALUES (1, 'x'), (2, 'y'), (3, 'z');
+WITH c AS (SELECT 2 x) DELETE FROM t WHERE a IN (SELECT x FROM c);
+WITH c AS (SELECT 3 x) UPDATE t SET a = a * 10 WHERE a IN (SELECT x FROM c);
+WITH c(x) AS (VALUES (7)) INSERT INTO t (a) SELECT x FROM c;
+WITH c(x) AS (VALUES (8)) INSERT INTO t (a) VALUES ((SELECT x FROM c));
+WITH c(x) AS (VALUES (9)) INSERT INTO t (a) WITH c(x) AS (VALUES (10)) SELECT x FROM c;
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) INSERT INTO t (a, b) SELECT i * 100, 'r' FROM n;
+WITH c(v) AS (VALUES (5)) UPDATE t SET a = (SELECT v FROM c), b = 'u' WHERE a = 1;
+WITH c(v) AS (SELECT max(a) FROM t) DELETE FROM t WHERE a = (SELECT v FROM c) RETURNING a;
+WITH d(k) AS (VALUES ('r')) UPDATE t SET b = 'q' FROM d WHERE t.b = d.k;
+SELECT a, b FROM t ORDER BY a;

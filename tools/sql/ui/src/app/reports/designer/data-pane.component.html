@@ -1,0 +1,35 @@
+<div class="pane">
+  @for (d of datasets(); track d.name) {
+    <section class="dataset">
+      <button class="head" (click)="toggle(d.name)" [attr.aria-expanded]="!collapsed()[d.name]">
+        <mat-icon>{{ collapsed()[d.name] ? 'chevron_right' : 'expand_more' }}</mat-icon>
+        <mat-icon class="db">table_rows</mat-icon>
+        <span class="name">{{ d.name }}</span>
+        <span class="count">{{ d.fields.length || '' }}</span>
+      </button>
+      @if (!collapsed()[d.name]) {
+        @for (f of d.fields; track f.name) {
+          <div class="field" [class]="f.kind" draggable="true" (dragstart)="drag($event, d.name, f)" [title]="label[f.kind] + ' — drag it onto a chart or a table'">
+            <mat-icon>{{ icon[f.kind] }}</mat-icon>
+            <span>{{ f.name }}</span>
+          </div>
+        } @empty {
+          <p class="hint">{{ d.sampled ? 'No columns.' : 'Run the queries to see its fields.' }}</p>
+        }
+      }
+    </section>
+  } @empty {
+    <p class="hint">Add a dataset on the Datasets tab: its fields appear here.</p>
+  }
+
+  @if (parameters().length) {
+    <h4>Parameters</h4>
+    @for (p of parameters(); track p.name) {
+      <div class="field param" draggable="true" (dragstart)="dragParam($event, p.name)" title="Drag it into a text to show its value">
+        <mat-icon>tune</mat-icon>
+        <span>{{ p.label || p.name }}</span>
+      </div>
+    }
+  }
+  <p class="tip">Drag a <b>field</b> onto a chart's shelves or a table's columns, or into a text.</p>
+</div>

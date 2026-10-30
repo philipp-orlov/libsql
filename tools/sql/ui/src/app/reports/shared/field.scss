@@ -1,0 +1,17 @@
+// The Material form fields of the report editors, made compact: the app's theme asks for density -1, these ask for a little more.
+:host {
+  display: inline-block;
+}
+
+.field {
+  --mat-form-field-container-height: 38px;
+  --mat-form-field-container-vertical-padding: 8px;
+  --mat-form-field-outlined-label-text-size: 13px;
+  --mat-select-trigger-text-size: 13px;
+  --mat-form-field-container-text-size: 13px;
+  width: 100%;
+}
+
+.mono {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+}

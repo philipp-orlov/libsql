@@ -1,0 +1,116 @@
+<div class="explorer">
+  @if (tree(); as t) {
+    <div class="bar">
+      <div class="heading">
+        <mat-icon>{{ t.kind === 'index' ? 'sort' : t.kind === 'table' ? 'table_rows' : 'account_tree' }}</mat-icon>
+        <span class="name">{{ title() }}</span>
+        @if (t.kind === 'index' && t.parent) {
+          <span class="muted">index on {{ t.parent }}</span>
+        }
+        <span class="muted">· depth {{ t.depth }} · {{ t.entries }} entries · {{ t.branchPages }} branch / {{ t.leafPages }} leaf @if (t.overflowPages) { / {{ t.overflowPages }} overflow } pages</span>
+      </div>
+      <span class="spacer"></span>
+      <button mat-button (click)="expandLevel()" matTooltip="Open one more level everywhere"><mat-icon>unfold_more</mat-icon>Expand a level</button>
+      <button mat-button (click)="collapseAll()" matTooltip="Close everything but the root"><mat-icon>unfold_less</mat-icon>Collapse</button>
+      @if (view() === 'diagram') {
+        <button mat-button (click)="fit.set(!fit())" [matTooltip]="fit() ? 'Show the boxes at their real size' : 'Scale the diagram to the width of the pane'">
+          <mat-icon>{{ fit() ? 'zoom_in' : 'fit_screen' }}</mat-icon>{{ fit() ? 'Real size' : 'Fit' }}
+        </button>
+      }
+      <mat-button-toggle-group [value]="view()" (change)="view.set($event.value)" hideSingleSelectionIndicator aria-label="How to show the tree">
+        <mat-button-toggle value="list"><mat-icon>account_tree</mat-icon> List</mat-button-toggle>
+        <mat-button-toggle value="diagram"><mat-icon>schema</mat-icon> Diagram</mat-button-toggle>
+      </mat-button-toggle-group>
+    </div>
+    @if (message(); as text) {
+      <div class="message">{{ text }}</div>
+    }
+    @if (t.root === null) {
+      <p class="empty">This tree is empty: it has no pages.</p>
+    } @else if (view() === 'list') {
+      <div class="list" role="tree">
+        <div class="row head">
+          <span class="name">Page</span>
+          <span class="sep">Filed under</span>
+          <span class="fill">Full</span>
+          <span class="entries">Entries below</span>
+        </div>
+        @for (row of rows(); track trackRow($index, row)) {
+          <div
+            class="row"
+            role="treeitem"
+            [class.selected]="row.node.pgno === store.selectedPage()"
+            [class.bad]="row.node.summary && (!row.node.summary.hashOk || !row.node.summary.headerOk)"
+            [attr.data-kind]="kindOf(row.node)"
+            (click)="select(row.node)"
+            (dblclick)="toggle(row.node)"
+          >
+            <span class="name" [style.padding-left.px]="row.node.level * 22">
+              @if (kindOf(row.node) === 'branch') {
+                <button class="toggle" (click)="toggle(row.node, $event)" [attr.aria-label]="row.expanded ? 'Close' : 'Open'">
+                  <mat-icon>{{ row.node.loading ? 'hourglass_empty' : row.expanded ? 'expand_more' : 'chevron_right' }}</mat-icon>
+                </button>
+              } @else {
+                <span class="toggle"></span>
+              }
+              <span class="dot" [style.background]="colors[row.node.summary?.kind ?? 'unknown']"></span>
+              <span class="page mono">{{ row.node.pgno }}</span>
+              <span class="kind">{{ row.node.summary ? labels[row.node.summary.kind] : '…' }}</span>
+              @if (row.node.summary && (!row.node.summary.hashOk || !row.node.summary.headerOk)) {
+                <mat-icon class="warn" matTooltip="The page's hash or header is wrong">gpp_bad</mat-icon>
+              }
+            </span>
+            <span class="sep mono" [title]="row.node.separator">{{ row.node.separator }}</span>
+            <span class="fill">
+              @if (row.node.summary) {
+                <span class="meter" [matTooltip]="row.node.summary.usedBytes + ' of ' + row.node.summary.pageSize + ' bytes used, ' + row.node.summary.nkeys + ' keys'"
+                  ><span class="meter-fill" [class.low]="fill(row.node) < 40" [style.width.%]="fill(row.node)"></span></span
+                ><span class="pct">{{ fill(row.node) }}%</span>
+              }
+            </span>
+            <span class="entries">
+              <span class="share"><span class="share-fill" [style.width.%]="share(row.node)"></span></span>
+              <span class="mono">{{ row.node.count }}</span>
+            </span>
+          </div>
+        }
+      </div>
+    } @else {
+      <div class="diagram-wrap" #wrap>
+        <svg
+          class="diagram"
+          [attr.viewBox]="'0 0 ' + diagram().width + ' ' + diagram().height"
+          [style.width]="fit() ? '100%' : diagram().width + 'px'"
+          [style.height]="fit() ? 'auto' : diagram().height + 'px'"
+          role="img" aria-label="Diagram of the opened pages of the tree">
+          @for (edge of diagram().edges; track edge.to) {
+            <path class="edge" [attr.d]="'M' + edge.x1 + ',' + edge.y1 + ' C' + edge.x1 + ',' + (edge.y1 + 26) + ' ' + edge.x2 + ',' + (edge.y2 - 26) + ' ' + edge.x2 + ',' + edge.y2" />
+          }
+          @for (box of diagram().boxes; track trackBox($index, box)) {
+            <g
+              class="box"
+              [class.selected]="box.node.pgno === store.selectedPage()"
+              [attr.transform]="'translate(' + box.x + ',' + box.y + ')'"
+              (click)="select(box.node)"
+              (dblclick)="toggle(box.node)"
+            >
+              <title>page {{ box.node.pgno }} · {{ box.node.summary ? labels[box.node.summary.kind] : '' }} · {{ box.node.count }} entries · {{ fill(box.node) }}% full</title>
+              <rect class="frame" [attr.width]="boxW" [attr.height]="boxH" rx="6" [attr.fill]="colors[box.node.summary?.kind ?? 'unknown']" fill-opacity="0.16" [attr.stroke]="colors[box.node.summary?.kind ?? 'unknown']" />
+              <rect class="level" x="4" [attr.y]="boxH - 9" [attr.width]="(boxW - 8) * boxFill(box.node)" height="5" rx="2" [attr.fill]="colors[box.node.summary?.kind ?? 'unknown']" />
+              <text class="pg" [attr.x]="boxW / 2" y="17" text-anchor="middle">{{ box.node.pgno }}</text>
+              <text class="cnt" [attr.x]="boxW / 2" y="31" text-anchor="middle">{{ box.node.count }}</text>
+              @if (kindOf(box.node) === 'branch') {
+                <text class="plus" [attr.x]="boxW - 7" y="12" text-anchor="middle">{{ expanded().has(box.node.pgno) ? '−' : '+' }}</text>
+              }
+            </g>
+          }
+        </svg>
+      </div>
+    }
+  } @else {
+    <div class="pick">
+      <mat-icon>account_tree</mat-icon>
+      <p>Pick a table, an index or one of the store's own trees on the left to open its pages.</p>
+    </div>
+  }
+</div>

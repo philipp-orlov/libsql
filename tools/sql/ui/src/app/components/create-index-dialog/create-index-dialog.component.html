@@ -1,0 +1,35 @@
+<h2 mat-dialog-title>Create Index</h2>
+<mat-dialog-content class="content">
+  <div class="header">
+    <mat-form-field>
+      <mat-label>Index name</mat-label>
+      <input matInput #indexName [value]="name()" (input)="name.set(indexName.value)" />
+    </mat-form-field>
+    <mat-form-field>
+      <mat-label>On table</mat-label>
+      <mat-select [value]="table()" (selectionChange)="selectTable($event.value)">
+        @for (candidate of data.tables; track candidate.name) {
+          <mat-option [value]="candidate.name">{{ candidate.name }}</mat-option>
+        }
+      </mat-select>
+    </mat-form-field>
+    <mat-checkbox [checked]="unique()" (change)="unique.set($event.checked)">Unique</mat-checkbox>
+  </div>
+
+  <div class="columns">
+    @for (column of columns(); track column.name; let i = $index) {
+      <div class="column">
+        <mat-checkbox class="use" [checked]="column.used" (change)="update(i, { used: $event.checked })">{{ column.name }}</mat-checkbox>
+        <mat-checkbox class="desc" [checked]="column.descending" [disabled]="!column.used" (change)="update(i, { descending: $event.checked })">
+          Descending
+        </mat-checkbox>
+      </div>
+    }
+  </div>
+
+  <pre class="preview mono">{{ sql() }}</pre>
+</mat-dialog-content>
+<mat-dialog-actions align="end">
+  <button mat-button mat-dialog-close>Cancel</button>
+  <button mat-flat-button class="ok" [mat-dialog-close]="sql()" [disabled]="!valid()">OK</button>
+</mat-dialog-actions>

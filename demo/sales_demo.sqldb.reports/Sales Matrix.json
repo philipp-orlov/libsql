@@ -1,0 +1,174 @@
+{
+  "format": 1,
+  "name": "Sales Matrix",
+  "title": "Sales Matrix",
+  "description": "Cross-tab tables with color scales, in the manner of Tableau's highlight tables. Click a column heading to sort the rows by it; click a cell to drill down.",
+  "page": {
+    "size": "A4",
+    "orientation": "landscape",
+    "margins": {
+      "top": 40,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "year",
+      "label": "Year",
+      "type": "integer",
+      "default": 2026,
+      "required": true,
+      "optionsSql": "SELECT DISTINCT year FROM sales ORDER BY 1 DESC"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "catq",
+      "sql": "SELECT category, quarter, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY category, quarter ORDER BY category, quarter"
+    },
+    {
+      "name": "geo",
+      "sql": "SELECT region, country, quarter, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY region, country, quarter ORDER BY region, country, quarter"
+    },
+    {
+      "name": "margin",
+      "sql": "SELECT segment, category, round(100.0 * (sum(revenue) - sum(cost)) / sum(revenue), 1) AS margin FROM sales WHERE year = :year GROUP BY segment, category ORDER BY segment, category"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 8,
+        "color": "#6b7280"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Aurelia Systems · fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#6b7280",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "columns",
+      "gap": 8,
+      "columns": [
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "image",
+              "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij48cG9seWdvbiBwb2ludHM9IjMyLDMgNTgsMTggNTgsNDYgMzIsNjEgNiw0NiA2LDE4IiBmaWxsPSIjMGQ0N2ExIi8+PHBhdGggZD0iTTE0IDQ0bDEzLTE4IDggMTAgNS03IDEwIDE1eiIgZmlsbD0iI2ZmZmZmZiIvPjxwYXRoIGQ9Ik0xNCA0NGwxMy0xOCA4IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjhjMDAiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=",
+              "width": 34
+            }
+          ]
+        },
+        {
+          "width": 14,
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=20][b][color=#8e24aa]Sales Matrix {{year}}[/color][/b][/size]\n[size=9][color=#6b7280]Cross-tabs: one field across the top, one or two down the side, one number in the cells[/color][/size]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "rule"
+    },
+    {
+      "type": "spacer",
+      "height": 4
+    },
+    {
+      "type": "matrix",
+      "dataset": "catq",
+      "rows": [
+        "category"
+      ],
+      "column": "quarter",
+      "value": "revenue",
+      "title": "Revenue by category and quarter  (click a cell for the category's products)",
+      "format": "$#,##0",
+      "heat": "blue",
+      "rowTotals": true,
+      "columnTotals": true,
+      "corner": "Category",
+      "sortRows": "total",
+      "drill": {
+        "report": "Product Performance",
+        "params": {
+          "category": "{{category}}",
+          "year": "{{year}}"
+        }
+      }
+    },
+    {
+      "type": "spacer",
+      "height": 6
+    },
+    {
+      "type": "matrix",
+      "dataset": "margin",
+      "rows": [
+        "segment"
+      ],
+      "column": "category",
+      "value": "margin",
+      "agg": "avg",
+      "title": "Gross margin % by customer segment and category  (diverging: below and above the middle of the range)",
+      "format": "0.0",
+      "heat": "diverging",
+      "rowTotals": false,
+      "corner": "Segment"
+    },
+    {
+      "type": "spacer",
+      "height": 6
+    },
+    {
+      "type": "matrix",
+      "dataset": "geo",
+      "rows": [
+        "region",
+        "country"
+      ],
+      "column": "quarter",
+      "value": "revenue",
+      "title": "Revenue by region, country and quarter  (two row fields, with subtotals)",
+      "format": "$#,##0",
+      "heat": "orange",
+      "rowTotals": true,
+      "columnTotals": true,
+      "subtotals": true,
+      "corner": "Region / country",
+      "sortRows": "total",
+      "drill": {
+        "report": "Region Snapshot",
+        "params": {
+          "region": "{{region}}",
+          "year": "{{year}}"
+        }
+      }
+    }
+  ]
+}

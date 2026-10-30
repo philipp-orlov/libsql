@@ -1,0 +1,133 @@
+{
+  "format": 1,
+  "name": "Category Card",
+  "title": "Category Card",
+  "description": "One product category: its picture (read from the database), figures and best sellers.",
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": {
+      "top": 40,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "year",
+      "label": "Year",
+      "type": "integer",
+      "default": 2026,
+      "required": true,
+      "optionsSql": "SELECT DISTINCT year FROM sales ORDER BY 1 DESC"
+    },
+    {
+      "name": "category",
+      "label": "Category",
+      "type": "text",
+      "default": "Compute",
+      "required": true,
+      "optionsSql": "SELECT name FROM categories ORDER BY 1"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "cat",
+      "sql": "SELECT c.name, c.tagline, c.icon, c.color, coalesce(round(sum(s.revenue)), 0) AS revenue, coalesce(sum(s.quantity), 0) AS units, count(DISTINCT s.customer_id) AS customers, coalesce(round(100.0 * (sum(s.revenue) - sum(s.cost)) / sum(s.revenue), 1), 0) AS margin FROM categories c LEFT JOIN sales s ON s.category = c.name AND s.year = :year WHERE c.name = :category GROUP BY c.name"
+    },
+    {
+      "name": "products",
+      "sql": "SELECT product, sum(quantity) AS units, round(sum(revenue)) AS revenue FROM sales WHERE year = :year AND category = :category GROUP BY product_id ORDER BY revenue DESC LIMIT 5"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 8,
+        "color": "#6b7280"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Aurelia Systems · fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#6b7280",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "columns",
+      "gap": 10,
+      "columns": [
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#4e79a7",
+          "items": [
+            {
+              "type": "image",
+              "src": "{{First(icon)}}",
+              "dataset": "cat",
+              "width": 64,
+              "align": "center"
+            }
+          ]
+        },
+        {
+          "width": 5,
+          "card": true,
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=16][b]{{First(name)}}[/b][/size]  [size=9][color=#6b7280]{{year}}[/color][/size]\n[color=#6b7280]{{First(tagline)}}[/color]\n[size=9]Revenue [b]{{Format(First(revenue), \"$#,##0\")}}[/b]     Units [b]{{Format(First(units), \"#,##0\")}}[/b]     Customers [b]{{First(customers)}}[/b]     Margin [b]{{First(margin)}}%[/b][/size]",
+              "dataset": "cat"
+            }
+          ]
+        },
+        {
+          "width": 5,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "bar",
+              "horizontal": true,
+              "labels": true,
+              "dataset": "products",
+              "category": "product",
+              "title": "Best sellers",
+              "height": 112,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "revenue",
+                  "label": "Revenue",
+                  "color": "#4e79a7"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "spacer",
+      "height": 6
+    }
+  ]
+}

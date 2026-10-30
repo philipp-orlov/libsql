@@ -1,0 +1,321 @@
+{
+  "format": 1,
+  "name": "Region Snapshot",
+  "title": "Region Snapshot",
+  "description": "One region in a year: figures, trend, mix by category and country, and its best customers. Click a category row for its products, a customer for the statement.",
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": {
+      "top": 40,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "year",
+      "label": "Year",
+      "type": "integer",
+      "default": 2026,
+      "required": true,
+      "optionsSql": "SELECT DISTINCT year FROM sales ORDER BY 1 DESC"
+    },
+    {
+      "name": "region",
+      "label": "Region",
+      "type": "text",
+      "default": "Europe",
+      "required": true,
+      "optionsSql": "SELECT DISTINCT region FROM customers ORDER BY 1"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "kpi",
+      "sql": "SELECT round(sum(CASE WHEN year = :year THEN revenue END)) AS revenue, round(sum(CASE WHEN year = :year - 1 AND substr(month, 6, 2) <= (SELECT max(substr(month, 6, 2)) FROM sales WHERE year = :year) THEN revenue END)) AS prev_revenue, count(DISTINCT CASE WHEN year = :year THEN order_id END) AS orders, count(DISTINCT CASE WHEN year = :year THEN customer_id END) AS customers, round(100.0 * sum(CASE WHEN year = :year THEN revenue - cost END) / sum(CASE WHEN year = :year THEN revenue END), 1) AS margin, count(DISTINCT CASE WHEN year = :year THEN country END) AS countries FROM sales WHERE region = :region AND year IN (:year, :year - 1)"
+    },
+    {
+      "name": "monthly",
+      "sql": "SELECT month, round(sum(revenue)) AS revenue FROM sales WHERE year = :year AND region = :region GROUP BY month ORDER BY month"
+    },
+    {
+      "name": "cats",
+      "sql": "SELECT category, round(sum(revenue)) AS revenue FROM sales WHERE year = :year AND region = :region GROUP BY category ORDER BY revenue DESC"
+    },
+    {
+      "name": "countries",
+      "sql": "SELECT country, round(sum(revenue)) AS revenue FROM sales WHERE year = :year AND region = :region GROUP BY country ORDER BY revenue DESC LIMIT 8"
+    },
+    {
+      "name": "catq",
+      "sql": "SELECT category, quarter, round(sum(revenue)) AS revenue FROM sales WHERE year = :year AND region = :region GROUP BY category, quarter ORDER BY category, quarter"
+    },
+    {
+      "name": "top",
+      "sql": "SELECT customer_id, customer, country, segment, count(DISTINCT order_id) AS orders, round(sum(revenue)) AS revenue FROM sales WHERE year = :year AND region = :region GROUP BY customer_id ORDER BY revenue DESC LIMIT 8"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 8,
+        "color": "#6b7280"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Aurelia Systems · fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#6b7280",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "columns",
+      "gap": 8,
+      "columns": [
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "image",
+              "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij48cG9seWdvbiBwb2ludHM9IjMyLDMgNTgsMTggNTgsNDYgMzIsNjEgNiw0NiA2LDE4IiBmaWxsPSIjMGQ0N2ExIi8+PHBhdGggZD0iTTE0IDQ0bDEzLTE4IDggMTAgNS03IDEwIDE1eiIgZmlsbD0iI2ZmZmZmZiIvPjxwYXRoIGQ9Ik0xNCA0NGwxMy0xOCA4IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjhjMDAiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=",
+              "width": 34
+            }
+          ]
+        },
+        {
+          "width": 14,
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=20][b][color=#1976d2]{{region}}[/color][/b][/size]\n[size=9][color=#6b7280]Regional snapshot  ·  {{year}}  ·  {{First(countries)}} countries[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "rule"
+    },
+    {
+      "type": "spacer",
+      "height": 4
+    },
+    {
+      "type": "columns",
+      "gap": 10,
+      "columns": [
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#1976d2",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]REVENUE[/color][/size]\n[size=16][b]{{Format(First(revenue), \"$#,##0\")}}[/b][/size]\n[size=8][color=#6b7280]{{Iif(First(prev_revenue) > 0, Iif(First(revenue) >= First(prev_revenue), \"▲ \", \"▼ \") + Format(Abs(First(revenue) / First(prev_revenue) - 1), \"0.0%\") + \" vs last year\", \"\")}}[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#fb8c00",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]ORDERS[/color][/size]\n[size=16][b]{{Format(First(orders), \"#,##0\")}}[/b][/size]\n[size=8][color=#6b7280]in {{year}}[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#43a047",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]CUSTOMERS[/color][/size]\n[size=16][b]{{First(customers)}}[/b][/size]\n[size=8][color=#6b7280]who bought[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#00897b",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]GROSS MARGIN[/color][/size]\n[size=16][b]{{First(margin)}}%[/b][/size]\n[size=8][color=#6b7280]of revenue[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "spacer",
+      "height": 8
+    },
+    {
+      "type": "chart",
+      "chart": "area",
+      "dataset": "monthly",
+      "category": "month",
+      "title": "Revenue by month",
+      "height": 150,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#1976d2"
+        }
+      ]
+    },
+    {
+      "type": "columns",
+      "gap": 12,
+      "columns": [
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "pie",
+              "donut": true,
+              "dataset": "cats",
+              "category": "category",
+              "title": "By category",
+              "height": 175,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "revenue",
+                  "label": "Revenue"
+                }
+              ],
+              "drill": {
+                "report": "Product Performance",
+                "params": {
+                  "category": "{{category}}",
+                  "year": "{{year}}"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "bar",
+              "horizontal": true,
+              "labels": true,
+              "dataset": "countries",
+              "category": "country",
+              "title": "By country",
+              "height": 175,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "revenue",
+                  "label": "Revenue",
+                  "color": "#00897b"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "matrix",
+      "dataset": "catq",
+      "rows": [
+        "category"
+      ],
+      "column": "quarter",
+      "value": "revenue",
+      "title": "Revenue by category and quarter",
+      "format": "$#,##0",
+      "heat": "blue",
+      "rowTotals": true,
+      "columnTotals": true,
+      "corner": "Category",
+      "sortRows": "total",
+      "drill": {
+        "report": "Product Performance",
+        "params": {
+          "category": "{{category}}",
+          "year": "{{year}}"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "dataset": "top",
+      "zebra": true,
+      "columns": [
+        {
+          "field": "customer",
+          "header": "Best customers",
+          "width": 3.2
+        },
+        {
+          "field": "country",
+          "header": "Country",
+          "width": 1.5
+        },
+        {
+          "field": "segment",
+          "header": "Segment",
+          "width": 1.3
+        },
+        {
+          "field": "orders",
+          "header": "Orders",
+          "width": 0.7
+        },
+        {
+          "field": "revenue",
+          "header": "Revenue",
+          "format": "$#,##0",
+          "width": 1.2
+        }
+      ],
+      "drill": {
+        "report": "Customer Statement",
+        "params": {
+          "customer": "{{customer_id}}"
+        }
+      }
+    }
+  ]
+}

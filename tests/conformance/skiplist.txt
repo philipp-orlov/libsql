@@ -1,0 +1,3 @@
+# Initial conformance skip list.
+# Format:
+#   <file-glob-or-path>[:<line>] <reason>

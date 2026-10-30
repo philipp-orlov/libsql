@@ -1,0 +1,127 @@
+<div class="browse">
+  <div class="toolbar tab-bar">
+    <span class="label">Table:</span>
+    <mat-form-field class="table-select" appearance="outline" subscriptSizing="dynamic">
+      <mat-select [value]="table()" (selectionChange)="selectTable($event.value)" placeholder="Select a table" aria-label="Table">
+        @for (name of tableNames(); track name) {
+          <mat-option [value]="name">{{ name }}</mat-option>
+        }
+      </mat-select>
+    </mat-form-field>
+    <button mat-icon-button class="refresh" (click)="load()" matTooltip="Refresh" aria-label="Refresh"><mat-icon>refresh</mat-icon></button>
+    <span class="divider"></span>
+    <button mat-button class="new-record" (click)="addRecord()" [disabled]="!editable()">
+      <mat-icon>add</mat-icon>
+      New Record
+    </button>
+    <button mat-button class="delete-record" (click)="deleteRecords()" [disabled]="!editable() || selectedRows().size === 0">
+      <mat-icon>delete</mat-icon>
+      Delete Record
+    </button>
+    <button mat-button class="set-null" (click)="setNull()" [disabled]="!editable() || !activeCell()" matTooltip="Set the selected cell to NULL">
+      Set as NULL
+    </button>
+    <span class="spacer"></span>
+    <button mat-button class="export" (click)="exportCsv()" [disabled]="!page() || exporting()" matTooltip="Save the rows that match the filter as CSV">
+      <mat-icon>table_view</mat-icon>
+      CSV
+    </button>
+    @if (reports.available() !== false) {
+      <button mat-button class="export-pdf" (click)="exportReport('pdf')" [disabled]="!page() || exporting()" matTooltip="Save the rows that match the filter as a PDF">
+        <mat-icon>picture_as_pdf</mat-icon>
+        PDF
+      </button>
+      <button mat-button class="export-xlsx" (click)="exportReport('xlsx')" [disabled]="!page() || exporting()" matTooltip="Save the rows that match the filter as an Excel workbook">
+        <mat-icon>grid_on</mat-icon>
+        Excel
+      </button>
+      <button mat-button class="export-docx" (click)="exportReport('docx')" [disabled]="!page() || exporting()" matTooltip="Save the rows that match the filter as a Word document">
+        <mat-icon>description</mat-icon>
+        Word
+      </button>
+    }
+    <button mat-button class="toggle-panel" (click)="panelOpen.set(!panelOpen())" [class.on]="panelOpen()" matTooltip="Show the value of the selected cell in full">
+      <mat-icon>edit_note</mat-icon>
+      Edit Cell
+    </button>
+  </div>
+
+  <div class="body">
+    @if (page(); as current) {
+      <app-data-grid
+        class="grid-area"
+        mode="server"
+        selectable="multiple"
+        [data]="current.rows"
+        [columns]="gridColumns()"
+        [total]="current.total"
+        [skip]="current.offset"
+        [filterable]="true"
+        [rowNumbers]="true"
+        [pageable]="true"
+        [pageSizes]="pageSizes"
+        [(sort)]="sort"
+        [(group)]="group"
+        [(filter)]="filters"
+        [(pageIndex)]="pageIndex"
+        [(pageSize)]="pageSize"
+        [(selection)]="selectedRows"
+        [(activeCell)]="activeCell"
+        (stateChange)="load()"
+        (cellDblClick)="startEdit($event.index, $event.column.field)"
+      >
+        <ng-template gridCell let-value let-index="index" let-column="column" let-text="text">
+          @if (isEditing(index, column.field)) {
+            <input
+              matInput
+              appAutofocus
+              class="cell-input"
+              #box
+              [value]="editing()!.text"
+              (input)="editText(box.value)"
+              (keydown.enter)="commitEdit()"
+              (keydown.escape)="cancelEdit()"
+              (blur)="commitEdit()"
+            />
+          } @else {
+            @switch (kindOf(value)) {
+              @case ('null') {
+                <span class="placeholder">NULL</span>
+              }
+              @case ('blob') {
+                <span class="placeholder">{{ text }}</span>
+              }
+              @default {
+                <span class="value" [title]="text">{{ text }}</span>
+              }
+            }
+          }
+        </ng-template>
+      </app-data-grid>
+    } @else {
+      <p class="hint grid-area">Select a table or view to browse its data.</p>
+    }
+
+    @if (panelOpen()) {
+      <aside class="panel">
+        <h3>Edit Cell</h3>
+        @if (activeColumn(); as column) {
+          <p class="meta">
+            <span class="mono">{{ page()?.table }}.{{ column.name }}</span>
+            <span>{{ cellKind(activeValue()!) }}, {{ cellText(activeValue()!).length }} characters</span>
+          </p>
+          <textarea matInput class="mono panel-text" [value]="panelText()" [readOnly]="!panelEditable()" (input)="panelText.set(panelBox.value)" #panelBox spellcheck="false"></textarea>
+          <div class="panel-actions">
+            <button mat-flat-button class="apply" (click)="applyPanel()" [disabled]="!panelEditable() || !panelChanged()">Apply</button>
+            <button mat-button class="reset" (click)="panelText.set(cellEditText(activeValue()!))" [disabled]="!panelChanged()">Revert</button>
+          </div>
+          @if (!panelEditable()) {
+            <p class="hint">This cell cannot be edited here.</p>
+          }
+        } @else {
+          <p class="hint">Select a cell.</p>
+        }
+      </aside>
+    }
+  </div>
+</div>

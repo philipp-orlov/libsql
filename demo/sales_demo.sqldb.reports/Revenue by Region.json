@@ -1,0 +1,183 @@
+{
+  "format": 1,
+  "name": "Revenue by Region",
+  "title": "Revenue by Region and Country",
+  "description": "Every region with its countries, customers, orders, revenue, share of the region and margin. Click a bar or a country to open its region.",
+  "page": {
+    "size": "A4",
+    "orientation": "portrait",
+    "margins": {
+      "top": 40,
+      "right": 36,
+      "bottom": 40,
+      "left": 36
+    }
+  },
+  "parameters": [
+    {
+      "name": "year",
+      "label": "Year",
+      "type": "integer",
+      "default": 2026,
+      "required": true,
+      "optionsSql": "SELECT DISTINCT year FROM sales ORDER BY 1 DESC"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "regions",
+      "sql": "SELECT region, round(sum(revenue)) AS revenue, round(sum(revenue) - sum(cost)) AS profit FROM sales WHERE year = :year GROUP BY region ORDER BY revenue DESC"
+    },
+    {
+      "name": "countries",
+      "sql": "SELECT region, country, count(DISTINCT customer_id) AS customers, count(DISTINCT order_id) AS orders, round(sum(revenue)) AS revenue, round(sum(cost)) AS cost FROM sales WHERE year = :year GROUP BY country ORDER BY region, revenue DESC"
+    }
+  ],
+  "header": [
+    {
+      "type": "text",
+      "text": "{{ReportName}}",
+      "style": {
+        "face": "bold",
+        "size": 8,
+        "color": "#6b7280"
+      }
+    },
+    {
+      "type": "rule"
+    }
+  ],
+  "footer": [
+    {
+      "type": "rule"
+    },
+    {
+      "type": "text",
+      "text": "Aurelia Systems · fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "style": {
+        "size": 8,
+        "color": "#6b7280",
+        "align": "right"
+      }
+    }
+  ],
+  "body": [
+    {
+      "type": "columns",
+      "gap": 8,
+      "columns": [
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "image",
+              "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij48cG9seWdvbiBwb2ludHM9IjMyLDMgNTgsMTggNTgsNDYgMzIsNjEgNiw0NiA2LDE4IiBmaWxsPSIjMGQ0N2ExIi8+PHBhdGggZD0iTTE0IDQ0bDEzLTE4IDggMTAgNS03IDEwIDE1eiIgZmlsbD0iI2ZmZmZmZiIvPjxwYXRoIGQ9Ik0xNCA0NGwxMy0xOCA4IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjhjMDAiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=",
+              "width": 34
+            }
+          ]
+        },
+        {
+          "width": 14,
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=20][b][color=#00897b]Revenue by Region[/color][/b][/size]\n[size=9][color=#6b7280]{{year}}  ·  {{Count()}} countries  ·  total {{Format(Sum(revenue), \"$#,##0\")}}[/color][/size]",
+              "dataset": "countries"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "rule"
+    },
+    {
+      "type": "spacer",
+      "height": 6
+    },
+    {
+      "type": "chart",
+      "chart": "bar",
+      "dataset": "regions",
+      "category": "region",
+      "title": "Revenue and gross profit by region",
+      "height": 200,
+      "format": "$#,##0",
+      "series": [
+        {
+          "field": "revenue",
+          "label": "Revenue",
+          "color": "#00897b"
+        },
+        {
+          "field": "profit",
+          "label": "Gross profit",
+          "color": "#fb8c00"
+        }
+      ],
+      "drill": {
+        "report": "Region Snapshot",
+        "params": {
+          "region": "{{region}}",
+          "year": "{{year}}"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "dataset": "countries",
+      "zebra": true,
+      "grandTotal": true,
+      "groups": [
+        {
+          "field": "region",
+          "header": "{{region}}   ·   {{Format(Sum(revenue), \"$#,##0\")}}",
+          "subtotals": true
+        }
+      ],
+      "columns": [
+        {
+          "field": "country",
+          "header": "Country",
+          "width": 2.2
+        },
+        {
+          "field": "customers",
+          "header": "Customers",
+          "total": "sum"
+        },
+        {
+          "field": "orders",
+          "header": "Orders",
+          "total": "sum",
+          "format": "#,##0"
+        },
+        {
+          "field": "revenue",
+          "header": "Revenue",
+          "format": "$#,##0",
+          "total": "sum",
+          "width": 1.4
+        },
+        {
+          "expression": "revenue / Sum(revenue)",
+          "header": "Share of region",
+          "format": "0.0%"
+        },
+        {
+          "expression": "(revenue - cost) / revenue",
+          "header": "Margin",
+          "format": "0.0%"
+        }
+      ],
+      "drill": {
+        "report": "Region Snapshot",
+        "params": {
+          "region": "{{region}}",
+          "year": "{{year}}"
+        }
+      }
+    }
+  ]
+}

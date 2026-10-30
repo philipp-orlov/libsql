@@ -1,0 +1,36 @@
+.content {
+  min-width: 520px;
+}
+
+.columns {
+  border-collapse: collapse;
+  width: 100%;
+
+  th {
+    text-align: left;
+    font-weight: 500;
+    padding: 0 4px;
+  }
+
+  td {
+    padding: 0 2px;
+  }
+
+  .type {
+    width: 150px;
+  }
+
+  .removed .existing-name {
+    text-decoration: line-through;
+  }
+}
+
+.preview {
+  margin: 12px 0 0;
+  padding: 8px;
+  min-height: 1.5em;
+  max-height: 160px;
+  overflow: auto;
+  background: var(--mat-sys-surface-container);
+  font-size: 12px;
+}

@@ -1,0 +1,33 @@
+<div class="map">
+  <div class="legend">
+    @for (kind of kinds; track kind) {
+      @if (store.totals()[kind] > 0) {
+        <span class="chip">
+          <span class="swatch" [class.hatched]="kind === 'free'" [style.background]="colors[kind]"></span>
+          {{ labels[kind] }}
+          <span class="count">{{ store.totals()[kind] }} · {{ percent(kind) }}</span>
+        </span>
+      }
+    }
+    <span class="spacer"></span>
+    <label class="zoom">
+      <mat-icon>zoom_in</mat-icon>
+      <mat-slider min="4" max="28" step="1" discrete="false">
+        <input matSliderThumb [value]="cell()" (valueChange)="setCell($event)" aria-label="Size of a page square" />
+      </mat-slider>
+    </label>
+  </div>
+  <div class="canvas-wrap" #wrap (mouseleave)="hover.set(null)">
+    <canvas #canvas (mousemove)="onMove($event)" (click)="onClick($event)" aria-label="Map of the pages of the file"></canvas>
+    @if (hover(); as tip) {
+      <div class="tip" [style.left.px]="tip.x" [style.top.px]="tip.y">
+        @for (line of tip.text; track $index) {
+          <div [class.title]="$index === 0">{{ line }}</div>
+        }
+      </div>
+    }
+  </div>
+  @if (cells().per > 1) {
+    <p class="note">One square stands for {{ cells().per }} pages. Pick a tree on the left to see where its pages are, or open a page by number.</p>
+  }
+</div>

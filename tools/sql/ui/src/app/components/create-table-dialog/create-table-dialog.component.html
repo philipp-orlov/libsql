@@ -1,0 +1,65 @@
+<h2 mat-dialog-title>Create Table</h2>
+<mat-dialog-content class="content">
+  <div class="header">
+    <mat-form-field class="name">
+      <mat-label>Table name</mat-label>
+      <input matInput #tableName [value]="name()" (input)="name.set(tableName.value)" />
+    </mat-form-field>
+    <mat-checkbox [checked]="withoutRowid()" (change)="withoutRowid.set($event.checked)">Without rowid</mat-checkbox>
+    <mat-checkbox [checked]="strict()" (change)="strict.set($event.checked)">Strict</mat-checkbox>
+  </div>
+
+  <table class="columns">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Type</th>
+        <th title="Not null">NN</th>
+        <th title="Primary key">PK</th>
+        <th title="Autoincrement">AI</th>
+        <th title="Unique">U</th>
+        <th>Default</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      @for (column of columns(); track $index; let i = $index) {
+        <tr>
+          <td>
+            <mat-form-field subscriptSizing="dynamic">
+              <input matInput class="column-name" #columnName [value]="column.name" (input)="update(i, { name: columnName.value })" />
+            </mat-form-field>
+          </td>
+          <td class="type">
+            <mat-form-field subscriptSizing="dynamic">
+              <mat-select [value]="column.type" (selectionChange)="update(i, { type: $event.value })">
+                @for (type of types; track type) {
+                  <mat-option [value]="type">{{ type }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+          </td>
+          <td><mat-checkbox [checked]="column.notNull" (change)="update(i, { notNull: $event.checked })" /></td>
+          <td><mat-checkbox [checked]="column.primaryKey" (change)="update(i, { primaryKey: $event.checked })" /></td>
+          <td><mat-checkbox [checked]="column.autoIncrement" (change)="update(i, { autoIncrement: $event.checked })" /></td>
+          <td><mat-checkbox [checked]="column.unique" (change)="update(i, { unique: $event.checked })" /></td>
+          <td>
+            <mat-form-field subscriptSizing="dynamic">
+              <input matInput #defaultValue [value]="column.defaultValue" (input)="update(i, { defaultValue: defaultValue.value })" />
+            </mat-form-field>
+          </td>
+          <td>
+            <button mat-icon-button class="remove" (click)="remove(i)" aria-label="Remove column"><mat-icon>delete</mat-icon></button>
+          </td>
+        </tr>
+      }
+    </tbody>
+  </table>
+  <button mat-button class="add" (click)="add()"><mat-icon>add</mat-icon> Add column</button>
+
+  <pre class="preview mono">{{ sql() }}</pre>
+</mat-dialog-content>
+<mat-dialog-actions align="end">
+  <button mat-button mat-dialog-close>Cancel</button>
+  <button mat-flat-button class="ok" [mat-dialog-close]="sql()" [disabled]="!valid()">OK</button>
+</mat-dialog-actions>

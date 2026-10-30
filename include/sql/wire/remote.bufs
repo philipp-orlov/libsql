@@ -1,0 +1,96 @@
+/// libsql remote databases: the service a sql::remote::SqlSocket serves and Database::connect speaks, carried by
+/// librpc (WebSocket, or a local socket with shared-memory rings). Written as signatures: rpcc makes the request
+/// and response tables (SqlExecRequest, ...) and the C++ and TypeScript stubs from them.
+///
+/// One connection is one session: it owns a database handle, its prepared statements and its transactions, and its
+/// calls run one at a time in the order they were sent (the server serves it with serialPerSession). Rows travel
+/// as sql.wire.ResultSet batches, a stream per statement, flow-controlled by librpc's window; the stream's trailer
+/// says how the statement ended. Cancelling a call interrupts the statement.
+///
+/// Every default here is zero (libbufs stores scalars XOR their default), so a reader that ignores the XOR agrees.
+include "resultset.bufs";
+
+namespace sql.remote;
+
+/// The storage class of a parameter (sql::Type order, as sql.wire.Tag).
+enum ParamType : ubyte { Null, Integer, Real, Datetime, Text, Blob }
+
+/// One bound value. Integer and Datetime use `integer`, Real uses `real`, Text and Blob use `bytes`
+/// (text is UTF-8 or any bytes, as stored).
+table Param {
+    name:string;        // empty: positional
+    type:ParamType = Null;
+    integer:long;
+    real:double;
+    bytes:[ubyte];
+}
+
+table ParamList { list:[Param]; }
+
+/// How rows come back (sql::BufsOptions); every default is zero = the server's default.
+table ResultOptions {
+    max_rows:ulong;
+    batch_rows:uint;
+    batch_bytes:uint;
+    blob_prefix:uint;
+    count_all_rows:bool;
+    no_dictionary:bool;
+    no_narrowing:bool;
+}
+
+enum Catalog : ubyte { Tables, Table, Indexes }
+
+/// Answer to Open.
+table Opened {
+    session:ulong;
+    read_only:bool;
+    server:string;
+}
+
+/// Answer to Prepare.
+table Prepared {
+    parameters:uint;
+    parameter_names:[string];
+    columns:[string];
+    writes:bool;
+}
+
+/// The session handle's counters, as they stand after a call.
+table Counters {
+    changes:long;
+    total_changes:long;
+    last_insert_id:long;
+    in_transaction:bool;
+}
+
+/// The trailer of a statement's stream: how it ended.
+table StatementEnd {
+    changes:ulong;
+    last_insert_id:long;
+    total_changes:long;
+    in_transaction:bool;
+    elapsed_us:ulong;
+    handle_changes:long;
+    handle_last_insert_id:long;
+    // Describe Table
+    sql:string;
+    strict:bool;
+    without_rowid:bool;
+}
+
+rpc_service Sql {
+    /// The first call of a session: gets it a database handle. `hints` bit 0: Managed (see ExecInterceptor).
+    Open(read_only: bool, client: string, hints: uint): Opened;
+    /// Runs text; the rows of the last statement stream back. `txn` runs it inside that transaction (0 = none).
+    Exec(text: string, params: ParamList, txn: uint, options: ResultOptions, hints: uint): stream sql.wire.ResultSet (trailer: "StatementEnd");
+    /// Parses text and keeps it as statement `statement` (chosen by the client).
+    Prepare(statement: uint, text: string): Prepared;
+    ExecPrepared(statement: uint, params: ParamList, txn: uint, options: ResultOptions): stream sql.wire.ResultSet (trailer: "StatementEnd");
+    ClosePrepared(statement: uint): void;
+    Begin(txn: uint, read_only: bool): Counters;
+    Commit(txn: uint): Counters;
+    Rollback(txn: uint): Counters;
+    /// The catalog as rows: Tables, Table(name) or Indexes(table).
+    Describe(what: Catalog, name: string, options: ResultOptions): stream sql.wire.ResultSet (trailer: "StatementEnd");
+    State(): Counters;
+}
