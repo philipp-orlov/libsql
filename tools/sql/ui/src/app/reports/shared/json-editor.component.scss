@@ -1,4 +1,4 @@
-// The colors are dark enough to read on the theme's light surface.
+// Each color has a dark one for the dark theme.
 :host {
   display: block;
 }
@@ -35,10 +35,10 @@
 
 // the spans come from innerHTML, so they carry no encapsulation attribute
 :host ::ng-deep .back {
-  .key { color: var(--json-key, color-mix(in srgb, var(--mat-sys-primary) 65%, #000)); }
-  .str { color: var(--json-str, #14532d); }
-  .num { color: var(--json-num, #7c2d00); }
-  .lit { color: var(--json-lit, #581c87); }
+  .key { color: color-mix(in srgb, var(--mat-sys-primary) light-dark(65%, 70%), light-dark(#000, #fff)); }
+  .str { color: light-dark(#14532d, #86efac); }
+  .num { color: light-dark(#7c2d00, #fdba74); }
+  .lit { color: light-dark(#581c87, #d8b4fe); }
   .punct { color: var(--mat-sys-on-surface-variant); }
 }
 

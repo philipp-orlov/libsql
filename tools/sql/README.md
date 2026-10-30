@@ -196,6 +196,9 @@ build/tools/sql/sql catalog.db --listen 8080
 
 The front end is an Angular and Angular Material application in [ui/](ui/).
 
+It has a light and a dark theme. The button at the right of the toolbar (also on the `/reports` page) chooses light, dark or the browser's own
+setting (the default); the choice is kept in the browser. A report's page is paper and stays white in either theme.
+
 ```
 cd ui
 npm install

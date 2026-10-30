@@ -8,6 +8,7 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
+import { ThemeToggleComponent } from '../../shared/theme/theme-toggle.component';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { WorkspaceService } from '../../services/workspace.service';
@@ -30,6 +31,7 @@ import { VisualizeComponent } from '../visualize/visualize.component';
     MatTabsModule,
     MatToolbarModule,
     MatTooltipModule,
+    ThemeToggleComponent,
     StructureComponent,
     BrowseComponent,
     PragmasComponent,

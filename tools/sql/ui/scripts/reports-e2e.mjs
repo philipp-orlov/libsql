@@ -235,6 +235,22 @@ await click('button.save');
 for (let i = 0; i < 50 && !fs.readFileSync(path.join(reports, 'Sales.json'), 'utf8').includes('Edited in the designer'); i++) await sleep(100);
 assert(fs.readFileSync(path.join(reports, 'Sales.json'), 'utf8').includes('Edited in the designer'), 'the designer did not save the report');
 await shot('designer.png');
+// the theme button: dark for everything but the page, which is paper
+const bg = () => evaluate(`getComputedStyle(document.body).backgroundColor`);
+const lightBg = await bg();
+await click('app-theme-toggle button.theme');
+await until('the theme menu', `document.querySelector('.theme-dark')`);
+await click('.theme-dark');
+await until('the dark theme', `document.documentElement.dataset.theme === 'dark'`);
+assert((await bg()) !== lightBg, 'the dark theme did not change the background');
+assert((await evaluate(`localStorage.getItem('sql.theme')`)) === 'dark', 'the theme was not remembered');
+await click('[role=tab]', 'Layout');
+assert((await evaluate(`getComputedStyle(document.querySelector('app-report-designer .sheet')).backgroundColor`)) === 'rgb(255, 255, 255)', 'the page is not white in the dark theme');
+await shot('designer-dark.png');
+await click('app-theme-toggle button.theme');
+await until('the theme menu', `document.querySelector('.theme-light')`);
+await click('.theme-light');
+await until('the light theme', `document.documentElement.dataset.theme === 'light'`);
 
 // ---- /reports is the runner alone ----------------------------------------------------------------------------------------------
 await send('Page.navigate', { url: `http://127.0.0.1:${port}/reports` });

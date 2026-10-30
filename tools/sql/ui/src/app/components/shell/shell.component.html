@@ -12,6 +12,7 @@
     <mat-icon class="database-icon">storage</mat-icon>
     <span class="path mono" [matTooltip]="db.info()?.path ?? ''">{{ db.info()?.path }}</span>
     <span class="mode" [class.read-only]="readOnly()">{{ readOnly() ? 'read-only' : 'read-write' }}</span>
+    <app-theme-toggle />
   </mat-toolbar>
 
   @if (db.authRequired()) {

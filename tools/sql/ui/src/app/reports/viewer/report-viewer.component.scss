@@ -79,6 +79,8 @@
 .sheet {
   position: relative;
   margin: 0 auto;
+  // the page is paper: white in every theme
+  color-scheme: light;
   background: #fff;
   box-shadow: 0 1px 6px rgb(0 0 0 / 35%);
   line-height: 0;

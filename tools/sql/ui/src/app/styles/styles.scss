@@ -4,7 +4,8 @@
 @use 'fonts';
 
 html {
-  color-scheme: light;
+  // follows the browser's setting unless the theme button in the toolbar chose one
+  color-scheme: light dark;
   @include mat.theme(
     (
       color: mat.$azure-palette,
@@ -13,6 +14,14 @@ html {
       density: -1,
     )
   );
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 html,
