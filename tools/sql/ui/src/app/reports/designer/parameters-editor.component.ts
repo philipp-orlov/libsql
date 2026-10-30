@@ -5,6 +5,9 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 
 import { ParamDef, ParamType, ReportDef } from '../core';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { TextComponent } from '../shared/text.component';
+import { SelectComponent } from '../shared/select.component';
 import { assign, Edit, move, unique } from './editing';
 
 const TYPES: ParamType[] = ['text', 'integer', 'real', 'date', 'boolean'];
@@ -12,7 +15,7 @@ const TYPES: ParamType[] = ['text', 'integer', 'real', 'date', 'boolean'];
 /** The parameters a report asks for before it runs; datasets use them as :name. */
 @Component({
   selector: 'app-parameters-editor',
-  imports: [MatButtonModule, MatIconModule],
+  imports: [MatButtonModule, MatIconModule, SelectComponent, TextComponent, MatCheckboxModule],
   templateUrl: './parameters-editor.component.html',
   styleUrl: './editor.scss',
 })

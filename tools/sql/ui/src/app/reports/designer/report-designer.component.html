@@ -1,15 +1,8 @@
 <div class="designer">
   <div class="bar">
-    <label class="field open-field">Report
-      <select class="open" (change)="open($any($event.target).value)" aria-label="Open report">
-        <option value="" [selected]="!report()">Open…</option>
-        @for (n of names(); track n) {
-          <option [value]="n" [selected]="n === report()?.name">{{ n }}</option>
-        }
-      </select>
-    </label>
+    <app-select class="open" label="Report" [value]="report()?.name ?? ''" [options]="names()" [width]="230" (valueChange)="open($event)" />
     <form class="new" (submit)="$event.preventDefault(); create()">
-      <input placeholder="New report name" [value]="newName()" (input)="newName.set($any($event.target).value)" aria-label="New report name" />
+      <app-text class="new-name" label="New report name" [live]="true" [value]="newName()" (valueChange)="newName.set($event)" />
       <button mat-stroked-button type="submit" class="create" [disabled]="!newName().trim()"><mat-icon>add</mat-icon>New</button>
     </form>
     <span class="spacer"></span>
@@ -20,7 +13,7 @@
         <span class="dirty"><i></i>Unsaved</span>
       }
       <button mat-flat-button class="save" (click)="save()" [disabled]="!dirty() && names().includes(report()!.name)" title="Save (Ctrl+S)"><mat-icon>save</mat-icon>Save</button>
-      <input #copyName class="save-as-name" placeholder="Save as…" (keydown.enter)="saveAs(copyName.value); copyName.value = ''" aria-label="Save as" />
+      <app-text class="save-as-name" label="Save as…" [live]="true" [value]="copyName()" (valueChange)="copyName.set($event)" (keydown.enter)="saveAs(copyName()); copyName.set('')" />
       <button mat-button class="delete" (click)="remove()"><mat-icon>delete</mat-icon>Delete</button>
     }
   </div>
@@ -37,30 +30,17 @@
             <mat-tab label="General">
               <div class="editor">
                 <div class="row">
-                  <label class="field">File name <input [value]="r.name" (change)="setField('name', $any($event.target).value.trim())" /></label>
-                  <label class="field wide">Title <input [value]="r.title ?? ''" (change)="setField('title', $any($event.target).value)" /></label>
+                  <app-text class="field" label="File name" [value]="r.name" (valueChange)="setField('name', $event.trim())" />
+                  <app-text class="field wide" label="Title" [value]="r.title ?? ''" (valueChange)="setField('title', $event)" />
                 </div>
-                <label class="field">Description <textarea rows="2" [value]="r.description ?? ''" (change)="setField('description', $any($event.target).value)"></textarea></label>
+                <app-text class="field" label="Description" [rows]="2" [value]="r.description ?? ''" (valueChange)="setField('description', $event)" />
                 <div class="row">
-                  <label class="field">Paper
-                    <select (change)="setField('page.size', $any($event.target).value)">
-                      @for (s of sizes; track s) {
-                        <option [value]="s" [selected]="r.page.size === s">{{ s }}</option>
-                      }
-                    </select>
-                  </label>
-                  <label class="field">Orientation
-                    <select (change)="setField('page.orientation', $any($event.target).value)">
-                      <option value="portrait" [selected]="r.page.orientation === 'portrait'">Portrait</option>
-                      <option value="landscape" [selected]="r.page.orientation === 'landscape'">Landscape</option>
-                    </select>
-                  </label>
+                  <app-select label="Paper" [value]="r.page.size" [options]="sizes" [width]="130" (valueChange)="setField('page.size', $event)" />
+                  <app-select label="Orientation" [value]="r.page.orientation" [options]="orientations" [width]="150" (valueChange)="setField('page.orientation', $event)" />
                 </div>
                 <div class="row">
                   @for (side of ['top', 'right', 'bottom', 'left']; track side) {
-                    <label class="field">Margin {{ side }} (pt)
-                      <input type="number" min="0" max="200" [value]="$any(r.page.margins)[side]" (change)="setMargin(side, $any($event.target).value)" />
-                    </label>
+                    <app-text class="field" label="Margin {{ side }} (pt)" type="number" [min]="0" [max]="200" [value]="$any(r.page.margins)[side]" (valueChange)="setMargin(side, $event)" />
                   }
                 </div>
                 <p class="hint">The file name is the report's name in the list; the title is what readers see. The page header and footer are on the Layout tab.</p>
@@ -78,7 +58,7 @@
             <mat-tab label="JSON">
               <div class="editor">
                 <p class="hint">The definition as stored. Edit it directly if you like; it applies as soon as it is valid JSON.</p>
-                <textarea class="json mono" spellcheck="false" [value]="json()" (input)="applyJson($any($event.target).value)" aria-label="Report definition"></textarea>
+                <app-text class="json" ariaLabel="Report definition" [rows]="22" [mono]="true" [live]="true" [value]="json()" (valueChange)="applyJson($event)" />
                 @if (jsonError()) {
                   <p class="error" role="alert">{{ jsonError() }}</p>
                 }
@@ -101,27 +81,18 @@
             @if (r.parameters.length) {
               <div class="params" aria-label="Parameters of the preview">
                 @for (p of r.parameters; track p.name) {
-                  <label class="param">
-                    <span>{{ p.label || p.name }}</span>
-                    @if (choicesOf(p.name).length) {
-                      <select [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)">
-                        @if (!p.required) {
-                          <option value="">(any)</option>
-                        }
-                        @for (o of choicesOf(p.name); track o.value) {
-                          <option [value]="o.value" [selected]="form()[p.name] === '' + o.value">{{ o.label ?? o.value }}</option>
-                        }
-                      </select>
-                    } @else if (p.type === 'boolean') {
-                      <input type="checkbox" [checked]="form()[p.name] === 'true'" (change)="setValue(p.name, $any($event.target).checked ? 'true' : '')" />
-                    } @else if (p.type === 'date') {
-                      <input type="date" [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)" />
-                    } @else if (p.type === 'integer' || p.type === 'real') {
-                      <input type="number" [step]="p.type === 'integer' ? 1 : 'any'" [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)" />
-                    } @else {
-                      <input type="text" [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)" />
-                    }
-                  </label>
+                  @if (choicesOf(p.name).length) {
+                    <app-select [label]="p.label || p.name" [value]="form()[p.name]" [options]="choiceOptions(p)" [width]="170" (valueChange)="setValue(p.name, $event)" />
+                  } @else if (p.type === 'boolean') {
+                    <mat-checkbox class="param-check" [checked]="form()[p.name] === 'true'" (change)="setValue(p.name, $event.checked ? 'true' : '')">{{ p.label || p.name }}</mat-checkbox>
+                  } @else if (p.type === 'date') {
+                    <app-date [label]="p.label || p.name" [value]="form()[p.name]" [width]="165" (valueChange)="setValue(p.name, $event)" />
+                  } @else {
+                    <mat-form-field appearance="outline" subscriptSizing="dynamic" class="param-field">
+                      <mat-label>{{ p.label || p.name }}</mat-label>
+                      <input matInput [type]="p.type === 'integer' || p.type === 'real' ? 'number' : 'text'" [attr.step]="p.type === 'integer' ? 1 : p.type === 'real' ? 'any' : null" [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)" />
+                    </mat-form-field>
+                  }
                 }
               </div>
             }

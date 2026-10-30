@@ -9,7 +9,7 @@
   @if (report().datasets[index]; as d) {
     <section class="card">
       <div class="row">
-        <label class="field">Name <input class="mono" [value]="d.name" (change)="rename(index, $any($event.target).value.trim())" /></label>
+        <app-text class="field" label="Name" [mono]="true" [value]="d.name" (valueChange)="rename(index, $event.trim())" />
         <span class="hint">Uses: {{ usedParameters(d.sql).length ? ':' + usedParameters(d.sql).join(', :') : 'no parameters' }}</span>
         <span class="tools">
           <button mat-flat-button class="run" (click)="run(index)" [disabled]="running()"><mat-icon>play_arrow</mat-icon>Run</button>

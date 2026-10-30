@@ -3,6 +3,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, u
 import { MatButtonModule } from '@angular/material/button';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatTabsModule } from '@angular/material/tabs';
 import { MatTooltipModule } from '@angular/material/tooltip';
@@ -38,7 +39,7 @@ type KeyMode = 'auto' | 'hex';
  */
 @Component({
   selector: 'app-page-inspector',
-  imports: [HexDumpComponent, MatButtonModule, MatButtonToggleModule, MatIconModule, MatProgressBarModule, MatTabsModule, MatTooltipModule, ScrollingModule],
+  imports: [MatInputModule, HexDumpComponent, MatButtonModule, MatButtonToggleModule, MatIconModule, MatProgressBarModule, MatTabsModule, MatTooltipModule, ScrollingModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './page-inspector.component.html',
   styleUrl: './page-inspector.component.scss',

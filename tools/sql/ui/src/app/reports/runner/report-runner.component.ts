@@ -3,6 +3,9 @@
 import { Component, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
 
 import { NoticeService } from '../../services/notice.service';
@@ -10,12 +13,14 @@ import { DatabaseService } from '../../services/database.service';
 import { downloadBlob, downloadText } from '../../utils/download';
 import { LayoutResult, ParamDef, ParamOption, paramText, paramValue, ReportDef, tableData, tableToCsv, TableData, Value, ViewState } from '../core';
 import { ReportService, RunResult } from '../report.service';
+import { Choice, SelectComponent } from '../shared/select.component';
+import { DateComponent } from '../shared/date.component';
 import { ReportViewerComponent } from '../viewer/report-viewer.component';
 
 /** Lists the reports, asks for the parameters, runs one, shows it page by page, and exports it as PDF or CSV. */
 @Component({
   selector: 'app-report-runner',
-  imports: [MatButtonModule, MatIconModule, MatMenuModule, ReportViewerComponent],
+  imports: [MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatMenuModule, ReportViewerComponent, SelectComponent, DateComponent],
   templateUrl: './report-runner.component.html',
   styleUrl: './report-runner.component.scss',
 })
@@ -182,6 +187,12 @@ export class ReportRunnerComponent implements OnInit {
 
   protected optionsOf(p: ParamDef): ParamOption[] {
     return this.choices()[p.name] ?? p.options ?? [];
+  }
+
+  /** The choices of a parameter for its dropdown; one that is not required may also be left out. */
+  protected choiceOptions(p: ParamDef): Choice[] {
+    const options = this.optionsOf(p).map(o => ({ value: String(o.value), label: String(o.label ?? o.value) }));
+    return p.required ? options : [{ value: '', label: '(any)' }, ...options];
   }
 
   protected hasChoices(p: ParamDef): boolean {

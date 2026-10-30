@@ -6,6 +6,10 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 
 import { BandItem, BodyItem, ChartItem, ColumnDef, ReportDef, SeriesDef, TableItem } from '../core';
+import { ComboComponent } from '../shared/combo.component';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { TextComponent } from '../shared/text.component';
+import { Choice, SelectComponent } from '../shared/select.component';
 import { ItemPick } from '../viewer/report-viewer.component';
 import { assign, Edit, move, numberOf } from './editing';
 import { FIELD_MIME, FieldDrag, FieldInfo, KIND_ICON } from './fields';
@@ -37,7 +41,7 @@ export const CHART_TYPES: ChartType[] = [
 /** The page header, body and page footer of a report: a list of items, each with a form for its properties. */
 @Component({
   selector: 'app-layout-editor',
-  imports: [MatButtonModule, MatIconModule, NgTemplateOutlet],
+  imports: [MatButtonModule, MatIconModule, NgTemplateOutlet, SelectComponent, ComboComponent, TextComponent, MatCheckboxModule],
   templateUrl: './layout-editor.component.html',
   styleUrl: './editor.scss',
 })
@@ -54,6 +58,11 @@ export class LayoutEditorComponent {
   protected readonly sections: Section[] = ['body', 'header', 'footer'];
   protected readonly titles = SECTION_TITLES;
   protected readonly chartTypes = CHART_TYPES;
+  protected readonly faceOptions: Choice[] = [{ value: 'regular', label: 'Regular' }, { value: 'bold', label: 'Bold' }];
+  protected readonly alignOptions: Choice[] = [{ value: '', label: 'Default' }, { value: 'left', label: 'Left' }, { value: 'center', label: 'Center' }, { value: 'right', label: 'Right' }];
+  protected readonly autoAlignOptions: Choice[] = [{ value: '', label: 'Auto' }, { value: 'left', label: 'Left' }, { value: 'center', label: 'Center' }, { value: 'right', label: 'Right' }];
+  protected readonly orderOptions: Choice[] = [{ value: '', label: 'Ascending' }, { value: 'desc', label: 'Descending' }];
+  protected readonly totalOptions: Choice[] = [{ value: '', label: 'None' }, ...['sum', 'avg', 'min', 'max', 'count'].map(t => ({ value: t, label: t }))];
   protected readonly kindIcon = KIND_ICON;
   protected readonly open = signal<string | null>(null);
   protected readonly over = signal<string | null>(null);

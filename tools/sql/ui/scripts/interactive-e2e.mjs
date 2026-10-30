@@ -80,6 +80,21 @@ const clickText = (selector, text) => ev(`(() => { const e = [...document.queryS
 const count = selector => ev(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
 const tip = () => ev(`(() => { const t = document.querySelector('.tip'); return t && !t.hidden ? t.innerText : ''; })()`);
 
+/** Picks an option of one of the Material dropdowns: opens its panel (again, while the choices are still loading) and clicks the option. */
+async function choose(host, text) {
+  for (let i = 0; i < 60; i++) {
+    await ev(`document.querySelector(${JSON.stringify(host + ' .mat-mdc-select-trigger')})?.click()`);
+    await sleep(150);
+    const hit = await ev(`(() => { const o = [...document.querySelectorAll('mat-option')].find(x => x.textContent.trim() === ${JSON.stringify(text)}); if (!o) return false; o.click(); return true; })()`);
+    if (hit) {
+      await sleep(250);
+      return;
+    }
+    await ev(`document.querySelector('.cdk-overlay-backdrop')?.click()`);
+    await sleep(200);
+  }
+  throw new Error(`no option ${text} in ${host}`);
+}
 async function openReport(title) {
   await until('the list', `[...document.querySelectorAll('.entry .title')].some(e => e.textContent.includes(${JSON.stringify(title)}))`);
   await clickText('.entry', title);
@@ -175,8 +190,8 @@ assert(fs.readdirSync(downloads).some(f => f.endsWith('.pdf')), 'the PDF is expo
 await send('Page.navigate', { url: `http://127.0.0.1:${port}/` });
 await until('the tabs', `[...document.querySelectorAll('[role=tab]')].some(t => t.textContent.includes('Report Designer'))`);
 await clickText('[role=tab]', 'Report Designer');
-await until('the report names', `[...document.querySelectorAll('select.open option')].some(o => o.value === 'Executive Dashboard')`);
-await ev(`(() => { const s = document.querySelector('select.open'); s.value = 'Executive Dashboard'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+await until('the designer', `document.querySelector('app-report-designer app-select.open')`);
+await choose('app-report-designer app-select.open', 'Executive Dashboard');
 await until('the preview', `document.querySelector('app-report-designer .sheet svg .bar')`);
 await sleep(900);
 assert((await count('app-data-pane .field')) > 5, 'the data pane lists the fields of the datasets');

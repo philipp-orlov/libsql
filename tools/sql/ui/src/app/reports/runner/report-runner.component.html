@@ -32,27 +32,18 @@
 
       <form class="params" (submit)="$event.preventDefault(); run()">
         @for (p of report.parameters; track p.name) {
-          <label class="param">
-            <span class="label">{{ p.label || p.name }}@if (p.required) {<b> *</b>}</span>
-            @if (hasChoices(p)) {
-              <select [value]="form()[p.name]" (change)="setValue(p.name, $any($event.target).value)" [attr.aria-label]="p.label || p.name">
-                @if (!p.required) {
-                  <option value="">(any)</option>
-                }
-                @for (o of optionsOf(p); track o.value) {
-                  <option [value]="o.value" [selected]="form()[p.name] === '' + o.value">{{ o.label ?? o.value }}</option>
-                }
-              </select>
-            } @else if (p.type === 'boolean') {
-              <input type="checkbox" [checked]="form()[p.name] === 'true'" (change)="setValue(p.name, $any($event.target).checked ? 'true' : '')" />
-            } @else if (p.type === 'date') {
-              <input type="date" [value]="form()[p.name]" (input)="setValue(p.name, $any($event.target).value)" />
-            } @else if (p.type === 'integer' || p.type === 'real') {
-              <input type="number" [step]="p.type === 'integer' ? 1 : 'any'" [value]="form()[p.name]" (input)="setValue(p.name, $any($event.target).value)" />
-            } @else {
-              <input type="text" [value]="form()[p.name]" (input)="setValue(p.name, $any($event.target).value)" />
-            }
-          </label>
+          @if (hasChoices(p)) {
+            <app-select [label]="(p.label || p.name) + (p.required ? ' *' : '')" [value]="form()[p.name]" [options]="choiceOptions(p)" [width]="200" (valueChange)="setValue(p.name, $event)" />
+          } @else if (p.type === 'boolean') {
+            <mat-checkbox class="param-check" [checked]="form()[p.name] === 'true'" (change)="setValue(p.name, $event.checked ? 'true' : '')">{{ p.label || p.name }}</mat-checkbox>
+          } @else if (p.type === 'date') {
+            <app-date [label]="(p.label || p.name) + (p.required ? ' *' : '')" [value]="form()[p.name]" [width]="180" (valueChange)="setValue(p.name, $event)" />
+          } @else {
+            <mat-form-field appearance="outline" subscriptSizing="dynamic" class="param-field">
+              <mat-label>{{ p.label || p.name }}{{ p.required ? ' *' : '' }}</mat-label>
+              <input matInput [type]="p.type === 'integer' || p.type === 'real' ? 'number' : 'text'" [attr.step]="p.type === 'integer' ? 1 : p.type === 'real' ? 'any' : null" [value]="form()[p.name]" (input)="setValue(p.name, $any($event.target).value)" />
+            </mat-form-field>
+          }
         }
         <span class="buttons">
           <button mat-flat-button type="submit" class="run" [disabled]="running() || !svc.fontsReady()">

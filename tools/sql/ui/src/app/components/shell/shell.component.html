@@ -17,7 +17,7 @@
   @if (db.authRequired()) {
     <form class="token" (ngSubmit)="signIn(token.value)">
       <p>This server asks for a token.</p>
-      <input #token name="token" type="password" autocomplete="off" aria-label="Token" />
+      <mat-form-field appearance="outline" subscriptSizing="dynamic" class="token-field"><mat-label>Token</mat-label><input matInput #token name="token" type="password" autocomplete="off" /></mat-form-field>
       <button mat-flat-button type="submit">Connect</button>
     </form>
   }

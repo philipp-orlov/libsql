@@ -3,17 +3,11 @@
   @for (p of report().parameters; track $index; let i = $index) {
     <section class="card">
       <div class="row">
-        <label class="field">Name <input class="mono" [value]="p.name" (change)="set(i, 'name', $any($event.target).value.trim())" /></label>
-        <label class="field">Label <input [value]="p.label ?? ''" (change)="set(i, 'label', $any($event.target).value)" /></label>
-        <label class="field">Type
-          <select (change)="set(i, 'type', $any($event.target).value)">
-            @for (t of types; track t) {
-              <option [value]="t" [selected]="p.type === t">{{ t }}</option>
-            }
-          </select>
-        </label>
-        <label class="field">Default <input [value]="defaultText(p)" (change)="setDefault(i, $any($event.target).value, p.type)" /></label>
-        <label class="check"><input type="checkbox" [checked]="!!p.required" (change)="set(i, 'required', $any($event.target).checked)" /> Required</label>
+        <app-text class="field" label="Name" [mono]="true" [value]="p.name" (valueChange)="set(i, 'name', $event.trim())" />
+        <app-text class="field" label="Label" [value]="p.label ?? ''" (valueChange)="set(i, 'label', $event)" />
+        <app-select label="Type" [value]="p.type" [options]="types" [width]="120" (valueChange)="set(i, 'type', $event)" />
+        <app-text class="field" label="Default" [value]="defaultText(p)" (valueChange)="setDefault(i, $event, p.type)" />
+        <mat-checkbox class="check" [checked]="!!p.required" (change)="set(i, 'required', $event.checked)">Required</mat-checkbox>
         <span class="tools">
           <button mat-icon-button (click)="shift(i, -1)" [disabled]="i === 0" aria-label="Move up"><mat-icon>arrow_upward</mat-icon></button>
           <button mat-icon-button (click)="shift(i, 1)" [disabled]="i === report().parameters.length - 1" aria-label="Move down"><mat-icon>arrow_downward</mat-icon></button>
@@ -21,12 +15,8 @@
         </span>
       </div>
       <div class="row">
-        <label class="field wide">Choices, one per line (<code>value</code> or <code>value=Label</code>)
-          <textarea rows="3" [value]="optionsText(p)" (change)="setOptions(i, $any($event.target).value)"></textarea>
-        </label>
-        <label class="field wide">Or choices from a query (first column the value, second the label)
-          <textarea rows="3" class="mono" [value]="p.optionsSql ?? ''" (change)="set(i, 'optionsSql', $any($event.target).value)"></textarea>
-        </label>
+        <app-text class="field wide" label="Choices (value or value=Label per line)" [rows]="3" [value]="optionsText(p)" (valueChange)="setOptions(i, $event)" />
+        <app-text class="field wide" label="Or choices from a query (value, label)" [rows]="3" [mono]="true" [value]="p.optionsSql ?? ''" (valueChange)="set(i, 'optionsSql', $event)" />
       </div>
     </section>
   } @empty {

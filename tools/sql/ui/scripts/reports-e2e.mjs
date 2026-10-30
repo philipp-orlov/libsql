@@ -143,6 +143,21 @@ const click = (selector, text = '') =>
 const shot = async name => fs.writeFileSync(path.join(dir, name), Buffer.from((await send('Page.captureScreenshot', { format: 'png' })).result.data, 'base64'));
 const setValue = (selector, value, event = 'input') =>
   evaluate(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); e.value = ${JSON.stringify(value)}; e.dispatchEvent(new Event(${JSON.stringify(event)}, { bubbles: true })); return true; })()`);
+/** Picks an option of one of the Material dropdowns: opens its panel (again, while the choices are still loading) and clicks the option. */
+async function choose(host, text) {
+  for (let i = 0; i < 60; i++) {
+    await evaluate(`document.querySelector(${JSON.stringify(host + ' .mat-mdc-select-trigger')})?.click()`);
+    await sleep(150);
+    const hit = await evaluate(`(() => { const o = [...document.querySelectorAll('mat-option')].find(x => x.textContent.trim() === ${JSON.stringify(text)}); if (!o) return false; o.click(); return true; })()`);
+    if (hit) {
+      await sleep(250);
+      return;
+    }
+    await evaluate(`document.querySelector('.cdk-overlay-backdrop')?.click()`);
+    await sleep(200);
+  }
+  throw new Error(`no option ${text} in ${host}`);
+}
 const waitFile = async (name, tries = 100) => {
   const p = path.join(downloads, name);
   for (let i = 0; i < tries; i++) {
@@ -161,8 +176,7 @@ await until('the tabs', `[...document.querySelectorAll('[role=tab]')].some(t => 
 assert(await click('[role=tab]', 'Reports'), 'no Reports tab');
 await until('the report list', `[...document.querySelectorAll('.entry')].some(e => e.textContent.includes('Sales by region'))`);
 await click('.entry', 'Sales by region');
-await until('the region choices', `document.querySelectorAll('.param select option').length > 3`);
-await setValue('.param select', 'North', 'change');
+await choose('app-report-runner app-select', 'North');
 await until('Run enabled', `!document.querySelector('button.run').disabled`);
 await click('button.run');
 await until('the first page', `document.querySelector('.sheet svg')`);
@@ -200,9 +214,8 @@ await until('all rows', `document.querySelector('.sheet svg')?.textContent.inclu
 
 // ---- the designer ----------------------------------------------------------------------------------------------------------
 assert(await click('[role=tab]', 'Report Designer'), 'no Report Designer tab');
-await until('the designer', `document.querySelector('select.open')`);
-await until('the report names', `[...document.querySelectorAll('select.open option')].some(o => o.value === 'Sales')`);
-await setValue('select.open', 'Sales', 'change');
+await until('the designer', `document.querySelector('app-report-designer app-select.open')`);
+await choose('app-report-designer app-select.open', 'Sales');
 await until('the preview', `document.querySelector('app-report-designer .sheet svg')`);
 await click('[role=tab]', 'Layout');
 await until('the layout items', `document.querySelector('app-layout-editor .card')`);
@@ -212,9 +225,9 @@ await until('the dataset editor', `document.querySelector('app-datasets-editor a
 await click('app-datasets-editor button.run');
 await until('the dataset sample', `document.querySelector('app-datasets-editor .sample tbody tr')`);
 await click('[role=tab]', 'JSON');
-await until('the JSON', `document.querySelector('textarea.json')?.value.includes('"Sales"')`);
+await until('the JSON', `document.querySelector('.json textarea')?.value.includes('"Sales"')`);
 const edited = JSON.stringify({ ...sales, title: 'Edited in the designer' }, null, 2);
-await setValue('textarea.json', edited);
+await setValue('.json textarea', edited);
 await until('the change to show as unsaved', `document.querySelector('.dirty')`);
 await click('button.save');
 for (let i = 0; i < 50 && !fs.readFileSync(path.join(reports, 'Sales.json'), 'utf8').includes('Edited in the designer'); i++) await sleep(100);

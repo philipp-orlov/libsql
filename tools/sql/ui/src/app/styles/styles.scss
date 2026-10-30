@@ -44,3 +44,10 @@ body {
   color: var(--mat-sys-outline);
   font-style: italic;
 }
+
+// The dropdown, autocomplete and date panels of the report editors (overlays: outside any component's styles).
+.report-panel {
+  --mat-option-label-text-size: 13px;
+  --mat-option-label-text-line-height: 18px;
+  --mat-option-label-text-tracking: 0;
+}

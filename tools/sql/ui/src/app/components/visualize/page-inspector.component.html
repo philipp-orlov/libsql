@@ -4,7 +4,7 @@
     <button mat-icon-button (click)="store.forward()" [disabled]="!store.canGoForward()" matTooltip="Forward" aria-label="Forward"><mat-icon>arrow_forward</mat-icon></button>
     <button mat-icon-button (click)="step(-1)" [disabled]="store.selectedPage() === null" matTooltip="Previous page" aria-label="Previous page"><mat-icon>chevron_left</mat-icon></button>
     <button mat-icon-button (click)="step(1)" [disabled]="store.selectedPage() === null" matTooltip="Next page" aria-label="Next page"><mat-icon>chevron_right</mat-icon></button>
-    <input #goto class="goto mono" type="text" inputmode="numeric" placeholder="page #" aria-label="Go to page" (keydown.enter)="go(goto.value)" />
+    <input matInput #goto class="goto mono" type="text" inputmode="numeric" placeholder="page #" aria-label="Go to page" (keydown.enter)="go(goto.value)" />
     <span class="spacer"></span>
     @if (loading()) {
       <mat-icon class="spin">autorenew</mat-icon>

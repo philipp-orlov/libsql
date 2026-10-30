@@ -1,6 +1,7 @@
 import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatDialog } from '@angular/material/dialog';
+import { MatInputModule } from '@angular/material/input';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSelectModule } from '@angular/material/select';
@@ -24,7 +25,7 @@ const EXPORT_LIMIT = 100000;
 /** The Browse Data tab: one table or view as a grid that can be sorted, grouped, filtered, paged and, for a table, edited. */
 @Component({
   selector: 'app-browse',
-  imports: [AutofocusDirective, DataGridComponent, GridCellDirective, MatButtonModule, MatFormFieldModule, MatIconModule, MatSelectModule, MatTooltipModule],
+  imports: [MatInputModule, AutofocusDirective, DataGridComponent, GridCellDirective, MatButtonModule, MatFormFieldModule, MatIconModule, MatSelectModule, MatTooltipModule],
   templateUrl: './browse.component.html',
   styleUrl: './browse.component.scss',
 })

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Philipp Orlov
 
+import { TextComponent } from '../shared/text.component';
 import { Component, inject, input, output, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -15,7 +16,7 @@ const SAMPLE_ROWS = 50;
 /** The queries a report takes its rows from. Run one to see its first rows and to learn its columns. */
 @Component({
   selector: 'app-datasets-editor',
-  imports: [MatButtonModule, MatIconModule, SqlEditorComponent],
+  imports: [MatButtonModule, MatIconModule, SqlEditorComponent, TextComponent],
   templateUrl: './datasets-editor.component.html',
   styleUrl: './editor.scss',
 })

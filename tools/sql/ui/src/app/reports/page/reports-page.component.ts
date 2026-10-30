@@ -2,6 +2,8 @@
 
 import { Component, OnInit, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatToolbarModule } from '@angular/material/toolbar';
@@ -17,7 +19,7 @@ import { ReportService } from '../report.service';
  */
 @Component({
   selector: 'app-reports-page',
-  imports: [FormsModule, MatButtonModule, MatIconModule, MatToolbarModule, ReportRunnerComponent],
+  imports: [MatInputModule, MatFormFieldModule, FormsModule, MatButtonModule, MatIconModule, MatToolbarModule, ReportRunnerComponent],
   template: `
     <div class="page">
       <mat-toolbar class="toolbar">
@@ -29,7 +31,7 @@ import { ReportService } from '../report.service';
       @if (db.authRequired()) {
         <form class="token" (ngSubmit)="signIn(token.value)">
           <p>This server asks for a token.</p>
-          <input #token name="token" type="password" autocomplete="off" aria-label="Token" />
+          <mat-form-field appearance="outline" subscriptSizing="dynamic" class="token-field"><mat-label>Token</mat-label><input matInput #token name="token" type="password" autocomplete="off" /></mat-form-field>
           <button mat-flat-button type="submit">Connect</button>
         </form>
       }

@@ -59,6 +59,7 @@
         <ng-template gridCell let-value let-index="index" let-column="column" let-text="text">
           @if (isEditing(index, column.field)) {
             <input
+              matInput
               appAutofocus
               class="cell-input"
               #box
@@ -95,7 +96,7 @@
             <span class="mono">{{ page()?.table }}.{{ column.name }}</span>
             <span>{{ cellKind(activeValue()!) }}, {{ cellText(activeValue()!).length }} characters</span>
           </p>
-          <textarea class="mono panel-text" [value]="panelText()" [readOnly]="!panelEditable()" (input)="panelText.set(panelBox.value)" #panelBox spellcheck="false"></textarea>
+          <textarea matInput class="mono panel-text" [value]="panelText()" [readOnly]="!panelEditable()" (input)="panelText.set(panelBox.value)" #panelBox spellcheck="false"></textarea>
           <div class="panel-actions">
             <button mat-flat-button class="apply" (click)="applyPanel()" [disabled]="!panelEditable() || !panelChanged()">Apply</button>
             <button mat-button class="reset" (click)="panelText.set(cellEditText(activeValue()!))" [disabled]="!panelChanged()">Revert</button>

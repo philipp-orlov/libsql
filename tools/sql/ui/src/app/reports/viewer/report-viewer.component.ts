@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Philipp Orlov
 
 import { Component, ElementRef, computed, effect, input, model, output, signal, untracked, viewChild } from '@angular/core';
+import { MatInputModule } from '@angular/material/input';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 
 import { Action, PageDoc, pageToSvg, Region, Tip, ViewState } from '../core';
+import { Choice, SelectComponent } from '../shared/select.component';
 import { FONT_FAMILY } from '../report.service';
 
 /** An item of the report the reader pointed at in the preview (the designer selects it for editing). */
@@ -21,7 +23,7 @@ export interface ItemPick {
  */
 @Component({
   selector: 'app-report-viewer',
-  imports: [MatButtonModule, MatIconModule],
+  imports: [MatInputModule, MatButtonModule, MatIconModule, SelectComponent],
   templateUrl: './report-viewer.component.html',
   styleUrl: './report-viewer.component.scss',
   host: { '(keydown)': 'onKey($event)', tabindex: '0' },
@@ -38,6 +40,11 @@ export class ReportViewerComponent {
 
   protected readonly index = signal(0);
   protected readonly zoom = signal<'fit' | number>('fit');
+  protected readonly zoomOptions: Choice[] = [
+    { value: 'fit', label: 'Fit width' },
+    ...[50, 75, 100, 150, 200].map(z => ({ value: String(z), label: `${z}%` })),
+  ];
+  protected readonly zoomKey = computed(() => (this.zoom() === 'fit' ? 'fit' : String(Math.round((this.zoom() as number) * 100))));
   protected readonly count = computed(() => this.pages().length);
   protected readonly current = computed(() => Math.min(this.index(), Math.max(this.count() - 1, 0)));
   protected readonly selected = signal<string | null>(null);

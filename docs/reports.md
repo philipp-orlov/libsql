@@ -142,3 +142,7 @@ country, top customers, product performance, one customer's statement, and a sal
 
 Sub-reports, drill-through, images, rich text inside one text box, cross-tab (matrix) tables, columns side by side on a page, per-report
 permissions, scheduled or e-mailed runs, and export to Excel or Word. The definition format has room for them.
+
+## Material only
+
+Every control of the web UI is an Angular Material component (`mat-select`, `mat-autocomplete`, `mat-datepicker`, `mat-checkbox`, `matInput` in a `mat-form-field`, buttons, tabs, menus). The report editors use the wrappers in `reports/shared/` (`app-select`, `app-combo`, `app-date`, `app-text`). `node scripts/check-material.mjs` (ctest `ui_material_only`) fails when a template uses a native `<select>`, `<datalist>`, or an `<input>`/`<textarea>` without `matInput`; the only exceptions are `type="file"` and `type="color"`, for which Material has no component.

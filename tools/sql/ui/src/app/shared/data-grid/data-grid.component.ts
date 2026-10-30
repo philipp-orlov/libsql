@@ -16,6 +16,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
 
@@ -91,7 +92,7 @@ const fieldsOf = (columns: readonly GridColumn<never>[]) => columns.map(column =
  */
 @Component({
   selector: 'app-data-grid',
-  imports: [NgTemplateOutlet, MatIconModule, MatMenuModule, MatPaginatorModule],
+  imports: [MatInputModule, NgTemplateOutlet, MatIconModule, MatMenuModule, MatPaginatorModule],
   templateUrl: './data-grid.component.html',
   styleUrl: './data-grid.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

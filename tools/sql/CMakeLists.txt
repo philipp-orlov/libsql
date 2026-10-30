@@ -82,6 +82,9 @@ if(SQL_TOOL_WEB)
             # The report engine (layout, PDF, fonts, expressions, CSV) needs no browser and no server.
             add_test(NAME ui_reports_unit COMMAND ${SQL_NODE} scripts/unit.mjs WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
             set_tests_properties(ui_reports_unit PROPERTIES TIMEOUT 120)
+            # The web UI is built from Angular Material: no native select, datalist, date, checkbox or bare text box in a template.
+            add_test(NAME ui_material_only COMMAND ${SQL_NODE} scripts/check-material.mjs WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+            set_tests_properties(ui_material_only PROPERTIES TIMEOUT 30)
             if(SQL_CHROME AND SQL_WITH_REMOTE AND SQL_WITH_REPORTS)
                 # Running, viewing, exporting and designing reports in the page, and the demo's reports.
                 add_test(NAME web_ui_reports COMMAND ${SQL_NODE} scripts/reports-e2e.mjs $<TARGET_FILE:sql_cli> ${SQL_CHROME}

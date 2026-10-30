@@ -2,7 +2,10 @@
 
 import { Component, OnDestroy, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTabsModule } from '@angular/material/tabs';
 
@@ -13,6 +16,9 @@ import { SplitComponent } from '../../shared/split-layout/split.component';
 import { SplitPaneComponent } from '../../shared/split-layout/split-pane.component';
 import { DataSet, isValidReportName, LayoutResult, newReport, PAGE_SIZES, PageSize, paramText, ParamOption, paramValue, parseReport, ReportDef, validateReport, Value, ViewState } from '../core';
 import { ReportService } from '../report.service';
+import { DateComponent } from '../shared/date.component';
+import { TextComponent } from '../shared/text.component';
+import { Choice, SelectComponent } from '../shared/select.component';
 import { ItemPick, ReportViewerComponent } from '../viewer/report-viewer.component';
 import { DataPaneComponent } from './data-pane.component';
 import { DatasetsEditorComponent } from './datasets-editor.component';
@@ -32,7 +38,7 @@ const HISTORY = 100;
 @Component({
   selector: 'app-report-designer',
   imports: [
-    MatButtonModule, MatIconModule, MatTabsModule, SplitComponent, SplitPaneComponent, DataPaneComponent, ParametersEditorComponent, DatasetsEditorComponent,
+    MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatTabsModule, SelectComponent, TextComponent, DateComponent, SplitComponent, SplitPaneComponent, DataPaneComponent, ParametersEditorComponent, DatasetsEditorComponent,
     LayoutEditorComponent, ReportViewerComponent,
   ],
   templateUrl: './report-designer.component.html',
@@ -59,7 +65,9 @@ export class ReportDesignerComponent implements OnInit, OnDestroy {
   protected readonly json = signal('');
   protected readonly jsonError = signal('');
   protected readonly newName = signal('');
+  protected readonly copyName = signal('');
   protected readonly sizes = Object.keys(PAGE_SIZES) as PageSize[];
+  protected readonly orientations: Choice[] = [{ value: 'portrait', label: 'Portrait' }, { value: 'landscape', label: 'Landscape' }];
   /** What the reader changed in the preview (legend, sort, folds). */
   protected readonly view = signal<ViewState>({});
   /** The item open in the layout editor, outlined in the preview. */
@@ -366,6 +374,12 @@ export class ReportDesignerComponent implements OnInit, OnDestroy {
 
   protected stop(): void {
     this.svc.interrupt();
+  }
+
+  /** The choices of a parameter's dropdown; one that is not required may also be left out. */
+  protected choiceOptions(p: { name: string; required?: boolean }): Choice[] {
+    const options = this.choicesOf(p.name).map(o => ({ value: String(o.value), label: String(o.label ?? o.value) }));
+    return p.required ? options : [{ value: '', label: '(any)' }, ...options];
   }
 
   protected choicesOf(name: string): ParamOption[] {
