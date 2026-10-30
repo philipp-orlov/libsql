@@ -1,6 +1,6 @@
-<div class="runner">
+<ui-split class="runner">
+  <ui-split-pane title="Reports" icon="assessment" [size]="260" [minSize]="180">
   <aside class="list">
-    <h2>Reports</h2>
     @if (loading() && reports().length === 0) {
       <p class="hint">Loading…</p>
     }
@@ -20,7 +20,9 @@
       <p class="problem">{{ problem }}</p>
     }
   </aside>
+  </ui-split-pane>
 
+  <ui-split-pane [title]="selected() ? (selected()!.title || selected()!.name) : 'Report'" icon="description" [minSize]="320">
   <section class="main">
     @if (selected(); as report) {
       <header class="head">
@@ -114,4 +116,5 @@
       </div>
     }
   </section>
-</div>
+</ui-split-pane>
+</ui-split>

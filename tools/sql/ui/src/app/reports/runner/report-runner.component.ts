@@ -15,12 +15,14 @@ import { LayoutResult, ParamDef, ParamOption, paramText, paramValue, ReportDef, 
 import { ReportService, RunResult } from '../report.service';
 import { Choice, SelectComponent } from '../shared/select.component';
 import { DateComponent } from '../shared/date.component';
+import { SplitComponent } from '../../shared/split-layout/split.component';
+import { SplitPaneComponent } from '../../shared/split-layout/split-pane.component';
 import { DrillRequest, ReportViewerComponent } from '../viewer/report-viewer.component';
 
 /** Lists the reports, asks for the parameters, runs one, shows it page by page, and exports it as PDF or CSV. */
 @Component({
   selector: 'app-report-runner',
-  imports: [MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatMenuModule, ReportViewerComponent, SelectComponent, DateComponent],
+  imports: [MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatMenuModule, ReportViewerComponent, SelectComponent, DateComponent, SplitComponent, SplitPaneComponent],
   templateUrl: './report-runner.component.html',
   styleUrl: './report-runner.component.scss',
 })
