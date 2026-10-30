@@ -1,4 +1,4 @@
-// The colors come from the theme, so they follow light and dark.
+// The colors are dark enough to read on the theme's light surface.
 :host {
   display: block;
 }
@@ -54,14 +54,5 @@
 
   &::selection {
     background: color-mix(in srgb, var(--mat-sys-primary) 30%, transparent);
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  :host {
-    --json-key: color-mix(in srgb, var(--mat-sys-primary) 70%, #fff);
-    --json-str: #86efac;
-    --json-num: #fdba74;
-    --json-lit: #d8b4fe;
   }
 }
