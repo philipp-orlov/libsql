@@ -7,7 +7,7 @@
     "size": "A4",
     "orientation": "portrait",
     "margins": {
-      "top": 44,
+      "top": 40,
       "right": 36,
       "bottom": 40,
       "left": 36
@@ -29,6 +29,10 @@
       "sql": "SELECT c.name, c.city, c.country, c.region, c.segment, c.industry, c.customer_since, c.contact, c.credit_limit, e.name AS rep FROM customers c LEFT JOIN employees e ON e.id = c.rep_id WHERE c.id = :customer"
     },
     {
+      "name": "kpi",
+      "sql": "SELECT count(DISTINCT order_id) AS orders, round(sum(revenue)) AS revenue, round(sum(revenue) / count(DISTINCT order_id)) AS avg_order, min(order_date) AS first_order, max(order_date) AS last_order FROM sales WHERE customer_id = :customer"
+    },
+    {
       "name": "lines",
       "sql": "SELECT o.id AS order_id, o.order_date, o.status, o.channel, p.name AS product, i.quantity, i.unit_price, round(i.quantity * i.unit_price * (1 - o.discount), 2) AS amount FROM orders o JOIN order_items i ON i.order_id = o.id JOIN products p ON p.id = i.product_id WHERE o.customer_id = :customer ORDER BY o.order_date, o.id, p.name"
     },
@@ -43,8 +47,8 @@
       "text": "{{ReportName}}",
       "style": {
         "face": "bold",
-        "size": 9,
-        "color": "#546e7a"
+        "size": 8,
+        "color": "#6b7280"
       }
     },
     {
@@ -57,66 +61,112 @@
     },
     {
       "type": "text",
-      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "text": "Aurelia Systems · fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
       "style": {
         "size": 8,
-        "color": "#546e7a",
+        "color": "#6b7280",
         "align": "right"
       }
     }
   ],
   "body": [
     {
-      "type": "text",
-      "text": " Customer Statement",
-      "style": {
-        "face": "bold",
-        "size": 22,
-        "color": "#ffffff",
-        "background": "#43a047"
-      }
+      "type": "columns",
+      "gap": 8,
+      "columns": [
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "image",
+              "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij48cG9seWdvbiBwb2ludHM9IjMyLDMgNTgsMTggNTgsNDYgMzIsNjEgNiw0NiA2LDE4IiBmaWxsPSIjMGQ0N2ExIi8+PHBhdGggZD0iTTE0IDQ0bDEzLTE4IDggMTAgNS03IDEwIDE1eiIgZmlsbD0iI2ZmZmZmZiIvPjxwYXRoIGQ9Ik0xNCA0NGwxMy0xOCA4IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjhjMDAiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=",
+              "width": 34
+            }
+          ]
+        },
+        {
+          "width": 14,
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=20][b][color=#43a047]Customer Statement[/color][/b][/size]\n[size=9][color=#6b7280]{{First(name)}}[/color][/size]",
+              "dataset": "info"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "rule"
     },
     {
       "type": "text",
-      "text": "{{First(name)}}",
-      "dataset": "info",
-      "style": {
-        "face": "bold",
-        "size": 18,
-        "color": "#0d47a1"
-      }
-    },
-    {
-      "type": "text",
-      "text": "{{First(city)}}, {{First(country)}}  ({{First(region)}})",
-      "dataset": "info",
-      "style": {
-        "size": 11
-      }
-    },
-    {
-      "type": "text",
-      "text": "{{First(segment)}} customer in {{First(industry)}} since {{First(customer_since)}}   ·   contact {{First(contact)}}   ·   account manager {{First(rep)}}   ·   credit limit {{Format(First(credit_limit), \"$#,##0\")}}",
-      "dataset": "info",
-      "style": {
-        "size": 10,
-        "color": "#546e7a"
-      }
+      "rich": true,
+      "text": "[size=11][b]{{First(city)}}, {{First(country)}}[/b]  ({{First(region)}})[/size]\n[size=9][color=#6b7280]{{First(segment)}} customer in {{First(industry)}} since {{First(customer_since)}}   ·   contact {{First(contact)}}   ·   account manager {{First(rep)}}   ·   credit limit {{Format(First(credit_limit), \"$#,##0\")}}[/color][/size]",
+      "dataset": "info"
     },
     {
       "type": "spacer",
-      "height": 8
+      "height": 6
     },
     {
-      "type": "text",
-      "text": " {{Count()}} order lines   ·   {{Format(Sum(amount), \"$#,##0.00\")}} ordered (cancelled orders included in the lines below)",
-      "dataset": "lines",
-      "style": {
-        "face": "bold",
-        "size": 12,
-        "color": "#0d47a1",
-        "background": "#e8f5e9"
-      }
+      "type": "columns",
+      "gap": 10,
+      "columns": [
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#43a047",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]ORDERED[/color][/size]\n[size=16][b]{{Format(First(revenue), \"$#,##0\")}}[/b][/size]\n[size=8][color=#6b7280]cancelled orders excluded[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#1976d2",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]ORDERS[/color][/size]\n[size=16][b]{{First(orders)}}[/b][/size]\n[size=8][color=#6b7280]average {{Format(First(avg_order), \"$#,##0\")}}[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#fb8c00",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]FIRST ORDER[/color][/size]\n[size=16][b]{{First(first_order)}}[/b][/size]\n[size=8][color=#6b7280]on record[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#8e24aa",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]LAST ORDER[/color][/size]\n[size=16][b]{{First(last_order)}}[/b][/size]\n[size=8][color=#6b7280]most recent[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        }
+      ]
     },
     {
       "type": "spacer",

@@ -2,12 +2,12 @@
   "format": 1,
   "name": "Executive Dashboard",
   "title": "Executive Sales Dashboard",
-  "description": "Revenue, orders, customers and margin at a glance, with the trend by month and the split by region, category, country and segment.",
+  "description": "Revenue, orders, customers and margin at a glance, with the trend by month and the split by region, category, country and segment. Click a region or a category to open its report.",
   "page": {
     "size": "A4",
     "orientation": "landscape",
     "margins": {
-      "top": 44,
+      "top": 40,
       "right": 36,
       "bottom": 40,
       "left": 36
@@ -26,7 +26,7 @@
   "datasets": [
     {
       "name": "kpi",
-      "sql": "SELECT round(sum(revenue)) AS revenue, count(DISTINCT order_id) AS orders, count(DISTINCT customer_id) AS customers, round(sum(revenue) / count(DISTINCT order_id)) AS avg_order, round(100.0 * (sum(revenue) - sum(cost)) / sum(revenue), 1) AS margin FROM sales WHERE year = :year"
+      "sql": "SELECT round(sum(CASE WHEN year = :year THEN revenue END)) AS revenue, round(sum(CASE WHEN year = :year - 1 AND substr(month, 6, 2) <= (SELECT max(substr(month, 6, 2)) FROM sales WHERE year = :year) THEN revenue END)) AS prev_revenue, count(DISTINCT CASE WHEN year = :year THEN order_id END) AS orders, count(DISTINCT CASE WHEN year = :year - 1 AND substr(month, 6, 2) <= (SELECT max(substr(month, 6, 2)) FROM sales WHERE year = :year) THEN order_id END) AS prev_orders, count(DISTINCT CASE WHEN year = :year THEN customer_id END) AS customers, round(sum(CASE WHEN year = :year THEN revenue END) / count(DISTINCT CASE WHEN year = :year THEN order_id END)) AS avg_order, round(100.0 * sum(CASE WHEN year = :year THEN revenue - cost END) / sum(CASE WHEN year = :year THEN revenue END), 1) AS margin, round(100.0 * sum(CASE WHEN year = :year - 1 AND substr(month, 6, 2) <= (SELECT max(substr(month, 6, 2)) FROM sales WHERE year = :year) THEN revenue - cost END) / sum(CASE WHEN year = :year - 1 AND substr(month, 6, 2) <= (SELECT max(substr(month, 6, 2)) FROM sales WHERE year = :year) THEN revenue END), 1) AS prev_margin FROM sales WHERE year IN (:year, :year - 1)"
     },
     {
       "name": "monthly",
@@ -42,11 +42,15 @@
     },
     {
       "name": "countries",
-      "sql": "SELECT country, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY country ORDER BY revenue DESC LIMIT 10"
+      "sql": "SELECT country, region, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY country ORDER BY revenue DESC LIMIT 10"
     },
     {
       "name": "segments",
       "sql": "SELECT segment, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY segment ORDER BY revenue DESC"
+    },
+    {
+      "name": "regq",
+      "sql": "SELECT region, quarter, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY region, quarter ORDER BY region, quarter"
     }
   ],
   "header": [
@@ -55,8 +59,8 @@
       "text": "{{ReportName}}",
       "style": {
         "face": "bold",
-        "size": 9,
-        "color": "#546e7a"
+        "size": 8,
+        "color": "#6b7280"
       }
     },
     {
@@ -69,159 +73,316 @@
     },
     {
       "type": "text",
-      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "text": "Aurelia Systems · fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
       "style": {
         "size": 8,
-        "color": "#546e7a",
+        "color": "#6b7280",
         "align": "right"
       }
     }
   ],
   "body": [
     {
-      "type": "text",
-      "text": " Executive Sales Dashboard",
-      "style": {
-        "face": "bold",
-        "size": 26,
-        "color": "#ffffff",
-        "background": "#0d47a1"
-      }
+      "type": "columns",
+      "gap": 8,
+      "columns": [
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "image",
+              "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij48cG9seWdvbiBwb2ludHM9IjMyLDMgNTgsMTggNTgsNDYgMzIsNjEgNiw0NiA2LDE4IiBmaWxsPSIjMGQ0N2ExIi8+PHBhdGggZD0iTTE0IDQ0bDEzLTE4IDggMTAgNS03IDEwIDE1eiIgZmlsbD0iI2ZmZmZmZiIvPjxwYXRoIGQ9Ik0xNCA0NGwxMy0xOCA4IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjhjMDAiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=",
+              "width": 34
+            }
+          ]
+        },
+        {
+          "width": 14,
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=20][b][color=#0d47a1]Executive Sales Dashboard[/color][/b][/size]\n[size=9][color=#6b7280]Fiscal year {{year}}  ·  US dollars  ·  cancelled orders excluded  ·  generated {{Format(Now, \"yyyy-MM-dd\")}}[/color][/size]"
+            }
+          ]
+        }
+      ]
     },
     {
-      "type": "text",
-      "text": "Fiscal year {{year}}   ·   all amounts in US dollars   ·   cancelled orders excluded   ·   generated {{Format(Now, \"yyyy-MM-dd\")}}",
-      "style": {
-        "size": 10,
-        "color": "#546e7a"
-      }
+      "type": "rule"
+    },
+    {
+      "type": "spacer",
+      "height": 4
+    },
+    {
+      "type": "columns",
+      "gap": 10,
+      "columns": [
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#1976d2",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]REVENUE[/color][/size]\n[size=22][b]{{Format(First(revenue), \"$#,##0\")}}[/b][/size]\n[size=8][color=#6b7280]{{Iif(First(prev_revenue) > 0, Iif(First(revenue) >= First(prev_revenue), \"▲ \", \"▼ \") + Format(Abs(First(revenue) / First(prev_revenue) - 1), \"0.0%\") + \" vs last year\", \"\")}}[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#fb8c00",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]ORDERS[/color][/size]\n[size=22][b]{{Format(First(orders), \"#,##0\")}}[/b][/size]\n[size=8][color=#6b7280]{{Iif(First(prev_orders) > 0, Iif(First(orders) >= First(prev_orders), \"▲ \", \"▼ \") + Format(Abs(First(orders) / First(prev_orders) - 1), \"0.0%\") + \" vs last year\", \"\")}}[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#43a047",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]CUSTOMERS[/color][/size]\n[size=22][b]{{First(customers)}}[/b][/size]\n[size=8][color=#6b7280]who bought in {{year}}[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#8e24aa",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]AVERAGE ORDER[/color][/size]\n[size=22][b]{{Format(First(avg_order), \"$#,##0\")}}[/b][/size]\n[size=8][color=#6b7280]revenue per order[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        },
+        {
+          "width": 1,
+          "card": true,
+          "accent": "#00897b",
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=8][color=#6b7280]GROSS MARGIN[/color][/size]\n[size=22][b]{{First(margin)}}%[/b][/size]\n[size=8][color=#6b7280]last year  {{First(prev_margin)}}%[/color][/size]",
+              "dataset": "kpi"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "spacer",
+      "height": 8
+    },
+    {
+      "type": "columns",
+      "gap": 12,
+      "columns": [
+        {
+          "width": 3,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "bar",
+              "dataset": "monthly",
+              "category": "month",
+              "title": "Revenue and gross profit by month",
+              "height": 296,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "revenue",
+                  "label": "Revenue",
+                  "color": "#1976d2"
+                },
+                {
+                  "field": "profit",
+                  "label": "Gross profit",
+                  "color": "#43a047"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "width": 2,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "pie",
+              "donut": true,
+              "dataset": "regions",
+              "category": "region",
+              "title": "Revenue by region  (click to open the region)",
+              "height": 296,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "revenue",
+                  "label": "Revenue"
+                }
+              ],
+              "drill": {
+                "report": "Region Snapshot",
+                "params": {
+                  "region": "{{region}}",
+                  "year": "{{year}}"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "pageBreak"
+    },
+    {
+      "type": "columns",
+      "gap": 12,
+      "columns": [
+        {
+          "width": 3,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "bar",
+              "stacked": true,
+              "labels": true,
+              "dataset": "categories",
+              "category": "category",
+              "title": "Cost and gross profit by category  (click to open the category)",
+              "height": 215,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "cost",
+                  "label": "Cost",
+                  "color": "#b0bec5"
+                },
+                {
+                  "field": "profit",
+                  "label": "Gross profit",
+                  "color": "#00897b"
+                }
+              ],
+              "drill": {
+                "report": "Product Performance",
+                "params": {
+                  "category": "{{category}}",
+                  "year": "{{year}}"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "width": 2,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "pie",
+              "donut": true,
+              "dataset": "segments",
+              "category": "segment",
+              "title": "Revenue by customer segment",
+              "height": 215,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "revenue",
+                  "label": "Revenue"
+                }
+              ]
+            }
+          ]
+        }
+      ]
     },
     {
       "type": "spacer",
       "height": 6
     },
     {
-      "type": "text",
-      "text": " Revenue  {{Format(First(revenue), \"$#,##0\")}}      Orders  {{Format(First(orders), \"#,##0\")}}      Customers  {{First(customers)}}      Average order  {{Format(First(avg_order), \"$#,##0\")}}      Gross margin  {{First(margin)}}%",
-      "dataset": "kpi",
-      "style": {
-        "face": "bold",
-        "size": 12,
-        "color": "#0d47a1",
-        "background": "#e3f2fd"
-      }
-    },
-    {
-      "type": "spacer",
-      "height": 10
-    },
-    {
-      "type": "chart",
-      "chart": "bar",
-      "dataset": "monthly",
-      "category": "month",
-      "title": "Revenue and gross profit by month",
-      "height": 210,
-      "format": "$#,##0",
-      "series": [
+      "type": "columns",
+      "gap": 12,
+      "columns": [
         {
-          "field": "revenue",
-          "label": "Revenue",
-          "color": "#1976d2"
+          "width": 3,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "bar",
+              "horizontal": true,
+              "labels": true,
+              "dataset": "countries",
+              "category": "country",
+              "title": "Top 10 countries by revenue",
+              "height": 235,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "revenue",
+                  "label": "Revenue",
+                  "color": "#e53935"
+                }
+              ],
+              "drill": {
+                "report": "Region Snapshot",
+                "params": {
+                  "region": "{{region}}",
+                  "year": "{{year}}"
+                }
+              }
+            }
+          ]
         },
         {
-          "field": "profit",
-          "label": "Gross profit",
-          "color": "#43a047"
-        }
-      ]
-    },
-    {
-      "type": "chart",
-      "chart": "area",
-      "dataset": "monthly",
-      "category": "month",
-      "title": "Revenue trend",
-      "height": 170,
-      "format": "$#,##0",
-      "series": [
-        {
-          "field": "revenue",
-          "label": "Revenue",
-          "color": "#96d35f"
-        }
-      ]
-    },
-    {
-      "type": "chart",
-      "chart": "pie",
-      "donut": true,
-      "dataset": "regions",
-      "category": "region",
-      "title": "Revenue by region",
-      "height": 220,
-      "format": "$#,##0",
-      "series": [
-        {
-          "field": "revenue",
-          "label": "Revenue"
-        }
-      ]
-    },
-    {
-      "type": "chart",
-      "chart": "bar",
-      "stacked": true,
-      "labels": true,
-      "dataset": "categories",
-      "category": "category",
-      "title": "What a dollar of revenue is made of, by product category (cost and gross profit)",
-      "height": 230,
-      "format": "$#,##0",
-      "series": [
-        {
-          "field": "cost",
-          "label": "Cost",
-          "color": "#b0bec5"
-        },
-        {
-          "field": "profit",
-          "label": "Gross profit",
-          "color": "#00897b"
-        }
-      ]
-    },
-    {
-      "type": "chart",
-      "chart": "bar",
-      "horizontal": true,
-      "labels": true,
-      "dataset": "countries",
-      "category": "country",
-      "title": "Top 10 countries by revenue",
-      "height": 250,
-      "format": "$#,##0",
-      "series": [
-        {
-          "field": "revenue",
-          "label": "Revenue",
-          "color": "#e53935"
-        }
-      ]
-    },
-    {
-      "type": "chart",
-      "chart": "pie",
-      "donut": true,
-      "dataset": "segments",
-      "category": "segment",
-      "title": "Revenue by customer segment",
-      "height": 230,
-      "format": "$#,##0",
-      "series": [
-        {
-          "field": "revenue",
-          "label": "Revenue"
+          "width": 2,
+          "items": [
+            {
+              "type": "matrix",
+              "dataset": "regq",
+              "rows": [
+                "region"
+              ],
+              "column": "quarter",
+              "value": "revenue",
+              "title": "Revenue by region and quarter",
+              "format": "$#,##0",
+              "heat": "blue",
+              "rowTotals": true,
+              "corner": "Region",
+              "style": {
+                "size": 8
+              },
+              "sortRows": "total",
+              "drill": {
+                "report": "Region Snapshot",
+                "params": {
+                  "region": "{{region}}",
+                  "year": "{{year}}"
+                }
+              }
+            }
+          ],
+          "card": true
         }
       ]
     }

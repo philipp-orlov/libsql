@@ -147,9 +147,20 @@ await sleep(600);
 await move('.sheet svg .slice', 0);
 assert(/Share/.test(await tip()), 'a pie slice shows its share');
 const slices = await count('.sheet svg .slice');
-await press('.sheet svg .legend', 0);
+await press('.sheet svg .legend', 2); // after the two entries of the stacked bars
 assert((await count('.sheet svg .slice')) === slices - 1, 'a slice leaves the pie when its legend entry is clicked');
 await ev(`document.querySelector('.reset-view').click()`);
+
+// drill-through: a click on a region of the donut opens that region's report; Back returns
+await ev(`document.querySelector('button.first').click()`);
+await sleep(500);
+await press('.sheet svg .slice', 0);
+await until('the region report', `document.querySelector('.runner h1')?.textContent.includes('Region Snapshot') && document.querySelector('.sheet svg')`);
+assert((await ev(`document.querySelector('.sheet svg').textContent`)).includes('Regional snapshot'), 'the region snapshot runs with the clicked region');
+assert((await count('.trail')) === 1, 'the trail shows the way back');
+await ev(`document.querySelector('.trail .back').click()`);
+await until('the dashboard again', `document.querySelector('.runner h1')?.textContent.includes('Executive Sales Dashboard') && document.querySelector('.sheet svg')`);
+await sleep(400);
 
 // ---- tables ----------------------------------------------------------------------------------------------------------------------
 await openReport('Top Customers');

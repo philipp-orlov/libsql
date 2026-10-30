@@ -834,7 +834,7 @@ cmake --build build --parallel 4
 ctest --test-dir build --output-on-failure
 ```
 
-Options: `SQL_WITH_REPORTS` (the `sql` tool's report designer, runner and PDF/CSV export; on, and needs `SQL_WITH_REMOTE`; see
+Options: `SQL_WITH_REPORTS` (the `sql` tool's report designer, runner and PDF, Excel, Word and CSV export; on, and needs `SQL_WITH_REMOTE`; see
 [docs/reports.md](docs/reports.md)), `SQL_BUILD_TESTS`, `SQL_BUILD_EXAMPLES`, `SQL_BUILD_TOOLS`,
 `SQL_BUILD_BENCHMARKS`, `SQL_BUILD_PYTHON`, `SQL_BUILD_CONFORMANCE` (the
 SQLite differential harness; downloads the SQLite 3.45.1 amalgamation as a

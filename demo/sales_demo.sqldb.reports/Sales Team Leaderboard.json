@@ -7,7 +7,7 @@
     "size": "A4",
     "orientation": "portrait",
     "margins": {
-      "top": 44,
+      "top": 40,
       "right": 36,
       "bottom": 40,
       "left": 36
@@ -39,8 +39,8 @@
       "text": "{{ReportName}}",
       "style": {
         "face": "bold",
-        "size": 9,
-        "color": "#546e7a"
+        "size": 8,
+        "color": "#6b7280"
       }
     },
     {
@@ -53,33 +53,44 @@
     },
     {
       "type": "text",
-      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "text": "Aurelia Systems · fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
       "style": {
         "size": 8,
-        "color": "#546e7a",
+        "color": "#6b7280",
         "align": "right"
       }
     }
   ],
   "body": [
     {
-      "type": "text",
-      "text": " Sales Team Leaderboard {{year}}",
-      "style": {
-        "face": "bold",
-        "size": 22,
-        "color": "#ffffff",
-        "background": "#e53935"
-      }
+      "type": "columns",
+      "gap": 8,
+      "columns": [
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "image",
+              "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij48cG9seWdvbiBwb2ludHM9IjMyLDMgNTgsMTggNTgsNDYgMzIsNjEgNiw0NiA2LDE4IiBmaWxsPSIjMGQ0N2ExIi8+PHBhdGggZD0iTTE0IDQ0bDEzLTE4IDggMTAgNS03IDEwIDE1eiIgZmlsbD0iI2ZmZmZmZiIvPjxwYXRoIGQ9Ik0xNCA0NGwxMy0xOCA4IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjhjMDAiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=",
+              "width": 34
+            }
+          ]
+        },
+        {
+          "width": 14,
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=20][b][color=#e53935]Sales Team Leaderboard {{year}}[/color][/b][/size]\n[size=9][color=#6b7280]Annual quotas; a year in progress is measured against the whole year.   {{Count()}} people, {{Format(Sum(revenue) / Sum(quota), \"0%\")}} of the combined quota reached.[/color][/size]",
+              "dataset": "reps"
+            }
+          ]
+        }
+      ]
     },
     {
-      "type": "text",
-      "text": "Annual quotas; a year in progress is measured against the whole year. {{Count()}} people, {{Format(Sum(revenue) / Sum(quota), \"0%\")}} of the combined quota reached.",
-      "style": {
-        "size": 10,
-        "color": "#546e7a"
-      },
-      "dataset": "reps"
+      "type": "rule"
     },
     {
       "type": "spacer",

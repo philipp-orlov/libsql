@@ -116,13 +116,25 @@
 
   .bar,
   .point,
-  .slice {
+  .slice,
+  .cell {
     transition: opacity 0.12s ease, transform 0.15s ease;
+  }
+
+  [data-act] {
+    cursor: pointer;
+  }
+
+  // a cross-tab's cell under the pointer gets an outline, like Tableau's highlight table
+  rect.cell:hover {
+    stroke: #263238;
+    stroke-width: 1.2;
   }
 
   // the marks of what the pointer is on stay; the others fade (Tableau's "highlight")
   svg.focus .bar:not(.hl),
   svg.focus .point:not(.hl),
+  svg.focus .cell:not(.hl),
   svg.focus .slice:not(.hl) {
     opacity: 0.28;
   }

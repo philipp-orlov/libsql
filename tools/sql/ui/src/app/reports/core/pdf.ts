@@ -4,8 +4,24 @@
 // with a ToUnicode map so the text can be selected and searched), rectangles, lines and paths. No libraries: streams are
 // compressed with the platform's CompressionStream when there is one. Free of Angular imports on purpose.
 
+import { deflate } from './compress';
+import { decodePng, imageInfo, jpegHeader, Raster } from './image';
 import { FontFace, PageDoc, parseColor, Prim } from './primitives';
 import { TrueTypeFont } from './ttf';
+
+/** What the PDF needs from the browser: pixels for the pictures it cannot embed as they are (SVG, GIF, WebP, odd PNGs), at `width` x `height`. */
+export interface PdfOptions {
+  rasterize?: (src: string, width: number, height: number) => Promise<Raster | null>;
+}
+
+/** A picture ready for the file: JPEG goes in as it is, anything else as pixels. */
+interface PdfImage {
+  name: string;
+  width: number;
+  height: number;
+  jpeg?: { bytes: Uint8Array; components: number; adobe: boolean };
+  raster?: Raster;
+}
 
 export interface PdfInfo {
   title?: string;
@@ -32,15 +48,6 @@ function textString(s: string): string {
   let out = '<FEFF';
   for (let i = 0; i < s.length; i++) out += hex(s.charCodeAt(i), 4);
   return out + '>';
-}
-
-async function deflate(data: Uint8Array): Promise<Uint8Array | null> {
-  if (typeof CompressionStream === 'undefined') return null;
-  const stream = new CompressionStream('deflate');
-  const writer = stream.writable.getWriter();
-  void writer.write(data as BufferSource);
-  void writer.close();
-  return new Uint8Array(await new Response(stream.readable).arrayBuffer());
 }
 
 class Output {
@@ -78,7 +85,7 @@ class FontUse {
   }
 }
 
-function contentOf(page: PageDoc, uses: Record<FontFace, FontUse>, alphas: Map<number, string>): string {
+function contentOf(page: PageDoc, uses: Record<FontFace, FontUse>, alphas: Map<number, string>, images: Map<string, PdfImage>): string {
   const out: string[] = [];
   const y = (v: number): string => num(page.height - v);
   const color = (c: string, op: 'rg' | 'RG'): string => parseColor(c).map(num).join(' ') + ' ' + op;
@@ -110,8 +117,24 @@ function contentOf(page: PageDoc, uses: Record<FontFace, FontUse>, alphas: Map<n
         const ops = [];
         if (p.fill) ops.push(color(p.fill, 'rg'));
         if (p.stroke) ops.push(color(p.stroke, 'RG'), `${num(p.lw ?? 1)} w`);
-        ops.push(`${num(p.x)} ${y(p.y + p.h)} ${num(p.w)} ${num(p.h)} re`, p.fill && p.stroke ? 'B' : p.fill ? 'f' : 'S');
+        const r = Math.min(p.r ?? 0, p.w / 2, p.h / 2);
+        if (r > 0) {
+          const k = r * 0.5523;
+          const [x0, x1, y0, y1] = [p.x, p.x + p.w, p.y, p.y + p.h];
+          ops.push(
+            `${num(x0 + r)} ${y(y0)} m ${num(x1 - r)} ${y(y0)} l ${num(x1 - r + k)} ${y(y0)} ${num(x1)} ${y(y0 + r - k)} ${num(x1)} ${y(y0 + r)} c`,
+            `${num(x1)} ${y(y1 - r)} l ${num(x1)} ${y(y1 - r + k)} ${num(x1 - r + k)} ${y(y1)} ${num(x1 - r)} ${y(y1)} c`,
+            `${num(x0 + r)} ${y(y1)} l ${num(x0 + r - k)} ${y(y1)} ${num(x0)} ${y(y1 - r + k)} ${num(x0)} ${y(y1 - r)} c`,
+            `${num(x0)} ${y(y0 + r)} l ${num(x0)} ${y(y0 + r - k)} ${num(x0 + r - k)} ${y(y0)} ${num(x0 + r)} ${y(y0)} c h`,
+          );
+        } else ops.push(`${num(p.x)} ${y(p.y + p.h)} ${num(p.w)} ${num(p.h)} re`);
+        ops.push(p.fill && p.stroke ? 'B' : p.fill ? 'f' : 'S');
         out.push(ops.join(' '));
+        return;
+      }
+      case 'image': {
+        const img = images.get(p.src);
+        if (img) out.push(`${num(p.w)} 0 0 ${num(p.h)} ${num(p.x)} ${y(p.y + p.h)} cm /${img.name} Do`);
         return;
       }
       case 'line': {
@@ -159,10 +182,11 @@ function toUnicode(use: FontUse): string {
  * The PDF of `pages`. `fonts` are the faces the primitives name; the glyphs the pages use are embedded.
  * Resolves to the file's bytes.
  */
-export async function buildPdf(pages: PageDoc[], fonts: Record<FontFace, TrueTypeFont>, info: PdfInfo = {}): Promise<Uint8Array> {
+export async function buildPdf(pages: PageDoc[], fonts: Record<FontFace, TrueTypeFont>, info: PdfInfo = {}, options: PdfOptions = {}): Promise<Uint8Array> {
   const uses: Record<FontFace, FontUse> = { regular: new FontUse(fonts.regular), bold: new FontUse(fonts.bold) };
   const alphas = new Map<number, string>();
-  const contents = pages.map(p => contentOf(p, uses, alphas)); // also collects the glyphs
+  const images = await prepareImages(pages, options);
+  const contents = pages.map(p => contentOf(p, uses, alphas, images)); // also collects the glyphs
 
   const out = new Output();
   const offsets: number[] = [];
@@ -194,6 +218,7 @@ export async function buildPdf(pages: PageDoc[], fonts: Record<FontFace, TrueTyp
   const contentIds = pages.map(() => reserve());
   const fontIds: Record<FontFace, number> = { regular: reserve(), bold: reserve() };
   const alphaIds = new Map<string, number>([...alphas.values()].map(name => [name, reserve()]));
+  const imageIds = new Map<PdfImage, number>([...images.values()].map(img => [img, reserve()]));
 
   const created = info.created ?? new Date();
   const stamp = `D:${created.getUTCFullYear()}${String(created.getUTCMonth() + 1).padStart(2, '0')}${String(created.getUTCDate()).padStart(2, '0')}` +
@@ -203,12 +228,30 @@ export async function buildPdf(pages: PageDoc[], fonts: Record<FontFace, TrueTyp
   object(infoId, `<< ${info.title ? `/Title ${textString(info.title)} ` : ''}${info.author ? `/Author ${textString(info.author)} ` : ''}` +
     `${info.subject ? `/Subject ${textString(info.subject)} ` : ''}/Creator ${textString(info.creator ?? 'libsql reports')} /Producer ${textString('libsql reports')} /CreationDate (${stamp}) >>`);
   const states = alphaIds.size ? ` /ExtGState << ${[...alphaIds].map(([name, id]) => `/${name} ${id} 0 R`).join(' ')} >>` : '';
-  const resources = `<< /Font << /F1 ${fontIds.regular} 0 R /F2 ${fontIds.bold} 0 R >>${states} >>`;
+  const xobjects = imageIds.size ? ` /XObject << ${[...imageIds].map(([img, id]) => `/${img.name} ${id} 0 R`).join(' ')} >>` : '';
+  const resources = `<< /Font << /F1 ${fontIds.regular} 0 R /F2 ${fontIds.bold} 0 R >>${states}${xobjects} >>`;
   for (const [opacity, name] of alphas) object(alphaIds.get(name)!, `<< /Type /ExtGState /ca ${num(opacity)} /CA ${num(opacity)} >>`);
   pages.forEach((p, i) => {
     object(pageIds[i], `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources ${resources} /Contents ${contentIds[i]} 0 R >>`);
   });
   for (let i = 0; i < pages.length; i++) await stream(contentIds[i], '', contents[i]);
+  for (const [img, id] of imageIds) {
+    const base = `/Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} /BitsPerComponent 8`;
+    if (img.jpeg) {
+      const j = img.jpeg;
+      const space = j.components === 1 ? '/DeviceGray' : j.components === 4 ? '/DeviceCMYK' : '/DeviceRGB';
+      await stream(id, `${base} /ColorSpace ${space}${j.components === 4 && j.adobe ? ' /Decode [1 0 1 0 1 0 1 0]' : ''} /Filter /DCTDecode`, j.bytes, false);
+    } else {
+      const r = img.raster!;
+      let mask = '';
+      if (r.alpha) {
+        const maskId = reserve();
+        await stream(maskId, `/Type /XObject /Subtype /Image /Width ${r.width} /Height ${r.height} /ColorSpace /DeviceGray /BitsPerComponent 8`, r.alpha);
+        mask = ` /SMask ${maskId} 0 R`;
+      }
+      await stream(id, `${base} /ColorSpace /DeviceRGB${mask}`, r.rgb);
+    }
+  }
 
   for (const face of ['regular', 'bold'] as const) {
     const use = uses[face];
@@ -240,4 +283,47 @@ export async function buildPdf(pages: PageDoc[], fonts: Record<FontFace, TrueTyp
   for (let i = 1; i < count; i++) out.push(`${String(offsets[i]).padStart(10, '0')} 00000 n \n`);
   out.push(`trailer\n<< /Size ${count} /Root ${catalog} 0 R /Info ${infoId} 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
   return out.bytes();
+}
+
+/** Every picture the pages use, as the file will hold it. A picture that cannot be had is left out (the page shows a gap). */
+async function prepareImages(pages: PageDoc[], options: PdfOptions): Promise<Map<string, PdfImage>> {
+  const wanted = new Map<string, { w: number; h: number }>();
+  for (const page of pages) {
+    for (const p of page.prims) {
+      if (p.k !== 'image') continue;
+      const have = wanted.get(p.src);
+      if (!have || p.w > have.w) wanted.set(p.src, { w: p.w, h: p.h });
+    }
+  }
+  const out = new Map<string, PdfImage>();
+  for (const [src, size] of wanted) {
+    const info = imageInfo(src);
+    if (!info) continue;
+    const name = `Im${out.size + 1}`;
+    try {
+      if (info.kind === 'jpeg') {
+        const h = jpegHeader(info.bytes);
+        if (h) {
+          out.set(src, { name, width: h.width, height: h.height, jpeg: { bytes: info.bytes, components: h.components, adobe: h.adobe } });
+          continue;
+        }
+      }
+      if (info.kind === 'png') {
+        try {
+          const raster = await decodePng(info.bytes);
+          out.set(src, { name, width: raster.width, height: raster.height, raster });
+          continue;
+        } catch {
+          // fall through to the canvas
+        }
+      }
+      // vector and odd formats: pixels at 3x the size on the page, but not more than 2400 on a side
+      const scale = Math.min(3 * (96 / 72), 2400 / Math.max(size.w, size.h));
+      const raster = await options.rasterize?.(src, Math.max(1, Math.round(size.w * scale)), Math.max(1, Math.round(size.h * scale)));
+      if (raster) out.set(src, { name, width: raster.width, height: raster.height, raster });
+    } catch {
+      // left out
+    }
+  }
+  return out;
 }

@@ -4,6 +4,7 @@
 // Free of Angular imports on purpose.
 
 import { checkTemplate, parseExpression } from './expr';
+import { checkRich } from './richtext';
 import { isDatePattern } from './format';
 import { bindNames } from './sql-params';
 
@@ -51,6 +52,22 @@ export interface TextItem {
   style?: Style;
   /** Aggregates in the text (Sum(Amount)) run over this dataset's rows. */
   dataset?: string;
+  /**
+   * Rich text: the text may carry `[b]bold[/b]`, `[u]underline[/u]`, `[color=#e15759]color[/color]`, `[size=24]size[/size]`
+   * and `[bg=#fff3cd]highlight[/bg]`, nested as you like (`[/]` closes the innermost), and lines that start with `- ` are bullets.
+   */
+  rich?: boolean;
+}
+
+/** Clicking a mark, a row or a cell opens another report. */
+export interface DrillDef {
+  /** The target report's name. */
+  report: string;
+  /**
+   * What its parameters get, by name: a text with `{{ }}` parts that sees the clicked row (a chart: the row of the dataset
+   * behind the mark; a table: the row; a matrix: the row, column and value fields). Parameters left out keep the target's default.
+   */
+  params?: Record<string, string>;
 }
 
 export interface ColumnDef {
@@ -84,6 +101,8 @@ export interface TableItem {
   grandTotal?: boolean;
   zebra?: boolean;
   style?: Style;
+  /** A click on a row opens the target report. */
+  drill?: DrillDef;
 }
 
 export interface SeriesDef {
@@ -112,6 +131,91 @@ export interface ChartItem {
   legend?: boolean;
   /** A number pattern for the axis and labels. */
   format?: string;
+  /** A click on a bar, point or slice opens the target report. */
+  drill?: DrillDef;
+}
+
+export type Aggregate = 'sum' | 'avg' | 'min' | 'max' | 'count';
+/** Color scales of a matrix: `blue` ... are white to that hue, `diverging` runs red - white - blue about the middle value. */
+export type HeatScale = 'none' | 'blue' | 'green' | 'orange' | 'red' | 'purple' | 'teal' | 'diverging';
+
+/** A cross-tab: one field spread over the columns, one or two down the rows, one measure in the cells. */
+export interface MatrixItem {
+  type: 'matrix';
+  dataset: string;
+  /** One or two fields down the side (the second nests in the first). */
+  rows: string[];
+  /** The field whose values become the column headings. */
+  column: string;
+  /** The measure in the cells. */
+  value: string;
+  agg?: Aggregate;
+  /** A number pattern for the cells. */
+  format?: string;
+  title?: string;
+  heat?: HeatScale;
+  /** Totals at the right end of each row and at the bottom of each column. */
+  rowTotals?: boolean;
+  columnTotals?: boolean;
+  /** With two row fields: a subtotal line under each group of the first. */
+  subtotals?: boolean;
+  /** The order of the headings: as the data comes (default), ascending, descending, or (rows) by their total, largest first. */
+  sortRows?: 'data' | 'asc' | 'desc' | 'total';
+  sortColumns?: 'data' | 'asc' | 'desc';
+  /** The corner cell; default the names of the row fields. */
+  corner?: string;
+  style?: Style;
+  /** A click on a cell opens the target report. */
+  drill?: DrillDef;
+}
+
+/** A picture: `src` is a `data:image/png|jpeg|gif|webp|svg+xml;base64,...` URI (it may hold `{{ }}` parts that read a text field). */
+export interface ImageItem {
+  type: 'image';
+  src: string;
+  /** Where `{{ }}` in `src` and `caption` read their rows. */
+  dataset?: string;
+  /** Points. With only one of width and height given the picture keeps its proportions; with neither it has its own size, shrunk to fit the page. */
+  width?: number;
+  height?: number;
+  /** Stretch to the whole width of the page (or column). */
+  fitWidth?: boolean;
+  align?: 'left' | 'center' | 'right';
+  caption?: string;
+}
+
+/** Side-by-side columns: each holds a list of items, laid out in its own width. */
+export interface ColumnCell {
+  /** Relative width (default 1). */
+  width?: number;
+  items: BodyItem[];
+  /** Draw it as a white card with a thin border. */
+  card?: boolean;
+  /** A colored bar along the top of the card. */
+  accent?: string;
+  /** The card's fill (default white). */
+  background?: string;
+}
+export interface ColumnsItem {
+  type: 'columns';
+  columns: ColumnCell[];
+  /** Points between the columns (default 12). */
+  gap?: number;
+}
+
+/** Another report, run and laid out right here; once, or once per row of a dataset. */
+export interface SubreportItem {
+  type: 'subreport';
+  /** The other report's name. */
+  report: string;
+  /** Its parameters: `{{ }}` texts reading the row (when repeated). Parameters left out take the one of the same name here, else the default. */
+  params?: Record<string, string>;
+  /** Repeat for each row of this dataset. */
+  dataset?: string;
+  /** At most this many repeats (default 12, up to 50). */
+  limit?: number;
+  /** Start every repeat on a new page. */
+  pageBreak?: boolean;
 }
 
 export interface RuleItem {
@@ -125,9 +229,9 @@ export interface PageBreakItem {
   type: 'pageBreak';
 }
 
-export type BodyItem = TextItem | TableItem | ChartItem | RuleItem | SpacerItem | PageBreakItem;
+export type BodyItem = TextItem | TableItem | ChartItem | MatrixItem | ImageItem | ColumnsItem | SubreportItem | RuleItem | SpacerItem | PageBreakItem;
 /** What a page header or footer may hold. */
-export type BandItem = TextItem | RuleItem | SpacerItem;
+export type BandItem = TextItem | ImageItem | RuleItem | SpacerItem;
 
 export type PageSize = 'A3' | 'A4' | 'A5' | 'Letter' | 'Legal';
 
@@ -222,20 +326,37 @@ export function validateReport(r: ReportDef): string[] {
     const e = checkTemplate(text ?? '');
     if (e) err(`${what}: ${e}`);
   };
+  const image = (at: string, it: ImageItem): void => {
+    if (!it.src?.trim()) err(`${at} has no picture`);
+    else if (!/\{\{/.test(it.src) && !/^data:image\/(png|jpeg|jpg|gif|webp|svg\+xml)[;,]/i.test(it.src)) err(`${at}: the picture must be a data:image/ URI (png, jpeg, gif, webp or svg)`);
+    if (it.src) template(at, it.src);
+    if (it.caption) template(at, it.caption);
+    if (it.dataset) needDataset(at, it.dataset);
+    for (const k of ['width', 'height'] as const) if (it[k] !== undefined && !(it[k]! >= 4 && it[k]! <= 2000)) err(`${at}: the ${k} must be between 4 and 2000 points`);
+  };
+  const drill = (at: string, d: DrillDef | undefined): void => {
+    if (!d) return;
+    if (!d.report?.trim()) err(`${at}: the drill-through has no target report`);
+    for (const v of Object.values(d.params ?? {})) template(`${at} drill-through`, String(v));
+  };
   const band = (where: string, items: BandItem[]): void => {
     for (const it of items ?? []) {
       if (it.type === 'text') template(`${where} text`, it.text);
-      else if (it.type !== 'rule' && it.type !== 'spacer') err(`${where} may hold text, rules and spacers only`);
+      else if (it.type === 'image') image(`${where} image`, it);
+      else if (it.type !== 'rule' && it.type !== 'spacer') err(`${where} may hold text, images, rules and spacers only`);
     }
   };
   band('the page header', r.header);
   band('the page footer', r.footer);
-  r.body?.forEach((it, i) => {
-    const at = `body item ${i + 1}`;
+  const item = (it: BodyItem, at: string, depth: number): void => {
     switch (it.type) {
       case 'text':
         template(at, it.text);
         if (it.dataset) needDataset(at, it.dataset);
+        if (it.rich) {
+          const e = checkRich(it.text);
+          if (e) err(`${at}: ${e}`);
+        }
         break;
       case 'table':
         needDataset(at, it.dataset);
@@ -254,6 +375,7 @@ export function validateReport(r: ReportDef): string[] {
           if (!g.field) err(`${at}: a group has no field`);
           template(`${at} group heading`, g.header ?? '');
         }
+        drill(at, it.drill);
         break;
       case 'chart':
         if (!['bar', 'line', 'area', 'pie'].includes(it.chart)) err(`${at} (chart) has an unknown kind ${String(it.chart)}`);
@@ -261,6 +383,37 @@ export function validateReport(r: ReportDef): string[] {
         if (!it.category) err(`${at} (chart) has no category column`);
         if (!it.series?.length) err(`${at} (chart) has no series`);
         if (!(it.height >= 80 && it.height <= 800)) err(`${at} (chart) height must be between 80 and 800 points`);
+        drill(at, it.drill);
+        break;
+      case 'matrix':
+        needDataset(at, it.dataset);
+        if (!(it.rows?.length >= 1 && it.rows.length <= 2) || it.rows.some(f => !f)) err(`${at} (matrix) needs one or two row fields`);
+        if (!it.column) err(`${at} (matrix) has no column field`);
+        if (!it.value) err(`${at} (matrix) has no value field`);
+        if (it.agg && !['sum', 'avg', 'min', 'max', 'count'].includes(it.agg)) err(`${at} (matrix): unknown aggregate ${it.agg}`);
+        if (it.format && !isDatePattern(it.format) && !/[#0]/.test(it.format)) err(`${at}: format '${it.format}' has no # or 0`);
+        drill(at, it.drill);
+        break;
+      case 'image':
+        image(at, it);
+        break;
+      case 'columns':
+        if (depth >= 2) err(`${at}: columns can be nested two deep at most`);
+        if (!it.columns?.length || it.columns.length > 6) err(`${at} (columns) needs 1 to 6 columns`);
+        it.columns?.forEach((c, k) => {
+          if (c.width !== undefined && !(c.width > 0)) err(`${at}, column ${k + 1}: the width must be positive`);
+          (c.items ?? []).forEach((sub, j) => {
+            if (sub.type === 'pageBreak') err(`${at}, column ${k + 1}: a page break cannot go inside columns`);
+            else item(sub, `${at}, column ${k + 1}, item ${j + 1}`, depth + 1);
+          });
+        });
+        break;
+      case 'subreport':
+        if (!it.report?.trim()) err(`${at} (sub-report) has no report`);
+        else if (it.report === r.name) err(`${at}: a report cannot contain itself`);
+        if (it.dataset) needDataset(at, it.dataset);
+        for (const v of Object.values(it.params ?? {})) template(`${at} (sub-report)`, String(v));
+        if (it.limit !== undefined && !(it.limit >= 1 && it.limit <= 50)) err(`${at} (sub-report): the limit must be between 1 and 50`);
         break;
       case 'spacer':
         if (!(it.height >= 0 && it.height <= 400)) err(`${at} (spacer) height must be between 0 and 400 points`);
@@ -271,7 +424,8 @@ export function validateReport(r: ReportDef): string[] {
       default:
         err(`${at} has an unknown type`);
     }
-  });
+  };
+  r.body?.forEach((it, i) => item(it, `body item ${i + 1}`, 0));
   return errors;
 }
 

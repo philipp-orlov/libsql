@@ -5,8 +5,10 @@
 // a key that highlights it with the same category elsewhere, the legend's toggles); the PDF ignores that.
 // Free of Angular imports on purpose.
 
-import { formatNumber } from './format';
-import { arcTo, Color, FontFace, PathCmd, Prim, Tip } from './primitives';
+import type { ChartItem } from './definition';
+import { formatNumber, formatValue } from './format';
+import { columnIndex, DataSet } from './scope';
+import { Action, arcTo, Color, FontFace, PathCmd, Prim, Tip } from './primitives';
 
 export const PALETTE: Color[] = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac'];
 
@@ -56,8 +58,10 @@ export interface ChartOptions {
 
 /** Where the chart is in the report, and which of its series (slices, for a pie) the reader switched off. */
 export interface ChartContext {
-  item: number;
+  item: number | string;
   hidden: number[];
+  /** A click on the mark of category `c` (an index into `categories`) opens another report: what the click does, and its name for the tooltip. */
+  drill?: { action(c: number): Action; label: string };
 }
 
 const INK = '#222222';
@@ -255,6 +259,7 @@ export function drawChart(spec: ChartSpec, data: ChartData, box: ChartBox, optio
   const tipFor = (c: number): Tip => {
     const rows: Tip['rows'] = visible.map(s => ({ label: data.series[s].label, value: at(s, c) === null ? '—' : formatNumber(at(s, c)!, fmt), color: data.series[s].color }));
     if (stacked) rows.push({ label: 'Total', value: formatNumber(visible.reduce((a, s) => a + (at(s, c) ?? 0), 0), fmt), bold: true });
+    if (ctx.drill) rows.push({ label: 'Click to open', value: ctx.drill.label });
     return { title: data.categories[c], rows };
   };
 
@@ -284,7 +289,7 @@ export function drawChart(spec: ChartSpec, data: ChartData, box: ChartBox, optio
           }
         }
         const offset = (slot - groupSize) / 2 + (stacked ? 0 : vi * barSize);
-        const hit = { key: data.categories[c], cls: 'bar' };
+        const hit = { key: data.categories[c], cls: 'bar', action: ctx.drill?.action(c) };
         let bx: number, by: number, bw: number, bh: number;
         if (horizontal) {
           const x0 = vx(a);
@@ -344,7 +349,7 @@ export function drawChart(spec: ChartSpec, data: ChartData, box: ChartBox, optio
       const dots = n <= 40;
       pts.forEach((p, c) => {
         if (!p) return;
-        if (dots) prims.push({ k: 'rect', x: p.x - 2, y: p.y - 2, w: 4, h: 4, fill: '#ffffff', stroke: color, lw: 1.2, hit: { key: data.categories[c], cls: 'point' } });
+        if (dots) prims.push({ k: 'rect', x: p.x - 2, y: p.y - 2, w: 4, h: 4, fill: '#ffffff', stroke: color, lw: 1.2, hit: { key: data.categories[c], cls: 'point', action: ctx.drill?.action(c) } });
         if (spec.labels && n <= 16) {
           const text = short(at(s, c)!, fmt);
           prims.push({ k: 'text', x: p.x - m.width(text, 'regular', labelSize) / 2, y: p.y - 6, text, face: 'regular', size: labelSize, color: INK });
@@ -356,8 +361,8 @@ export function drawChart(spec: ChartSpec, data: ChartData, box: ChartBox, optio
   // one ghost per category on top: the tooltip of the whole column or row, and the highlight key
   for (let c = 0; c < n; c++) {
     const key = data.categories[c];
-    if (horizontal) prims.push({ k: 'rect', x: px, y: py + slot * c, w: pw, h: slot, hit: { ghost: true, cls: 'slot', key, tip: tipFor(c) } });
-    else prims.push({ k: 'rect', x: px + slot * c, y: py, w: slot, h: ph, hit: { ghost: true, cls: 'slot', key, tip: tipFor(c) } });
+    if (horizontal) prims.push({ k: 'rect', x: px, y: py + slot * c, w: pw, h: slot, hit: { ghost: true, cls: 'slot', key, tip: tipFor(c), action: ctx.drill?.action(c) } });
+    else prims.push({ k: 'rect', x: px + slot * c, y: py, w: slot, h: ph, hit: { ghost: true, cls: 'slot', key, tip: tipFor(c), action: ctx.drill?.action(c) } });
   }
   return prims;
 }
@@ -412,7 +417,11 @@ function pie(spec: ChartSpec, data: ChartData, box: ChartBox, legend: boolean, f
     const pct = formatNumber((s.value / total) * 100, '0.#') + '%';
     prims.push({
       k: 'path', cmds, fill: color, stroke: '#ffffff', lw: 1,
-      hit: { key: s.label, cls: 'slice', fx: { dx: Math.cos(mid) * 5, dy: Math.sin(mid) * 5 }, tip: { title: s.label, rows: [{ label: first.label || 'Value', value: formatNumber(s.value, fmt), color }, { label: 'Share', value: pct }] } },
+      hit: {
+        key: s.label, cls: 'slice', fx: { dx: Math.cos(mid) * 5, dy: Math.sin(mid) * 5 },
+        action: ctx.drill && s.idx >= 0 ? ctx.drill.action(s.idx) : undefined,
+        tip: { title: s.label, rows: [{ label: first.label || 'Value', value: formatNumber(s.value, fmt), color }, { label: 'Share', value: pct }, ...(ctx.drill && s.idx >= 0 ? [{ label: 'Click to open', value: ctx.drill.label }] : [])] },
+      },
     });
     if (spec.labels !== false && sweep > 0.28) {
       const lr = inner ? (r + inner) / 2 : r * 0.64;
@@ -446,4 +455,33 @@ function pie(spec: ChartSpec, data: ChartData, box: ChartBox, legend: boolean, f
     });
   }
   return prims;
+}
+
+
+/** The most rows a chart draws. */
+export const CHART_MAX_ROWS = 200;
+
+/** The categories and series a chart item draws from its dataset's rows (at most CHART_MAX_ROWS of them), and the rows they came from. */
+export function chartData(it: ChartItem, ds: DataSet, label: string, warn: (message: string) => void): { data: ChartData; rows: DataSet['rows'] } | null {
+  const cat = columnIndex(ds, it.category);
+  if (cat < 0) {
+    warn(`${label}: dataset ${it.dataset} has no column ${it.category}`);
+    return null;
+  }
+  if (ds.rows.length > CHART_MAX_ROWS) warn(`${label}: only the first ${CHART_MAX_ROWS} of ${ds.rows.length} rows are drawn`);
+  const rows = ds.rows.slice(0, CHART_MAX_ROWS);
+  const series = it.series.map((s, i) => {
+    const idx = columnIndex(ds, s.field);
+    if (idx < 0) warn(`${label}: no column ${s.field}`);
+    return {
+      label: s.label ?? s.field,
+      color: s.color ?? PALETTE[i % PALETTE.length],
+      values: rows.map(r => {
+        const v = idx >= 0 ? r[idx] : null;
+        const x = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN;
+        return Number.isFinite(x) ? x : null;
+      }),
+    };
+  });
+  return { data: { categories: rows.map(r => formatValue(r[cat] ?? null)), series }, rows };
 }

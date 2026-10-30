@@ -9,10 +9,18 @@ import { Action, PageDoc, pageToSvg, Region, Tip, ViewState } from '../core';
 import { Choice, SelectComponent } from '../shared/select.component';
 import { FONT_FAMILY } from '../report.service';
 
+/** Open this report with these parameters (texts, as the parameter form holds them). */
+export interface DrillRequest {
+  report: string;
+  params: Record<string, string>;
+}
+
 /** An item of the report the reader pointed at in the preview (the designer selects it for editing). */
 export interface ItemPick {
   section: Region['section'];
   index: number;
+  /** An item inside columns: the list it is in. */
+  list?: string;
 }
 
 /**
@@ -37,6 +45,8 @@ export class ReportViewerComponent {
   readonly pickable = input(false);
   readonly picked = input<ItemPick | null>(null);
   readonly pick = output<ItemPick>();
+  /** The reader clicked a mark that opens another report. */
+  readonly drill = output<DrillRequest>();
 
   protected readonly index = signal(0);
   protected readonly zoom = signal<'fit' | number>('fit');
@@ -81,7 +91,7 @@ export class ReportViewerComponent {
       if (!el) return;
       untracked(() => {
         el.innerHTML = svg;
-        this.marks = Array.from(el.querySelectorAll('.bar,.point,.slice'));
+        this.marks = Array.from(el.querySelectorAll('.bar,.point,.slice,.cell'));
         this.hideTip();
         this.focus(this.selected());
         this.showPicked();
@@ -140,7 +150,7 @@ export class ReportViewerComponent {
     else this.hideTip();
     this.hover = mark?.getAttribute('data-k') ?? null;
     this.focus(this.hover ?? this.selected());
-    if (this.pickable()) this.outlineAt(event, !mark?.getAttribute('data-act'));
+    if (this.pickable()) this.outlineAt(event, !mark?.getAttribute('data-act') || !!mark.getAttribute('data-act')?.includes('"type":"drill"'));
   }
 
   protected onLeave(): void {
@@ -154,12 +164,21 @@ export class ReportViewerComponent {
     const mark = (event.target as Element).closest('[data-act]');
     const act = mark?.getAttribute('data-act');
     if (act) {
-      this.apply(JSON.parse(act) as Action);
+      const a = JSON.parse(act) as Action;
+      if (a.type === 'drill') {
+        if (!this.pickable()) this.drill.emit({ report: a.report, params: a.params });
+        else {
+          const region = this.regionAt(event);
+          if (region) this.pick.emit({ section: region.section, index: region.index, list: region.list });
+        }
+        return;
+      }
+      this.apply(a);
       return;
     }
     if (this.pickable()) {
       const region = this.regionAt(event);
-      if (region) this.pick.emit({ section: region.section, index: region.index });
+      if (region) this.pick.emit({ section: region.section, index: region.index, list: region.list });
       return;
     }
     const key = (event.target as Element).closest('[data-k]')?.getAttribute('data-k') ?? null;
@@ -173,7 +192,7 @@ export class ReportViewerComponent {
     this.focus(null);
   }
 
-  private apply(a: Action): void {
+  private apply(a: Exclude<Action, { type: 'drill' }>): void {
     const v = structuredClone(this.view());
     if (a.type === 'series') {
       const hidden = (v.hidden ??= {});
@@ -296,7 +315,7 @@ export class ReportViewerComponent {
     if (!host || !mark) return;
     const picked = this.picked();
     const page = this.pages()[this.current()];
-    const region = picked && page ? (page.regions ?? []).find(r => r.section === picked.section && r.index === picked.index) : undefined;
+    const region = picked && page ? (page.regions ?? []).find(r => r.section === picked.section && r.index === picked.index && r.list === picked.list) : undefined;
     if (region) this.place(mark, region);
     else mark.hidden = true;
   }

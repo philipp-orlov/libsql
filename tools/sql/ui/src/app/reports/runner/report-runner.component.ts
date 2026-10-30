@@ -15,7 +15,7 @@ import { LayoutResult, ParamDef, ParamOption, paramText, paramValue, ReportDef, 
 import { ReportService, RunResult } from '../report.service';
 import { Choice, SelectComponent } from '../shared/select.component';
 import { DateComponent } from '../shared/date.component';
-import { ReportViewerComponent } from '../viewer/report-viewer.component';
+import { DrillRequest, ReportViewerComponent } from '../viewer/report-viewer.component';
 
 /** Lists the reports, asks for the parameters, runs one, shows it page by page, and exports it as PDF or CSV. */
 @Component({
@@ -43,6 +43,9 @@ export class ReportRunnerComponent implements OnInit {
   protected readonly tables = signal<TableData[]>([]);
   /** What the reader did in the preview: series switched off, a sort, folded groups. The PDF and the CSV follow it. */
   protected readonly view = signal<ViewState>({});
+
+  /** The reports the reader drilled through from, oldest first, with the parameters each was run with. */
+  protected readonly trail = signal<{ report: ReportDef; form: Record<string, string> }[]>([]);
 
   private lastRun: RunResult | null = null;
   private lastValues: Record<string, Value> = {};
@@ -93,7 +96,14 @@ export class ReportRunnerComponent implements OnInit {
     }
   }
 
-  protected async select(report: ReportDef): Promise<void> {
+  /** The reader chose a report in the list: a new start. */
+  protected async choose(report: ReportDef): Promise<void> {
+    this.trail.set([]);
+    await this.select(report);
+  }
+
+  /** Opens a report with its default parameters, or with `given` (by name, as text) in their place. */
+  protected async select(report: ReportDef, given?: Record<string, string>): Promise<void> {
     this.selected.set(report);
     this.layout.set(null);
     this.tables.set([]);
@@ -102,7 +112,7 @@ export class ReportRunnerComponent implements OnInit {
     this.lastRun = null;
     this.view.set({});
     const form: Record<string, string> = {};
-    for (const p of report.parameters) form[p.name] = paramText(p);
+    for (const p of report.parameters) form[p.name] = given && p.name in given ? given[p.name] : paramText(p);
     this.form.set(form);
     this.choices.set({});
     for (const p of report.parameters) {
@@ -114,6 +124,29 @@ export class ReportRunnerComponent implements OnInit {
         this.warnings.update(w => [...w, `the choices of ${p.label || p.name}: ${(e as Error).message}`]);
       }
     }
+  }
+
+  /** A click on a mark that opens another report: go there with the parameters it gives, and remember the way back. */
+  protected async drill(request: DrillRequest): Promise<void> {
+    const target = this.reports().find(r => r.name === request.report);
+    const from = this.selected();
+    if (!target) {
+      this.notice.error(new Error(`There is no report called ${request.report}.`));
+      return;
+    }
+    if (from) this.trail.update(t => [...t, { report: from, form: this.form() }]);
+    await this.select(target, request.params);
+    await this.run();
+  }
+
+  /** Back to the report `steps` levels up the trail, as it was run. */
+  protected async back(steps = 1): Promise<void> {
+    const trail = this.trail();
+    const to = trail[trail.length - steps];
+    if (!to) return;
+    this.trail.set(trail.slice(0, trail.length - steps));
+    await this.select(to.report, to.form);
+    await this.run();
   }
 
   protected setValue(name: string, value: string): void {
@@ -139,11 +172,11 @@ export class ReportRunnerComponent implements OnInit {
     try {
       this.lastValues = this.values(report);
       const result = await this.svc.run(report, this.lastValues);
-      const laid = await this.svc.layout(report, this.lastValues, result.datasets, this.view());
+      const laid = await this.svc.layout(report, this.lastValues, result.datasets, this.view(), result.subs);
       this.lastRun = result;
       this.layout.set(laid);
       this.warnings.set([...result.warnings, ...laid.warnings]);
-      this.tables.set(tableData(report, this.lastValues, result.datasets, new Date(), this.view()));
+      this.tables.set(tableData(report, this.lastValues, result.datasets, new Date(), this.view(), result.subs));
     } catch (e) {
       this.layout.set(null);
       this.tables.set([]);
@@ -158,8 +191,8 @@ export class ReportRunnerComponent implements OnInit {
     const report = this.selected();
     if (!report || !this.lastRun) return;
     try {
-      this.layout.set(await this.svc.layout(report, this.lastValues, this.lastRun.datasets, view));
-      this.tables.set(tableData(report, this.lastValues, this.lastRun.datasets, new Date(), view));
+      this.layout.set(await this.svc.layout(report, this.lastValues, this.lastRun.datasets, view, this.lastRun.subs));
+      this.tables.set(tableData(report, this.lastValues, this.lastRun.datasets, new Date(), view, this.lastRun.subs));
     } catch (e) {
       this.error.set((e as Error).message);
     }
@@ -175,6 +208,26 @@ export class ReportRunnerComponent implements OnInit {
     if (!report || !laid) return;
     try {
       downloadBlob(`${report.name}.pdf`, await this.svc.pdf(laid, report));
+    } catch (e) {
+      this.notice.error(e);
+    }
+  }
+
+  protected async exportXlsx(): Promise<void> {
+    const report = this.selected();
+    if (!report || !this.lastRun) return;
+    try {
+      downloadBlob(`${report.name}.xlsx`, await this.svc.xlsx(report, this.lastValues, this.lastRun, this.view()));
+    } catch (e) {
+      this.notice.error(e);
+    }
+  }
+
+  protected async exportDocx(): Promise<void> {
+    const report = this.selected();
+    if (!report || !this.lastRun) return;
+    try {
+      downloadBlob(`${report.name}.docx`, await this.svc.docx(report, this.lastValues, this.lastRun, this.view()));
     } catch (e) {
       this.notice.error(e);
     }

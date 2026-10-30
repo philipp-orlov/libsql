@@ -44,7 +44,7 @@ The top bar shows which database the page edits and whether it is read-write or 
 
 The tabs **Reports** and **Report Designer** run and build reports: parameters, SQL datasets, grouped tables with subtotals, interactive charts (bars,
 stacked, horizontal, lines, areas, pies, donuts: tooltips, highlight across charts, legend toggles), sortable tables with foldable groups, a page header and
-footer, and **PDF** and **CSV** export of what is shown, with no libraries behind it. The designer has a data pane to drag fields from, a chart gallery, undo/redo,
+footer, and **PDF**, **Excel**, **Word** and **CSV** export, cross-tabs, columns, pictures, rich text, drill-through and sub-reports of what is shown, with no libraries behind it. The designer has a data pane to drag fields from, a chart gallery, undo/redo,
 and edits an item when you click it in the preview. `/reports` is the runner on a page of its own, for
 customers. Reports are JSON files in `<database>.reports/` (or `--reports DIR`) and run on a read-only session. See [../../docs/reports.md](../../docs/reports.md);
 [../../demo](../../demo) has a database and six reports to try.

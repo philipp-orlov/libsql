@@ -2,12 +2,12 @@
   "format": 1,
   "name": "Top Customers",
   "title": "Top Customers",
-  "description": "The customers that bought the most in a year, with where they are and what kind of customer they are.",
+  "description": "The customers that bought the most in a year, with where they are and what kind of customer they are. Click a customer to open their statement.",
   "page": {
     "size": "A4",
     "orientation": "portrait",
     "margins": {
-      "top": 44,
+      "top": 40,
       "right": 36,
       "bottom": 40,
       "left": 36
@@ -50,7 +50,7 @@
   "datasets": [
     {
       "name": "top",
-      "sql": "SELECT row_number() OVER (ORDER BY sum(revenue) DESC) AS rank, customer, country, segment, industry, count(DISTINCT order_id) AS orders, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY customer_id ORDER BY revenue DESC LIMIT :top"
+      "sql": "SELECT row_number() OVER (ORDER BY sum(revenue) DESC) AS rank, customer_id, customer, country, segment, industry, count(DISTINCT order_id) AS orders, round(sum(revenue)) AS revenue FROM sales WHERE year = :year GROUP BY customer_id ORDER BY revenue DESC LIMIT :top"
     },
     {
       "name": "segments",
@@ -67,8 +67,8 @@
       "text": "{{ReportName}}",
       "style": {
         "face": "bold",
-        "size": 9,
-        "color": "#546e7a"
+        "size": 8,
+        "color": "#6b7280"
       }
     },
     {
@@ -81,33 +81,44 @@
     },
     {
       "type": "text",
-      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "text": "Aurelia Systems · fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
       "style": {
         "size": 8,
-        "color": "#546e7a",
+        "color": "#6b7280",
         "align": "right"
       }
     }
   ],
   "body": [
     {
-      "type": "text",
-      "text": " Top {{top}} Customers of {{year}}",
-      "style": {
-        "face": "bold",
-        "size": 22,
-        "color": "#ffffff",
-        "background": "#8e24aa"
-      }
+      "type": "columns",
+      "gap": 8,
+      "columns": [
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "image",
+              "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij48cG9seWdvbiBwb2ludHM9IjMyLDMgNTgsMTggNTgsNDYgMzIsNjEgNiw0NiA2LDE4IiBmaWxsPSIjMGQ0N2ExIi8+PHBhdGggZD0iTTE0IDQ0bDEzLTE4IDggMTAgNS03IDEwIDE1eiIgZmlsbD0iI2ZmZmZmZiIvPjxwYXRoIGQ9Ik0xNCA0NGwxMy0xOCA4IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjhjMDAiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=",
+              "width": 34
+            }
+          ]
+        },
+        {
+          "width": 14,
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=20][b][color=#8e24aa]Top {{top}} Customers of {{year}}[/color][/b][/size]\n[size=9][color=#6b7280]Together {{Format(Sum(revenue), \"$#,##0\")}} from {{Sum(orders)}} orders[/color][/size]",
+              "dataset": "top"
+            }
+          ]
+        }
+      ]
     },
     {
-      "type": "text",
-      "text": "Together {{Format(Sum(revenue), \"$#,##0\")}} from {{Sum(orders)}} orders",
-      "style": {
-        "size": 10,
-        "color": "#546e7a"
-      },
-      "dataset": "top"
+      "type": "rule"
     },
     {
       "type": "spacer",
@@ -120,7 +131,7 @@
       "labels": true,
       "dataset": "top",
       "category": "customer",
-      "title": "Revenue by customer",
+      "title": "Revenue by customer  (click a bar for the statement)",
       "height": 300,
       "format": "$#,##0",
       "series": [
@@ -129,7 +140,13 @@
           "label": "Revenue",
           "color": "#8e24aa"
         }
-      ]
+      ],
+      "drill": {
+        "report": "Customer Statement",
+        "params": {
+          "customer": "{{customer_id}}"
+        }
+      }
     },
     {
       "type": "table",
@@ -171,43 +188,65 @@
           "width": 1.3,
           "total": "sum"
         }
-      ]
+      ],
+      "drill": {
+        "report": "Customer Statement",
+        "params": {
+          "customer": "{{customer_id}}"
+        }
+      }
     },
     {
       "type": "spacer",
       "height": 8
     },
     {
-      "type": "chart",
-      "chart": "pie",
-      "donut": true,
-      "dataset": "segments",
-      "category": "segment",
-      "title": "All customers: revenue by segment",
-      "height": 200,
-      "format": "$#,##0",
-      "series": [
+      "type": "columns",
+      "gap": 12,
+      "columns": [
         {
-          "field": "revenue",
-          "label": "Revenue"
-        }
-      ]
-    },
-    {
-      "type": "chart",
-      "chart": "bar",
-      "horizontal": true,
-      "labels": true,
-      "dataset": "industries",
-      "category": "industry",
-      "title": "All customers: revenue by industry",
-      "height": 220,
-      "format": "$#,##0",
-      "series": [
+          "width": 1,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "pie",
+              "donut": true,
+              "dataset": "segments",
+              "category": "segment",
+              "title": "All customers: by segment",
+              "height": 210,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "revenue",
+                  "label": "Revenue"
+                }
+              ]
+            }
+          ]
+        },
         {
-          "field": "revenue",
-          "label": "Revenue",
-          "color": "#fb8c00"
+          "width": 1,
+          "items": [
+            {
+              "type": "chart",
+              "chart": "bar",
+              "horizontal": true,
+              "labels": true,
+              "dataset": "industries",
+              "category": "industry",
+              "title": "All customers: by industry",
+              "height": 210,
+              "format": "$#,##0",
+              "series": [
+                {
+                  "field": "revenue",
+                  "label": "Revenue",
+                  "color": "#fb8c00"
+                }
+              ]
+            }
+          ]
         }
       ]
     }

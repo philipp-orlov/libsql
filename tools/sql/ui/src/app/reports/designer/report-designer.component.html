@@ -53,7 +53,7 @@
               <app-datasets-editor [report]="r" (edit)="apply($event)" (ran)="ran($event)" />
             </mat-tab>
             <mat-tab label="Layout">
-              <app-layout-editor [report]="r" [fields]="fields()" [selection]="picked()" (edit)="apply($event)" (opened)="picked.set($event)" />
+              <app-layout-editor [report]="r" [fields]="fields()" [reportNames]="names()" [selection]="picked()" (edit)="apply($event)" (opened)="picked.set($event)" />
             </mat-tab>
             <mat-tab label="JSON">
               <div class="editor">

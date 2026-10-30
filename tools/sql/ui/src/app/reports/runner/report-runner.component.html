@@ -5,7 +5,7 @@
       <p class="hint">Loading…</p>
     }
     @for (report of reports(); track report.name) {
-      <button class="entry" [class.active]="selected()?.name === report.name" (click)="select(report)">
+      <button class="entry" [class.active]="selected()?.name === report.name" (click)="choose(report)">
         <span class="title">{{ report.title || report.name }}</span>
         @if (report.description) {
           <span class="description">{{ report.description }}</span>
@@ -24,6 +24,16 @@
   <section class="main">
     @if (selected(); as report) {
       <header class="head">
+        @if (trail().length) {
+          <nav class="trail" aria-label="Drill-through trail">
+            @for (step of trail(); track $index; let i = $index) {
+              <button class="crumb" (click)="back(trail().length - i)">{{ step.report.title || step.report.name }}</button>
+              <mat-icon class="sep">chevron_right</mat-icon>
+            }
+            <span class="here">{{ report.title || report.name }}</span>
+            <button mat-button class="back" (click)="back()"><mat-icon>arrow_back</mat-icon>Back</button>
+          </nav>
+        }
         <h1>{{ report.title || report.name }}</h1>
         @if (report.description) {
           <p class="description">{{ report.description }}</p>
@@ -57,6 +67,14 @@
             <mat-icon>picture_as_pdf</mat-icon>
             PDF
           </button>
+          <button mat-button type="button" class="xlsx" (click)="exportXlsx()" [disabled]="!layout()">
+            <mat-icon>grid_on</mat-icon>
+            Excel
+          </button>
+          <button mat-button type="button" class="docx" (click)="exportDocx()" [disabled]="!layout()">
+            <mat-icon>description</mat-icon>
+            Word
+          </button>
           @if (tables().length > 1) {
             <button mat-button type="button" class="csv" [matMenuTriggerFor]="csvMenu" [disabled]="!layout()">
               <mat-icon>table_view</mat-icon>
@@ -84,7 +102,7 @@
       }
 
       <div class="view">
-        <app-report-viewer [pages]="pages()" [busy]="running()" [(view)]="view" />
+        <app-report-viewer [pages]="pages()" [busy]="running()" [(view)]="view" (drill)="drill($event)" />
       </div>
     } @else {
       <div class="none">

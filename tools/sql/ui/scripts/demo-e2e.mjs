@@ -100,7 +100,25 @@ for (const [i, title] of titles.entries()) {
   const bytes = fs.readFileSync(path.join(downloads, pdf));
   assert.equal(bytes.subarray(0, 5).toString(), '%PDF-');
   assert(bytes.toString('latin1').includes('/CIDFontType2'), `${title}: no embedded font`);
-  results.push({ title, pages, pdf, size: bytes.length });
+  // Excel and Word are zip files with their parts in them
+  for (const [kind, part] of [['xlsx', 'xl/workbook.xml'], ['docx', 'word/document.xml']]) {
+    await ev(`document.querySelector('button.${kind}').click()`);
+    const name = `${title.replace(/[^A-Za-z0-9]+/g, '_')}.${kind}`;
+    let got;
+    for (let k = 0; k < 100 && !got; k++) {
+      got = fs.readdirSync(downloads).find(f => f.endsWith('.' + kind) && !fs.existsSync(path.join(downloads, f + '.crdownload')) && !results.some(r => r[kind] === f));
+      if (!got) await sleep(100);
+    }
+    assert(got, `${title}: no ${kind}`);
+    await sleep(150);
+    const file = fs.readFileSync(path.join(downloads, got));
+    assert.equal(file.subarray(0, 2).toString(), 'PK', `${title}: the ${kind} is not a zip`);
+    assert(file.toString('latin1').includes(part), `${title}: the ${kind} has no ${part}`);
+    results.at(-1) ?? 0;
+    (globalThis.__office ??= {})[title + kind] = got;
+    void name;
+  }
+  results.push({ title, pages, pdf, size: bytes.length, xlsx: globalThis.__office[title + 'xlsx'], docx: globalThis.__office[title + 'docx'] });
 }
 assert.equal(results.length, expected.length);
 assert(problems.length === 0, `errors in the page: ${problems.join(' | ')}`);

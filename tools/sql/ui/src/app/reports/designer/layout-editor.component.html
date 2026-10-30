@@ -24,8 +24,34 @@
     </div>
   </ng-template>
 
-  @for (section of sections; track section) {
-    <h3>{{ titles[section] }}</h3>
+
+  <ng-template #drillForm let-section="section" let-i="i" let-drill="drill">
+    <div class="shelf drill">
+      <div class="shelf-title"><mat-icon>ads_click</mat-icon>Drill-through<span>a click opens another report</span></div>
+      <div class="row">
+        <app-combo label="Open report" [value]="drill?.report ?? ''" [suggestions]="reportNames()" [width]="240" placeholder="(none)" (valueChange)="setDrillReport(section, i, $event)" />
+        @if (drill) {
+          <button mat-button class="no-drill" (click)="setDrillReport(section, i, '')"><mat-icon>close</mat-icon>None</button>
+        }
+      </div>
+      @if (drill) {
+        <ng-container *ngTemplateOutlet="paramMap; context: { section: section, i: i, holder: 'drill', map: drill.params, hint: 'The clicked row: {{field}}' }" />
+      }
+    </div>
+  </ng-template>
+
+  <ng-template #paramMap let-section="section" let-i="i" let-holder="holder" let-map="map" let-hint="hint">
+    @for (name of paramKeys(map); track $index) {
+      <div class="row">
+        <app-text class="field" label="Parameter" [mono]="true" [value]="name" (valueChange)="renameParam(section, i, holder, name, $event)" />
+        <app-text class="field wide" label="Value" [mono]="true" [placeholder]="hint" [value]="map[name]" (valueChange)="setParam(section, i, holder, name, $event)" />
+        <span class="tools"><button mat-icon-button (click)="removeParam(section, i, holder, name)" aria-label="Delete parameter"><mat-icon>close</mat-icon></button></span>
+      </div>
+    }
+    <button mat-button class="add-param" (click)="addParam(section, i, holder)"><mat-icon>add</mat-icon>Parameter</button>
+  </ng-template>
+
+  <ng-template #itemList let-section="section">
     @for (item of items(section); track $index; let i = $index) {
       <section class="card item" [class.active]="open() === key(section, i)" [attr.data-type]="item.type">
         <div class="item-head">
@@ -39,11 +65,24 @@
           </span>
         </div>
 
-        @if (open() === key(section, i)) {
+        @if (isOpen(section, i)) {
           <div class="body">
           @switch (item.type) {
             @case ('text') {
               <app-text class="field" label="Text" [rows]="3" [value]="asText(item).text" (valueChange)="set(section, i, 'text', $event)" />
+              <div class="row rich">
+                <mat-checkbox class="check" [checked]="!!asRich(item).rich" (change)="set(section, i, 'rich', $event.checked)">Rich text</mat-checkbox>
+                @if (asRich(item).rich) {
+                  <span class="markup" role="toolbar" aria-label="Markup">
+                    <button mat-icon-button type="button" title="Bold" aria-label="Bold" (click)="markup(section, i, '[b]', '[/b]')"><mat-icon>format_bold</mat-icon></button>
+                    <button mat-icon-button type="button" title="Underline" aria-label="Underline" (click)="markup(section, i, '[u]', '[/u]')"><mat-icon>format_underlined</mat-icon></button>
+                    <button mat-icon-button type="button" title="Color" aria-label="Color" (click)="markup(section, i, '[color=#e15759]', '[/color]')"><mat-icon>format_color_text</mat-icon></button>
+                    <button mat-icon-button type="button" title="Highlight" aria-label="Highlight" (click)="markup(section, i, '[bg=#fff3cd]', '[/bg]')"><mat-icon>format_color_fill</mat-icon></button>
+                    <button mat-icon-button type="button" title="Size" aria-label="Size" (click)="markup(section, i, '[size=18]', '[/size]')"><mat-icon>format_size</mat-icon></button>
+                  </span>
+                  <span class="hint">Select text, then a button. A line starting with “- ” is a bullet. <code>[color=#hex]</code> <code>[size=pt]</code> <code>[bg=#hex]</code></span>
+                }
+              </div>
               <app-combo label="Rows for Sum(), Count()… come from the dataset (optional)" [value]="asText(item).dataset ?? ''" [suggestions]="datasetNames()" [width]="250" (valueChange)="set(section, i, 'dataset', $event)" />
               <ng-container *ngTemplateOutlet="styleForm; context: { section: section, i: i, style: asText(item).style }" />
             }
@@ -106,6 +145,7 @@
                   <button mat-button class="add-all" (click)="addAllColumns(section, i)" [disabled]="columnsOf(asTable(item).dataset).length === 0">Add all fields</button>
                 </div>
               </div>
+              <ng-container *ngTemplateOutlet="drillForm; context: { section: section, i: i, drill: drillOf(item) }" />
               <ng-container *ngTemplateOutlet="styleForm; context: { section: section, i: i, style: asTable(item).style }" />
             }
             @case ('chart') {
@@ -153,6 +193,127 @@
                 <mat-checkbox class="check" [checked]="!!asChart(item).labels" (change)="set(section, i, 'labels', $event.checked)">Values on the marks</mat-checkbox>
                 <app-text class="field" label="Number format" [mono]="true" placeholder="#,##0.##" [value]="asChart(item).format ?? ''" (valueChange)="set(section, i, 'format', $event)" />
               </div>
+              <ng-container *ngTemplateOutlet="drillForm; context: { section: section, i: i, drill: drillOf(item) }" />
+            }
+            @case ('matrix') {
+              <div class="row">
+                <app-combo label="Dataset" [value]="asMatrix(item).dataset" [suggestions]="datasetNames()" [width]="170" (valueChange)="setDataset(section, i, $event)" />
+                <app-text class="field wide" label="Title" [value]="asMatrix(item).title ?? ''" (valueChange)="set(section, i, 'title', $event)" />
+                <app-select label="Color scale" [value]="asMatrix(item).heat ?? ''" [options]="heatOptions" [width]="160" (valueChange)="set(section, i, 'heat', $event)" />
+              </div>
+              <div class="shelf" [class.over]="over() === 'mrows' + key(section, i)" (dragover)="dragOver($event, 'mrows' + key(section, i))" (dragleave)="dragLeave('mrows' + key(section, i))" (drop)="drop($event, 'rows', section, i)">
+                <div class="shelf-title"><mat-icon>table_rows</mat-icon>Rows<span>one or two fields down the side</span></div>
+                <div class="row">
+                  <app-combo label="Row field" [value]="asMatrix(item).rows[0] ?? ''" [suggestions]="columnsOf(asMatrix(item).dataset)" [mono]="true" [width]="200" placeholder="Drop a field" (valueChange)="set(section, i, 'rows.0', $event)" />
+                  @if (asMatrix(item).rows.length > 1) {
+                    <app-combo label="Then by" [value]="asMatrix(item).rows[1]" [suggestions]="columnsOf(asMatrix(item).dataset)" [mono]="true" [width]="200" (valueChange)="set(section, i, 'rows.1', $event)" />
+                    <button mat-button class="one-row" (click)="removeFrom(section, i, 'rows', 1)"><mat-icon>close</mat-icon>Second field</button>
+                  } @else {
+                    <button mat-button class="second-row" (click)="set(section, i, 'rows.1', columnsOf(asMatrix(item).dataset).find(c => c !== asMatrix(item).rows[0] && c !== asMatrix(item).column) ?? '')"><mat-icon>add</mat-icon>Second field</button>
+                  }
+                </div>
+              </div>
+              <div class="shelf" [class.over]="over() === 'mcolumn' + key(section, i)" (dragover)="dragOver($event, 'mcolumn' + key(section, i))" (dragleave)="dragLeave('mcolumn' + key(section, i))" (drop)="drop($event, 'column', section, i)">
+                <div class="shelf-title"><mat-icon>view_column</mat-icon>Columns<span>its values become the headings</span></div>
+                <div class="row">
+                  <app-combo label="Column field" [value]="asMatrix(item).column" [suggestions]="columnsOf(asMatrix(item).dataset)" [mono]="true" [width]="200" placeholder="Drop a field" (valueChange)="set(section, i, 'column', $event)" />
+                  <app-select label="Order of the columns" [value]="asMatrix(item).sortColumns ?? ''" [options]="orderMatrixColumns" [width]="190" (valueChange)="set(section, i, 'sortColumns', $event)" />
+                </div>
+              </div>
+              <div class="shelf" [class.over]="over() === 'mvalue' + key(section, i)" (dragover)="dragOver($event, 'mvalue' + key(section, i))" (dragleave)="dragLeave('mvalue' + key(section, i))" (drop)="drop($event, 'value', section, i)">
+                <div class="shelf-title"><mat-icon>tag</mat-icon>Cells<span>the number each cell adds up</span></div>
+                <div class="row">
+                  <app-combo label="Value field" [value]="asMatrix(item).value" [suggestions]="columnsOf(asMatrix(item).dataset)" [mono]="true" [width]="200" placeholder="Drop a number" (valueChange)="set(section, i, 'value', $event)" />
+                  <app-select label="Aggregate" [value]="asMatrix(item).agg ?? ''" [options]="aggOptions" [width]="150" (valueChange)="set(section, i, 'agg', $event)" />
+                  <app-text class="field" label="Number format" [mono]="true" placeholder="#,##0.##" [value]="asMatrix(item).format ?? ''" (valueChange)="set(section, i, 'format', $event)" />
+                </div>
+              </div>
+              <div class="row">
+                <mat-checkbox class="check" [checked]="!!asMatrix(item).rowTotals" (change)="set(section, i, 'rowTotals', $event.checked)">Row totals</mat-checkbox>
+                <mat-checkbox class="check" [checked]="!!asMatrix(item).columnTotals" (change)="set(section, i, 'columnTotals', $event.checked)">Column totals</mat-checkbox>
+                @if (asMatrix(item).rows.length > 1) {
+                  <mat-checkbox class="check" [checked]="!!asMatrix(item).subtotals" (change)="set(section, i, 'subtotals', $event.checked)">Subtotals</mat-checkbox>
+                }
+                <app-select label="Order of the rows" [value]="asMatrix(item).sortRows ?? ''" [options]="orderMatrixRows" [width]="190" (valueChange)="set(section, i, 'sortRows', $event)" />
+                <app-text class="field" label="Corner label" [value]="asMatrix(item).corner ?? ''" (valueChange)="set(section, i, 'corner', $event)" />
+              </div>
+              <ng-container *ngTemplateOutlet="drillForm; context: { section: section, i: i, drill: drillOf(item) }" />
+            }
+            @case ('image') {
+              <div class="picture">
+                @if (asImage(item).src && !asImage(item).src.includes('{{')) {
+                  <img class="thumb" [src]="asImage(item).src" alt="The picture" />
+                }
+                <div class="column">
+                  <input #file class="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" (change)="upload($event, section, i)" />
+                  <button mat-stroked-button class="upload" (click)="file.click()"><mat-icon>upload</mat-icon>Choose a picture…</button>
+                  <span class="hint">PNG, JPEG, GIF, WebP or SVG, kept inside the report (up to 700 KiB).</span>
+                </div>
+              </div>
+              <div class="row">
+                <app-text class="field" label="Width (points)" type="number" [min]="4" [max]="2000" [value]="asImage(item).width ?? ''" placeholder="its own" (valueChange)="setNumber(section, i, 'width', $event)" />
+                <app-text class="field" label="Height (points)" type="number" [min]="4" [max]="2000" [value]="asImage(item).height ?? ''" placeholder="its own" (valueChange)="setNumber(section, i, 'height', $event)" />
+                <mat-checkbox class="check" [checked]="!!asImage(item).fitWidth" (change)="set(section, i, 'fitWidth', $event.checked)">Fill the width</mat-checkbox>
+                <app-select label="Align" [value]="asImage(item).align ?? ''" [options]="imageAlign" [width]="120" (valueChange)="set(section, i, 'align', $event)" />
+              </div>
+              <div class="row">
+                <app-text class="field wide" label="Caption" [value]="asImage(item).caption ?? ''" (valueChange)="set(section, i, 'caption', $event)" />
+              </div>
+              <div class="row">
+                <app-text class="field wide" label="Picture address (data: URI; may read a field, e.g. {{ '{{' }}First(icon){{ '}}' }})" [mono]="true" [rows]="2" [value]="asImage(item).src" (valueChange)="set(section, i, 'src', $event)" />
+                <app-combo label="Rows come from (optional)" [value]="asImage(item).dataset ?? ''" [suggestions]="datasetNames()" [width]="200" (valueChange)="set(section, i, 'dataset', $event)" />
+              </div>
+            }
+            @case ('columns') {
+              <div class="row">
+                <app-text class="field" label="Gap (points)" type="number" [min]="0" [max]="60" placeholder="12" [value]="asColumns(item).gap ?? ''" (valueChange)="setNumber(section, i, 'gap', $event)" />
+                <button mat-button class="add-cell" (click)="addTo(section, i, 'columns', { items: [] })" [disabled]="asColumns(item).columns.length >= 6"><mat-icon>add</mat-icon>Column</button>
+              </div>
+              @for (c of asColumns(item).columns; track $index; let k = $index) {
+                <div class="shelf cell">
+                  <div class="shelf-title"><mat-icon>view_column</mat-icon>Column {{ k + 1 }}</div>
+                  <div class="row">
+                    <app-text class="field" label="Width" type="number" [min]="0.1" [step]="0.5" placeholder="1" [value]="c.width ?? ''" (valueChange)="setNumber(section, i, 'columns.' + k + '.width', $event)" />
+                    <mat-checkbox class="check" [checked]="!!c.card" (change)="set(section, i, 'columns.' + k + '.card', $event.checked)">Card</mat-checkbox>
+                    @if (c.card) {
+                      <label class="field">Accent
+                        <span class="inline">
+                          <input type="color" [value]="c.accent ?? '#4e79a7'" (change)="set(section, i, 'columns.' + k + '.accent', $any($event.target).value)" />
+                          <button mat-button (click)="set(section, i, 'columns.' + k + '.accent', '')" [disabled]="!c.accent">None</button>
+                        </span>
+                      </label>
+                      <label class="field">Fill
+                        <span class="inline">
+                          <input type="color" [value]="c.background ?? '#ffffff'" (change)="set(section, i, 'columns.' + k + '.background', $any($event.target).value)" />
+                          <button mat-button (click)="set(section, i, 'columns.' + k + '.background', '')" [disabled]="!c.background">None</button>
+                        </span>
+                      </label>
+                    }
+                    <span class="tools">
+                      <button mat-icon-button (click)="moveIn(section, i, 'columns', k, -1)" [disabled]="k === 0" aria-label="Move column left"><mat-icon>arrow_back</mat-icon></button>
+                      <button mat-icon-button (click)="moveIn(section, i, 'columns', k, 1)" [disabled]="k === asColumns(item).columns.length - 1" aria-label="Move column right"><mat-icon>arrow_forward</mat-icon></button>
+                      <button mat-icon-button (click)="removeFrom(section, i, 'columns', k)" [disabled]="asColumns(item).columns.length <= 1" aria-label="Delete column"><mat-icon>close</mat-icon></button>
+                    </span>
+                  </div>
+                  <div class="nested">
+                    <ng-container *ngTemplateOutlet="itemList; context: { section: section + '.' + i + '.columns.' + k + '.items' }" />
+                  </div>
+                </div>
+              }
+            }
+            @case ('subreport') {
+              <div class="row">
+                <app-combo label="Report" [value]="asSub(item).report" [suggestions]="reportNames()" [width]="260" (valueChange)="set(section, i, 'report', $event)" />
+                <app-combo label="Once for each row of (optional)" [value]="asSub(item).dataset ?? ''" [suggestions]="datasetNames()" [width]="230" (valueChange)="set(section, i, 'dataset', $event)" />
+                @if (asSub(item).dataset) {
+                  <app-text class="field" label="At most" type="number" [min]="1" [max]="50" placeholder="12" [value]="asSub(item).limit ?? ''" (valueChange)="setNumber(section, i, 'limit', $event)" />
+                  <mat-checkbox class="check" [checked]="!!asSub(item).pageBreak" (change)="set(section, i, 'pageBreak', $event.checked)">New page for each</mat-checkbox>
+                }
+              </div>
+              <div class="shelf">
+                <div class="shelf-title"><mat-icon>tune</mat-icon>Its parameters<span>a parameter left out takes the one of the same name here, else its default</span></div>
+                <ng-container *ngTemplateOutlet="paramMap; context: { section: section, i: i, holder: 'self', map: asSub(item).params, hint: asSub(item).dataset ? 'The row: {{field}}' : 'A value or {{expression}}' }" />
+              </div>
             }
           }
           </div>
@@ -166,5 +327,10 @@
         <button class="adder" [class]="'adder add-' + type" (click)="add(section, type)" [attr.data-type]="type"><mat-icon>{{ iconFor(type) }}</mat-icon>{{ label(type) }}</button>
       }
     </div>
+  </ng-template>
+
+  @for (section of sections; track section) {
+    <h3>{{ titles[section] }}</h3>
+    <ng-container *ngTemplateOutlet="itemList; context: { section: section }" />
   }
 </div>

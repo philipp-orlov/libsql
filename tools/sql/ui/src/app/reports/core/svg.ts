@@ -32,8 +32,11 @@ function prim(p: Prim, family: string): string {
       const fill = ghost ? 'transparent' : p.fill ?? 'none';
       const opacity = !ghost && p.fillOpacity !== undefined ? ` fill-opacity="${p.fillOpacity}"` : '';
       const stroke = !ghost && p.stroke ? ` stroke="${p.stroke}" stroke-width="${n(p.lw ?? 1)}"` : '';
-      return `<rect x="${n(p.x)}" y="${n(p.y)}" width="${n(p.w)}" height="${n(p.h)}" fill="${fill}"${opacity}${stroke}${hitAttrs(p.hit, p)}/>`;
+      const round = p.r ? ` rx="${n(p.r)}"` : '';
+      return `<rect x="${n(p.x)}" y="${n(p.y)}" width="${n(p.w)}" height="${n(p.h)}"${round} fill="${fill}"${opacity}${stroke}${hitAttrs(p.hit, p)}/>`;
     }
+    case 'image':
+      return `<image x="${n(p.x)}" y="${n(p.y)}" width="${n(p.w)}" height="${n(p.h)}" href="${esc(p.src)}" preserveAspectRatio="xMidYMid meet"${hitAttrs(p.hit, {})}/>`;
     case 'line':
       return `<line x1="${n(p.x1)}" y1="${n(p.y1)}" x2="${n(p.x2)}" y2="${n(p.y2)}" stroke="${p.color}" stroke-width="${n(p.lw)}"${p.dash ? ` stroke-dasharray="${p.dash.join(' ')}"` : ''} pointer-events="none"/>`;
     case 'path': {

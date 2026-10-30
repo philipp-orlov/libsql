@@ -14,7 +14,7 @@ import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { SplitComponent } from '../../shared/split-layout/split.component';
 import { SplitPaneComponent } from '../../shared/split-layout/split-pane.component';
-import { DataSet, isValidReportName, LayoutResult, newReport, PAGE_SIZES, PageSize, paramText, ParamOption, paramValue, parseReport, ReportDef, validateReport, Value, ViewState } from '../core';
+import { DataSet, forEachItem, isValidReportName, LayoutResult, newReport, PAGE_SIZES, PageSize, paramText, ParamOption, paramValue, parseReport, ReportDef, SubRuns, SubreportItem, validateReport, Value, ViewState } from '../core';
 import { ReportService } from '../report.service';
 import { DateComponent } from '../shared/date.component';
 import { TextComponent } from '../shared/text.component';
@@ -26,6 +26,13 @@ import { assign, Edit, numberOf } from './editing';
 import { FieldInfo, fieldsOf } from './fields';
 import { LayoutEditorComponent } from './layout-editor.component';
 import { ParametersEditorComponent } from './parameters-editor.component';
+
+/** What decides the data a report needs: its parameters and datasets, and the sub-reports it runs. */
+function queriesOf(r: ReportDef): string {
+  const subs: SubreportItem[] = [];
+  forEachItem(r.body, it => it.type === 'subreport' && subs.push(it));
+  return JSON.stringify([r.parameters, r.datasets, subs]);
+}
 
 const LAYOUT_TAB = 3;
 const JSON_TAB = 4;
@@ -56,6 +63,8 @@ export class ReportDesignerComponent implements OnInit, OnDestroy {
   private readonly saved = signal('');
   /** The rows of the last run of the queries (the preview's data) and the first rows of the datasets run on their tab. */
   protected readonly data = signal<Record<string, DataSet>>({});
+  /** The runs of the sub-reports the report holds (with the data). */
+  private readonly subs = signal<SubRuns>({});
   private readonly samples = signal<Record<string, DataSet>>({});
   protected readonly layout = signal<LayoutResult | null>(null);
   protected readonly busy = signal(false);
@@ -110,8 +119,9 @@ export class ReportDesignerComponent implements OnInit, OnDestroy {
       const data = this.data();
       const view = this.view();
       const form = this.form();
+      const subs = this.subs();
       if (!r) return;
-      untracked(() => this.schedule(r, data, view, form));
+      untracked(() => this.schedule(r, data, view, form, subs));
     });
     effect(() => {
       const r = this.report();
@@ -153,6 +163,7 @@ export class ReportDesignerComponent implements OnInit, OnDestroy {
     this.report.set(r);
     this.saved.set(JSON.stringify(r));
     this.data.set({});
+    this.subs.set({});
     this.samples.set({});
     this.layout.set(null);
     this.error.set('');
@@ -232,12 +243,12 @@ export class ReportDesignerComponent implements OnInit, OnDestroy {
   protected apply(edit: Edit): void {
     const before = this.report()!;
     const r = structuredClone(before);
-    const queries = JSON.stringify([r.parameters, r.datasets]);
+    const queries = queriesOf(r);
     edit(r);
     if (JSON.stringify(r) === JSON.stringify(before)) return;
     this.past.update(p => [...p.slice(-(HISTORY - 1)), JSON.stringify(before)]);
     this.future.set([]);
-    this.set(r, queries !== JSON.stringify([r.parameters, r.datasets]));
+    this.set(r, queries !== queriesOf(r));
   }
 
   private set(r: ReportDef, queriesChanged: boolean): void {
@@ -358,12 +369,13 @@ export class ReportDesignerComponent implements OnInit, OnDestroy {
   protected async refreshData(): Promise<void> {
     const r = this.report();
     if (!r || this.busy()) return;
-    if (!r.datasets.length) return void this.data.set({});
+    if (!r.datasets.length) return void (this.data.set({}), this.subs.set({}));
     this.busy.set(true);
     this.error.set('');
     try {
       const result = await this.svc.run(r, this.values(r));
       this.data.set(result.datasets);
+      this.subs.set(result.subs);
       this.stale.set(false);
     } catch (e) {
       this.error.set((e as Error).message);
@@ -386,13 +398,13 @@ export class ReportDesignerComponent implements OnInit, OnDestroy {
     return this.choices()[name] ?? [];
   }
 
-  private schedule(r: ReportDef, data: Record<string, DataSet>, view: ViewState, form: Record<string, string>): void {
+  private schedule(r: ReportDef, data: Record<string, DataSet>, view: ViewState, form: Record<string, string>, subs: SubRuns): void {
     clearTimeout(this.timer);
     this.timer = setTimeout(async () => {
       try {
         const params: Record<string, Value> = {};
         for (const p of r.parameters) params[p.name] = paramValue(p, form[p.name] ?? paramText(p));
-        this.layout.set(await this.svc.layout(r, params, data, view));
+        this.layout.set(await this.svc.layout(r, params, data, view, subs));
       } catch (e) {
         this.error.set((e as Error).message);
       }

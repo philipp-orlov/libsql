@@ -15,9 +15,11 @@ export interface Tip {
 
 /** What a click on a legend entry, a column heading or a group heading does. */
 export type Action =
-  | { type: 'series'; item: number; index: number }
-  | { type: 'sort'; item: number; column: number }
-  | { type: 'fold'; item: number; id: string };
+  | { type: 'series'; item: number | string; index: number }
+  | { type: 'sort'; item: number | string; column: number }
+  | { type: 'fold'; item: number | string; id: string }
+  /** Open another report with these parameters (texts, as the parameter form holds them). */
+  | { type: 'drill'; report: string; params: Record<string, string> };
 
 /**
  * Interactivity of a mark. It is for the preview only: the PDF draws the marks and ignores this.
@@ -57,6 +59,19 @@ export interface RectPrim {
   fillOpacity?: number;
   stroke?: Color;
   lw?: number;
+  /** Corner radius. */
+  r?: number;
+  hit?: Hit;
+}
+
+/** A picture: a `data:` URI drawn in the box. */
+export interface ImagePrim {
+  k: 'image';
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  src: string;
   hit?: Hit;
 }
 
@@ -84,12 +99,14 @@ export interface PathPrim {
   hit?: Hit;
 }
 
-export type Prim = TextPrim | RectPrim | LinePrim | PathPrim;
+export type Prim = TextPrim | RectPrim | ImagePrim | LinePrim | PathPrim;
 
 /** Where an item of the report landed on a page, so that the preview can select it with a click. */
 export interface Region {
   section: 'header' | 'body' | 'footer';
   index: number;
+  /** For an item inside columns: the path of the list it is in (`body.2.columns.0.items`), and `index` is its place there. */
+  list?: string;
   x: number;
   y: number;
   w: number;

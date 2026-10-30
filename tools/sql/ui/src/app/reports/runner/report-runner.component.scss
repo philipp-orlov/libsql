@@ -81,6 +81,45 @@
   }
 }
 
+.trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin: 0 -6px 2px;
+  font-size: 13px;
+
+  .crumb {
+    padding: 2px 6px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    font: inherit;
+    color: var(--mat-sys-primary);
+    cursor: pointer;
+
+    &:hover {
+      background: var(--mat-sys-surface-container);
+    }
+  }
+
+  .sep {
+    width: 18px;
+    height: 18px;
+    font-size: 18px;
+    color: var(--mat-sys-outline);
+  }
+
+  .here {
+    padding: 2px 6px;
+    color: var(--mat-sys-on-surface-variant);
+  }
+
+  .back {
+    margin-left: auto;
+  }
+}
+
 .params {
   display: flex;
   flex-wrap: wrap;

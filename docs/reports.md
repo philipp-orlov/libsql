@@ -5,7 +5,7 @@ to build a report, **a runner** for the people who only read them, **PDF** and *
 it (the PDF writer, the font reader and the layout engine are in `tools/sql/ui/src/app/reports/core`, plain TypeScript).
 
 ```
-sql demo/sales_demo.sqldb --listen 8080          # the demo: six reports, 150 customers, 1,100 order lines
+sql demo/sales_demo.sqldb --listen 8080          # the demo: eleven reports, 150 customers, 1,100 order lines
 http://127.0.0.1:8080/               the whole tool: Reports and Report Designer are tabs next to Execute SQL
 http://127.0.0.1:8080/reports        the runner alone, for customers
 ```
@@ -20,7 +20,11 @@ change data), lays the result out into pages, shows them, and exports them. The 
 
 **Runner.** Choose a report, fill in its parameters, *View report*. Page through it (the page box, the arrows, PageUp/PageDown), zoom, *PDF* saves
 the pages as they are shown, *CSV* saves the rows of a table of the report (a menu asks which when there are several): unformatted, in the order
-and with the columns the table shows, a byte order mark in front so spreadsheets read the UTF-8.
+and with the columns the table shows, a byte order mark in front so spreadsheets read the UTF-8. *Excel* and *Word* are described under *Export to Excel and Word*.
+
+**Drill-through.** A chart, table or cross-tab whose definition has a `drill` opens another report when you click a bar, a row or a cell (the pointer
+shows a hand and the card says *Click to open*). The target runs at once with the parameters the click gives it, and a trail above the title
+(*Executive Sales Dashboard › Region Snapshot*) with a *Back* button leads back, to the report as it was run.
 
 ### Interacting
 
@@ -67,12 +71,86 @@ and teaches the data pane its fields.
 
 | Item | What it draws |
 | --- | --- |
-| Text | One or more lines. May hold `{{ expressions }}`. Font (regular or bold), size, color, alignment, a background color (a banner). Wraps at the page width. |
+| Text | One or more lines. May hold `{{ expressions }}`. Font (regular or bold), size, color, alignment, a background color (a banner). Wraps at the page width. With **Rich text** on, the markup below formats parts of it. |
 | Table | The rows of a dataset: columns (field or expression, heading, relative width, alignment, number or date format, a total), groups (heading, order, subtotals, page break), striping, a grand total. The heading row repeats on every page; rows never split across pages. |
 | Chart | Drawn from a dataset: a category column and one or more series. **Bars** (clustered, **stacked**, or **horizontal** for long names), **lines**, **areas**, **pies** and **donuts** (with the total in the hole); optional values on the marks, legend, title, height, number format, series colors (Tableau's palette by default). Vector shapes, so sharp at any zoom and in the PDF. |
+| Cross-tab | A matrix: one field's values across the top, one or two fields down the side, one number in each cell, with row and column totals and a color scale. See *Cross-tabs*. |
+| Picture | A PNG, JPEG, GIF, WebP or SVG kept in the report, or read from a text column of the database. See *Pictures*. |
+| Columns | Items side by side, each column with its own width, optionally as a bordered *card* with an accent bar. See *Columns*. |
+| Sub-report | Another report, run and laid out in place, once or once per row of a dataset. See *Sub-reports*. |
 | Line, Space, Page break | A rule across the page, empty room, a new page. |
 
-The page header and footer hold text, lines and spaces and are drawn on every page; there `PageNumber` and `PageCount` are known.
+The page header and footer hold text, pictures, lines and spaces and are drawn on every page; there `PageNumber` and `PageCount` are known.
+
+## Rich text
+
+A text item with **Rich text** switched on reads inline markup (the designer has buttons for it):
+
+| Markup | Gives |
+| --- | --- |
+| `[b]bold[/b]`, `[u]underline[/u]` | bold, underlined |
+| `[color=#e15759]red[/color]` (`[c=…]`) | colored text |
+| `[size=24]big[/size]` (`[s=…]`) | another size in points (4 to 120) |
+| `[bg=#fff3cd]marked[/bg]` | a highlighter background |
+| `[/]` | closes the innermost tag |
+| a line starting with `- ` | a bullet (the wrapped lines hang under the text) |
+| `\[` | a bracket that is only a bracket |
+
+Tags nest, and a line takes the height of its biggest run, so a small caption, a big number and small print fit one text box (that is what the demo's
+KPI tiles are). `{{ expressions }}` are evaluated first and what they give is never read as markup, so a value that happens to hold `[b]` is safe.
+The PDF, Word and the preview show the same runs; in Excel the text is plain.
+
+## Pictures
+
+An image item's `src` is a `data:image/png|jpeg|gif|webp|svg+xml;base64,…` URI, so a report stays one self-contained file (the designer's *Choose a
+picture* button reads a file, up to 700 KiB). `width` and `height` are in points (one alone keeps the proportions; none means the picture's own size, shrunk to
+fit), `fitWidth` stretches it across the page or column, `align` and `caption` place it. The `src` may hold `{{ }}` parts, so a picture can come from the
+database: `{{First(icon)}}` with `dataset` set shows the `icon` text column of that dataset (the demo's category icons). A picture may also stand in the page
+header or footer. In the PDF, JPEG goes in untouched, PNG as pixels with its transparency, and SVG and the rest are drawn at three times their size from the
+browser's canvas; Word gets PNG, JPEG and GIF as they are and the others as PNG.
+
+## Columns
+
+A columns item has up to six columns, each a list of items of its own (text, tables, charts, cross-tabs, pictures, sub-reports, even more columns, but no page
+break). Each column is laid out in its share of the width (`width`, relative) and runs over to the next page by itself; the block ends under the tallest
+column. A column with `card` is drawn as a white card with a thin border and rounded corners, `accent` adds a colored bar along its top, and cards of one
+block are as tall as each other. In the designer the items of a column are edited right inside it, and a click on one in the preview opens it. In Word the
+columns are a borderless table.
+
+## Cross-tabs
+
+A matrix item pivots a dataset: `rows` (one or two fields; the second nests in the first), `column`, and `value` aggregated by `agg` (`sum` by default,
+`avg`, `min`, `max`, `count`). `rowTotals` and `columnTotals` add the totals, `subtotals` puts the totals of the first row field on its heading line,
+`sortRows` (`data`, `asc`, `desc`, `total`) and `sortColumns` order the headings, `format` formats the cells, `title` and `corner` label it. The **color
+scale** `heat` tints each cell from light to dark by its value (`blue` by default, `green`, `orange`, `red`, `purple`, `teal`, `diverging` for red below and blue above the
+middle of the range, or `none`) and the text turns white where it needs to; a small legend shows the range. A cross-tab that is too wide for the page shows the
+columns that fit and says so. It is interactive: the pointer shows the cell's numbers and lights up its row in every chart that has the same category; a click
+on a column heading sorts the rows by that column.
+
+## Drill-through
+
+`drill` on a chart, table or cross-tab is `{"report": "Customer Statement", "params": {"customer": "{{customer_id}}"}}`. Each value is a text with `{{ }}`
+parts evaluated for the clicked mark: for a chart the row of its dataset behind the bar, point or slice; for a table the row; for a cross-tab the row fields,
+the column field and the value field of the cell. The report's own parameters are visible too (`{{year}}`). Parameters the target has and the click does not give keep
+the target's default. Drilling needs the target to exist on the server; the designer offers the names.
+
+## Sub-reports
+
+A sub-report item runs another report and lays out its body in place, with its own datasets and parameters (its page setup, header and footer are not used).
+Set `dataset` to run it once for each row (at most `limit`, default 12, 50 at most; `pageBreak` starts each on a new page); then `params` read the row:
+`{"region": "{{region}}"}`. A parameter that is not mapped takes the same-named parameter of the report it sits in, else its default, so `year`
+flows down by itself. The page fetches everything first (the target is loaded and its datasets run, recursively, at most three deep and 60 runs in all;
+a report containing itself is refused), so a missing target, a failing query or too many rows come back as warnings above the pages. What the reader
+changes in a sub-report (sort, fold, legend) works as anywhere else.
+
+## Export to Excel and Word
+
+*Excel* writes an `.xlsx` workbook: a first sheet *Report* (title, parameters, the texts, links to the other sheets) and one sheet for every table, cross-tab and chart.
+Cells hold **numbers and dates**, not text, with their number formats (`#,##0.00`, `0.0%`, `yyyy-mm-dd`…), a styled heading row, group headings, subtotals and
+the grand total as they are in the report, frozen headings, filters on plain tables, and the cross-tab's colors. A chart's sheet holds the numbers behind it.
+What you sorted or switched off is reflected. *Word* writes a `.docx`: paragraphs with their bold, colors, sizes and bullets, tables and cross-tabs as real tables
+(heading row repeated on every page, colors kept), pictures, charts as pictures, columns as a borderless table, sub-reports in place, the report title in the
+header and *Page x of y* in the footer. Neither needs a library or a server: they are zip files written in the page.
 
 ## Expressions
 
@@ -135,13 +213,15 @@ itself is built once; it only shows what the server it talks to offers.
 
 ## Demo
 
-[demo/](../demo) has a fictional B2B sales database and six reports on it: an executive dashboard (KPIs, five charts), revenue by region and
-country, top customers, product performance, one customer's statement, and a sales-team leaderboard against quota.
+[demo/](../demo) has a fictional B2B sales database and eleven reports on it: an executive dashboard (KPI tiles, five charts, a cross-tab, drill-through to regions
+and categories), revenue by region and country, top customers (click for the statement), product performance, one customer's statement, a sales-team
+leaderboard against quota, a region snapshot, a regional review that runs the snapshot as a sub-report for every region, a category card and a product catalog
+that repeats it for every category with pictures read from the database, and a sales matrix of three cross-tabs.
 
 ## Not there yet
 
-Sub-reports, drill-through, images, rich text inside one text box, cross-tab (matrix) tables, columns side by side on a page, per-report
-permissions, scheduled or e-mailed runs, and export to Excel or Word. The definition format has room for them.
+Per-report permissions, scheduled or e-mailed runs, hyperlinks to web addresses inside text, charts as native Excel charts, and sub-reports whose
+parameters depend on each other across several runs. The definition format has room for them.
 
 ## Material only
 

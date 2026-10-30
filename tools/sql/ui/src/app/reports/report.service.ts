@@ -6,8 +6,13 @@ import { ErrorCode, ParamType, SocketError, SqlSocket } from '../remote';
 import { DatabaseService, SOCKET_PATH } from '../services/database.service';
 import {
   bindNames,
+  buildBlocks,
+  buildDocx,
   buildPdf,
+  buildXlsx,
+  ChartSpec,
   DataSet,
+  drawChart,
   FontFace,
   layoutReport,
   LayoutResult,
@@ -16,9 +21,12 @@ import {
   ParamOption,
   parseReport,
   ReportDef,
+  resolveSubreports,
+  SubRuns,
   TrueTypeFont,
   Value,
 } from './core';
+import { primsToPng, rasterize, rasterizePng } from './raster';
 
 export interface ReportListEntry {
   name: string;
@@ -40,6 +48,8 @@ export type ParamValues = Record<string, Value>;
 
 export interface RunResult {
   datasets: Record<string, DataSet>;
+  /** The runs of the sub-reports the report holds. */
+  subs: SubRuns;
   warnings: string[];
 }
 
@@ -229,7 +239,7 @@ export class ReportService {
   }
 
   /** Runs every dataset of the report. A failing dataset stops the run and says which. */
-  async run(report: ReportDef, params: ParamValues): Promise<RunResult> {
+  private async datasets(report: ReportDef, params: ParamValues): Promise<{ datasets: Record<string, DataSet>; warnings: string[] }> {
     const datasets: Record<string, DataSet> = {};
     const warnings: string[] = [];
     for (const d of report.datasets) {
@@ -244,15 +254,58 @@ export class ReportService {
     return { datasets, warnings };
   }
 
+  /** Runs the report: its datasets, and the datasets of the sub-reports it holds. */
+  async run(report: ReportDef, params: ParamValues): Promise<RunResult> {
+    const { datasets, warnings } = await this.datasets(report, params);
+    const { subs, warnings: more } = await resolveSubreports(report, params, datasets, {
+      load: async name => {
+        try {
+          return await this.load(name);
+        } catch {
+          return null;
+        }
+      },
+      run: (target, p) => this.datasets(target, p),
+    });
+    return { datasets, subs, warnings: [...warnings, ...more] };
+  }
+
   // ---- output ----------------------------------------------------------------------------------------------------------
 
-  async layout(report: ReportDef, params: ParamValues, datasets: Record<string, DataSet>, view?: ViewState): Promise<LayoutResult> {
-    return layoutReport({ report, params, datasets, fonts: await this.loadFonts(), view });
+  async layout(report: ReportDef, params: ParamValues, datasets: Record<string, DataSet>, view?: ViewState, subs?: SubRuns): Promise<LayoutResult> {
+    return layoutReport({ report, params, datasets, fonts: await this.loadFonts(), view, subs });
   }
 
   async pdf(result: LayoutResult, report: ReportDef): Promise<Blob> {
-    const bytes = await buildPdf(result.pages, await this.loadFonts(), { title: report.title || report.name, creator: 'libsql sql tool' });
+    const bytes = await buildPdf(result.pages, await this.loadFonts(), { title: report.title || report.name, creator: 'libsql sql tool' }, { rasterize });
     return new Blob([bytes as BlobPart], { type: 'application/pdf' });
+  }
+
+  /** An Excel workbook of the run: a sheet per table, cross-tab and chart, with real numbers. */
+  async xlsx(report: ReportDef, params: ParamValues, run: RunResult, view?: ViewState): Promise<Blob> {
+    const { blocks } = buildBlocks({ report, params, datasets: run.datasets, subs: run.subs, view });
+    const bytes = await buildXlsx({ report, params, blocks });
+    return new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+
+  /** A Word document of the run: text, tables, cross-tabs, pictures, and the charts as pictures. */
+  async docx(report: ReportDef, params: ParamValues, run: RunResult, view?: ViewState): Promise<Blob> {
+    const fonts = await this.loadFonts();
+    const m = { width: (t: string, f: FontFace, s: number): number => fonts[f].measure(t, s) };
+    const { blocks } = buildBlocks({ report, params, datasets: run.datasets, subs: run.subs, view });
+    const bytes = await buildDocx(
+      { report, params, blocks },
+      {
+        rasterize: rasterizePng,
+        chart: async (b, width) => {
+          const it = b.item;
+          const spec: ChartSpec = { kind: it.chart, stacked: it.stacked, horizontal: it.horizontal, donut: it.donut, labels: it.labels };
+          const prims = drawChart(spec, b.data, { x: 0, y: 0, w: width, h: it.height }, { title: it.title, legend: it.legend, format: it.format }, m, { item: 0, hidden: b.hidden });
+          return { png: await primsToPng(prims, width, it.height, FONT_FAMILY, 2), width, height: it.height };
+        },
+      },
+    );
+    return new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
   }
 }
 

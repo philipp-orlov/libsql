@@ -2,12 +2,12 @@
   "format": 1,
   "name": "Revenue by Region",
   "title": "Revenue by Region and Country",
-  "description": "Every region with its countries, customers, orders, revenue, share of the region and margin.",
+  "description": "Every region with its countries, customers, orders, revenue, share of the region and margin. Click a bar or a country to open its region.",
   "page": {
     "size": "A4",
     "orientation": "portrait",
     "margins": {
-      "top": 44,
+      "top": 40,
       "right": 36,
       "bottom": 40,
       "left": 36
@@ -39,8 +39,8 @@
       "text": "{{ReportName}}",
       "style": {
         "face": "bold",
-        "size": 9,
-        "color": "#546e7a"
+        "size": 8,
+        "color": "#6b7280"
       }
     },
     {
@@ -53,33 +53,44 @@
     },
     {
       "type": "text",
-      "text": "Fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
+      "text": "Aurelia Systems · fictional demo data   ·   Page {{PageNumber}} of {{PageCount}}",
       "style": {
         "size": 8,
-        "color": "#546e7a",
+        "color": "#6b7280",
         "align": "right"
       }
     }
   ],
   "body": [
     {
-      "type": "text",
-      "text": " Revenue by Region",
-      "style": {
-        "face": "bold",
-        "size": 22,
-        "color": "#ffffff",
-        "background": "#00897b"
-      }
+      "type": "columns",
+      "gap": 8,
+      "columns": [
+        {
+          "width": 1,
+          "items": [
+            {
+              "type": "image",
+              "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij48cG9seWdvbiBwb2ludHM9IjMyLDMgNTgsMTggNTgsNDYgMzIsNjEgNiw0NiA2LDE4IiBmaWxsPSIjMGQ0N2ExIi8+PHBhdGggZD0iTTE0IDQ0bDEzLTE4IDggMTAgNS03IDEwIDE1eiIgZmlsbD0iI2ZmZmZmZiIvPjxwYXRoIGQ9Ik0xNCA0NGwxMy0xOCA4IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmYjhjMDAiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=",
+              "width": 34
+            }
+          ]
+        },
+        {
+          "width": 14,
+          "items": [
+            {
+              "type": "text",
+              "rich": true,
+              "text": "[size=20][b][color=#00897b]Revenue by Region[/color][/b][/size]\n[size=9][color=#6b7280]{{year}}  ·  {{Count()}} countries  ·  total {{Format(Sum(revenue), \"$#,##0\")}}[/color][/size]",
+              "dataset": "countries"
+            }
+          ]
+        }
+      ]
     },
     {
-      "type": "text",
-      "text": "{{year}}   ·   {{Count()}} countries   ·   total {{Format(Sum(revenue), \"$#,##0\")}}",
-      "style": {
-        "size": 10,
-        "color": "#546e7a"
-      },
-      "dataset": "countries"
+      "type": "rule"
     },
     {
       "type": "spacer",
@@ -104,7 +115,14 @@
           "label": "Gross profit",
           "color": "#fb8c00"
         }
-      ]
+      ],
+      "drill": {
+        "report": "Region Snapshot",
+        "params": {
+          "region": "{{region}}",
+          "year": "{{year}}"
+        }
+      }
     },
     {
       "type": "table",
@@ -152,7 +170,14 @@
           "header": "Margin",
           "format": "0.0%"
         }
-      ]
+      ],
+      "drill": {
+        "report": "Region Snapshot",
+        "params": {
+          "region": "{{region}}",
+          "year": "{{year}}"
+        }
+      }
     }
   ]
 }

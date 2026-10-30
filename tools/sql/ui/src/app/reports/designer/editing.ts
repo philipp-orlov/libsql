@@ -6,7 +6,7 @@ import { ReportDef } from '../core';
 export type Edit = (report: ReportDef) => void;
 
 /** Members that mean "not set" when emptied: they are removed from the definition instead of being kept as ''. */
-const OPTIONAL = new Set(['format', 'header', 'width', 'align', 'color', 'background', 'label', 'title', 'description', 'dataset', 'expression', 'total', 'face', 'size', 'sort', 'optionsSql', 'default']);
+const OPTIONAL = new Set(['format', 'header', 'width', 'align', 'color', 'background', 'label', 'title', 'description', 'dataset', 'expression', 'total', 'face', 'size', 'sort', 'optionsSql', 'default', 'accent', 'caption', 'src', 'width', 'height', 'limit', 'corner', 'agg', 'heat', 'sortRows', 'sortColumns']);
 
 /** Sets `object.a.b.0.c = value` for the path 'a.b.0.c'; an emptied optional member is deleted. */
 export function assign(object: unknown, path: string, value: unknown): void {
@@ -19,6 +19,13 @@ export function assign(object: unknown, path: string, value: unknown): void {
   const last = keys[keys.length - 1];
   if ((value === '' || value === undefined || value === null || (typeof value === 'number' && Number.isNaN(value))) && OPTIONAL.has(last)) delete at[last];
   else at[last] = value;
+}
+
+/** The list a path like `body`, `header` or `body.3.columns.1.items` leads to. */
+export function listAt(report: ReportDef, path: string): unknown[] {
+  let at: unknown = report;
+  for (const key of path.split('.')) at = (at as Record<string, unknown>)[key];
+  return at as unknown[];
 }
 
 /** Moves `list[from]` to `list[to]`. */
