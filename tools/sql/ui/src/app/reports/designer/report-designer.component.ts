@@ -18,6 +18,7 @@ import { DataSet, forEachItem, isValidReportName, LayoutResult, newReport, PAGE_
 import { ReportService } from '../report.service';
 import { DateComponent } from '../shared/date.component';
 import { TextComponent } from '../shared/text.component';
+import { JsonEditorComponent } from '../shared/json-editor.component';
 import { Choice, SelectComponent } from '../shared/select.component';
 import { ItemPick, ReportViewerComponent } from '../viewer/report-viewer.component';
 import { DataPaneComponent } from './data-pane.component';
@@ -45,7 +46,7 @@ const HISTORY = 100;
 @Component({
   selector: 'app-report-designer',
   imports: [
-    MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatTabsModule, SelectComponent, TextComponent, DateComponent, SplitComponent, SplitPaneComponent, DataPaneComponent, ParametersEditorComponent, DatasetsEditorComponent,
+    MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatTabsModule, SelectComponent, TextComponent, JsonEditorComponent, DateComponent, SplitComponent, SplitPaneComponent, DataPaneComponent, ParametersEditorComponent, DatasetsEditorComponent,
     LayoutEditorComponent, ReportViewerComponent,
   ],
   templateUrl: './report-designer.component.html',

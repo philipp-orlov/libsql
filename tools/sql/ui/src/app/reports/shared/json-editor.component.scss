@@ -1,0 +1,66 @@
+// The colors come from the theme, so they follow light and dark.
+:host {
+  display: block;
+}
+
+.field {
+  --mat-form-field-container-text-size: 13px;
+  --mat-form-field-outlined-label-text-size: 13px;
+  width: 100%;
+}
+
+.stack {
+  position: relative;
+}
+
+.mono,
+.back {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 13px;
+  line-height: 20px;
+  letter-spacing: 0;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.back {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0 16px 16px 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--mat-sys-on-surface);
+}
+
+// the spans come from innerHTML, so they carry no encapsulation attribute
+:host ::ng-deep .back {
+  .key { color: var(--mat-sys-primary); }
+  .str { color: var(--json-str, #2e7d32); }
+  .num { color: var(--json-num, #b45309); }
+  .lit { color: var(--json-lit, #8e24aa); }
+  .punct { color: var(--mat-sys-outline); }
+}
+
+.front {
+  position: relative;
+  resize: none;
+  overflow: auto;
+  padding: 0;
+  line-height: 20px;
+  color: transparent !important;
+  caret-color: var(--mat-sys-on-surface);
+  background: transparent;
+
+  &::selection {
+    background: color-mix(in srgb, var(--mat-sys-primary) 30%, transparent);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :host {
+    --json-str: #81c784;
+    --json-num: #ffb74d;
+    --json-lit: #ce93d8;
+  }
+}

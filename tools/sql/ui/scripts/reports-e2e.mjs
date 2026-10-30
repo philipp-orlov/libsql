@@ -226,6 +226,8 @@ await click('app-datasets-editor button.run');
 await until('the dataset sample', `document.querySelector('app-datasets-editor .sample tbody tr')`);
 await click('[role=tab]', 'JSON');
 await until('the JSON', `document.querySelector('.json textarea')?.value.includes('"Sales"')`);
+await until('the JSON colored', `document.querySelector('.json .back .key') && document.querySelector('.json .back .str')`);
+await shot('json.png');
 const edited = JSON.stringify({ ...sales, title: 'Edited in the designer' }, null, 2);
 await setValue('.json textarea', edited);
 await until('the change to show as unsaved', `document.querySelector('.dirty')`);

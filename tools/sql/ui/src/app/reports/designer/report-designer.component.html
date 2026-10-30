@@ -58,7 +58,7 @@
             <mat-tab label="JSON">
               <div class="editor">
                 <p class="hint">The definition as stored. Edit it directly if you like; it applies as soon as it is valid JSON.</p>
-                <app-text class="json" ariaLabel="Report definition" [rows]="22" [mono]="true" [live]="true" [value]="json()" (valueChange)="applyJson($event)" />
+                <app-json-editor class="json" ariaLabel="Report definition" [rows]="22" [value]="json()" (valueChange)="applyJson($event)" />
                 @if (jsonError()) {
                   <p class="error" role="alert">{{ jsonError() }}</p>
                 }
