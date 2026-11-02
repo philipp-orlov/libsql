@@ -180,7 +180,7 @@ add_library(sql
     src/internal/types.cpp
 )
 add_library(sql::sql ALIAS sql)
-target_link_libraries(sql PUBLIC $<BUILD_INTERFACE:develop::mem> $<BUILD_INTERFACE:develop::base>)
+target_link_libraries(sql PUBLIC $<BUILD_INTERFACE:develop::mem> $<BUILD_INTERFACE:develop::json> $<BUILD_INTERFACE:develop::base>)
 
 target_include_directories(sql
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

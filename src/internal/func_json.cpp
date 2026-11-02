@@ -3,6 +3,8 @@
 
 #include "internal/func.hpp"
 
+#include "json/escape.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -93,43 +95,7 @@ bool isIdContinue(unsigned char c) noexcept
 
 void appendJsonString(std::string_view text, std::string& out)
 {
-    out.push_back('"');
-    for (const unsigned char ch : text) {
-        switch (ch) {
-            case '"':
-                out += "\\\"";
-                break;
-            case '\\':
-                out += "\\\\";
-                break;
-            case '\b':
-                out += "\\b";
-                break;
-            case '\f':
-                out += "\\f";
-                break;
-            case '\n':
-                out += "\\n";
-                break;
-            case '\r':
-                out += "\\r";
-                break;
-            case '\t':
-                out += "\\t";
-                break;
-            default:
-                if (ch < 0x20) {
-                    static constexpr char kHex[] = "0123456789abcdef";
-                    out += "\\u00";
-                    out.push_back(kHex[ch >> 4]);
-                    out.push_back(kHex[ch & 0xf]);
-                } else {
-                    out.push_back(char(ch));
-                }
-                break;
-        }
-    }
-    out.push_back('"');
+    json::appendQuoted(out, text);
 }
 
 void appendCodepoint(std::uint32_t cp, std::string& out)

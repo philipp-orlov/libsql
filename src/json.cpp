@@ -11,6 +11,9 @@
 
 #include "internal/cnumeric.hpp"
 
+#include "base/encoding.hpp"
+#include "json/escape.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -53,6 +56,8 @@ public:
             n_ += k;
     }
 
+    bool counting() const noexcept { return s_ == nullptr; }
+    void skip(std::size_t k) noexcept { n_ += k; }
     std::size_t counted() const noexcept { return n_; }
 
 private:
@@ -62,34 +67,7 @@ private:
 
 void putEscaped(Out& o, std::string_view s)
 {
-    // Everything that needs no escaping goes out in runs; only the rare byte
-    // is handled one at a time.
-    std::size_t run = 0;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        const unsigned char c = static_cast<unsigned char>(s[i]);
-        if (c >= 0x20 && c != '"' && c != '\\')
-            continue;
-        if (i > run)
-            o.put(s.substr(run, i - run));
-        switch (c) {
-            case '"': o.put("\\\"", 2); break;
-            case '\\': o.put("\\\\", 2); break;
-            case '\b': o.put("\\b", 2); break;
-            case '\f': o.put("\\f", 2); break;
-            case '\n': o.put("\\n", 2); break;
-            case '\r': o.put("\\r", 2); break;
-            case '\t': o.put("\\t", 2); break;
-            default: {
-                static const char kHex[] = "0123456789abcdef";
-                const char esc[6] = {'\\', 'u', '0', '0', kHex[c >> 4], kHex[c & 0x0f]};
-                o.put(esc, sizeof esc);
-                break;
-            }
-        }
-        run = i + 1;
-    }
-    if (s.size() > run)
-        o.put(s.substr(run));
+    json::escapeTo(o, s);
 }
 
 void putKey(Out& o, std::string_view name)
@@ -136,31 +114,17 @@ void putDatetime(Out& o, Datetime when)
 
 void putBase64(Out& o, BlobView bytes)
 {
-    static const char kAlphabet[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    const auto byteAt = [&](std::size_t i) {
-        return std::uint32_t(std::to_integer<unsigned char>(bytes[i]));
-    };
-
+    // Encoded through a stack buffer in 3 KiB slices: no temporary string, one append per slice.
     o.put('"');
-    std::size_t i = 0;
-    char quad[4];
-    for (; i + 3 <= bytes.size(); i += 3) {
-        const std::uint32_t v = (byteAt(i) << 16) | (byteAt(i + 1) << 8) | byteAt(i + 2);
-        quad[0] = kAlphabet[(v >> 18) & 0x3f];
-        quad[1] = kAlphabet[(v >> 12) & 0x3f];
-        quad[2] = kAlphabet[(v >> 6) & 0x3f];
-        quad[3] = kAlphabet[v & 0x3f];
-        o.put(quad, 4);
-    }
-    if (i < bytes.size()) {
-        const bool two = i + 2 == bytes.size();
-        const std::uint32_t v = (byteAt(i) << 16) | (two ? byteAt(i + 1) << 8 : 0);
-        quad[0] = kAlphabet[(v >> 18) & 0x3f];
-        quad[1] = kAlphabet[(v >> 12) & 0x3f];
-        quad[2] = two ? kAlphabet[(v >> 6) & 0x3f] : '=';
-        quad[3] = '=';
-        o.put(quad, 4);
+    if (!o.counting()) {
+        constexpr std::size_t kIn = 3 * 1024;
+        char quad[base::base64Size(kIn)];
+        for (std::size_t i = 0; i < bytes.size(); i += kIn) {
+            const std::size_t n = std::min(kIn, bytes.size() - i);
+            o.put(quad, base::base64Encode(bytes.data() + i, n, quad));
+        }
+    } else {
+        o.skip(base::base64Size(bytes.size()));
     }
     o.put('"');
 }
