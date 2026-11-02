@@ -1,73 +1,40 @@
 // Copyright (c) 2026 Philipp Orlov
 // SPDX-License-Identifier: Apache-2.0
 
-// A bump allocator for objects that live and die together: the expression
-// nodes of one parsed statement. Allocation is a pointer bump inside the
-// current block; nothing is freed until the arena goes, when every block is
-// released at once. A statement's tree then sits in a few contiguous blocks
-// instead of dozens of separate heap allocations, which is cheaper to build,
-// friendlier to the cache while evaluating, and leaves no small holes behind
-// in the heap when the statement is dropped.
+// A bump allocator for objects that live and die together: the expression nodes of one parsed statement. Allocation is
+// a pointer bump inside the current chunk; nothing is freed until the arena goes. The chunks now come from develop-core's
+// mem::Arena over the process-wide size-class pool, so a dropped statement hands its chunks back to a bounded, shared
+// pool instead of leaving holes in the heap, and a statement's tree sits in a few contiguous, cache-line aligned blocks.
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
-#include <new>
+
+#include "mem/arena.hpp"
 
 namespace sql::internal {
 
 class Arena
 {
 public:
-    explicit Arena(std::size_t blockSize) noexcept : blockSize_(blockSize < 256 ? 256 : blockSize) {}
+    explicit Arena(std::size_t blockSize) : arena_(options(blockSize)) {}
     Arena(const Arena&) = delete;
     Arena& operator=(const Arena&) = delete;
-    ~Arena()
-    {
-        while (head_) {
-            Block* next = head_->next;
-            ::operator delete(head_);
-            head_ = next;
-        }
-    }
 
-    void* allocate(std::size_t size, std::size_t align)
-    {
-        std::uintptr_t p = (std::uintptr_t(cur_) + (align - 1)) & ~std::uintptr_t(align - 1);
-        if (!cur_ || p + size > std::uintptr_t(end_)) {
-            grow(size + align);
-            p = (std::uintptr_t(cur_) + (align - 1)) & ~std::uintptr_t(align - 1);
-        }
-        cur_ = reinterpret_cast<char*>(p + size);
-        return reinterpret_cast<void*>(p);
-    }
+    void* allocate(std::size_t size, std::size_t align) { return arena_.allocate(size, align); }
 
-    /// Bytes held in blocks.
-    std::size_t capacity() const noexcept { return held_; }
+    /// Bytes held in chunks.
+    std::size_t capacity() const noexcept { return arena_.chunkCount() * arena_.chunkBytes(); }
 
 private:
-    struct Block
+    static mem::Arena::Options options(std::size_t blockSize)
     {
-        Block* next;
-    };
-
-    void grow(std::size_t need)
-    {
-        // A node bigger than a block gets a block of its own.
-        const std::size_t bytes = sizeof(Block) + (need > blockSize_ ? need : blockSize_);
-        Block* b = static_cast<Block*>(::operator new(bytes));
-        b->next = head_;
-        head_ = b;
-        cur_ = reinterpret_cast<char*>(b + 1);
-        end_ = reinterpret_cast<char*>(b) + bytes;
-        held_ += bytes;
+        mem::Arena::Options o;
+        o.chunkBytes = blockSize < 4096 ? 4096 : blockSize;
+        o.retainChunks = 0;
+        return o;
     }
 
-    std::size_t blockSize_;
-    Block* head_ = nullptr;
-    char* cur_ = nullptr;
-    char* end_ = nullptr;
-    std::size_t held_ = 0;
+    mem::Arena arena_;
 };
 
 }  // namespace sql::internal
