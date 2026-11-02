@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cstdint>
+
+#include "base/hash.hpp"
 #include <cstring>
 #include <string_view>
 #include <vector>
@@ -26,43 +28,7 @@ namespace sql::internal {
 /// a variable-length copy, which would be a library call.
 inline std::uint64_t hashBytes(const char* p, std::size_t n) noexcept
 {
-    constexpr std::uint64_t k1 = 0x9E3779B97F4A7C15ull, k2 = 0xC2B2AE3D27D4EB4Full;
-    auto load64 = [](const char* q) {
-        std::uint64_t w;
-        std::memcpy(&w, q, 8);
-        return w;
-    };
-    auto load32 = [](const char* q) {
-        std::uint32_t w;
-        std::memcpy(&w, q, 4);
-        return std::uint64_t(w);
-    };
-    std::uint64_t h = k2 ^ (n * k1);
-    std::uint64_t tail;
-    if (n >= 8) {
-        const char* const last = p + n - 8;
-        while (p < last) {
-            h = (h ^ (load64(p) * k1)) * k2;
-            h ^= h >> 29;
-            p += 8;
-        }
-        tail = load64(last);
-    } else if (n >= 4) {
-        tail = load32(p) | (load32(p + n - 4) << 32);
-    } else if (n > 0) {
-        tail = std::uint64_t(static_cast<unsigned char>(p[0])) |
-               std::uint64_t(static_cast<unsigned char>(p[n / 2])) << 8 |
-               std::uint64_t(static_cast<unsigned char>(p[n - 1])) << 16;
-    } else {
-        tail = 0;
-    }
-    h = (h ^ (tail * k1)) * k2;
-    h ^= h >> 33;
-    h *= 0xFF51AFD7ED558CCDull;
-    h ^= h >> 33;
-    h *= 0xC4CEB9FE1A85EC53ull;
-    h ^= h >> 33;
-    return h;
+    return base::hashBytes64(p, n);   // moved unchanged to develop-core's libbase
 }
 
 /// A set of byte strings that numbers its members in insertion order

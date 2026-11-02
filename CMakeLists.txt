@@ -144,6 +144,13 @@ if(SQL_WITH_REMOTE AND NOT TARGET rpc)
     add_subdirectory("${SQL_RPC_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/librpc")
 endif()
 
+# develop-core supplies libbase (hashBytes64): normally arrives with libnosql; a sibling checkout otherwise.
+set(SQL_DEVELOP_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../develop-core" CACHE PATH "Path to a develop-core checkout")
+if(NOT TARGET develop::base)
+    set(DEVELOP_BUILD_TESTS OFF CACHE BOOL "")
+    add_subdirectory("${SQL_DEVELOP_CORE_DIR}" develop-core)
+endif()
+
 add_library(sql
     src/value.cpp
     src/database.cpp
@@ -173,6 +180,7 @@ add_library(sql
     src/internal/types.cpp
 )
 add_library(sql::sql ALIAS sql)
+target_link_libraries(sql PUBLIC $<BUILD_INTERFACE:develop::base>)
 
 target_include_directories(sql
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
