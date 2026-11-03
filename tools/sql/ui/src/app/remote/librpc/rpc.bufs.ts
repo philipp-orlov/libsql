@@ -26,6 +26,39 @@ export enum Kind {
   Pong = 9,
   Goodbye = 10,
   Closing = 11,
+  Release = 12,
+}
+
+/**
+ * One shared field of the message that follows the envelope (local sockets only; see the README).
+ */
+export interface BlobRef {
+  field: number;
+  reserved: number;
+  offset: bigint;
+  length: bigint;
+}
+
+export const BlobRefSize = 24;
+
+export function readBlobRef(v: DataView, at: number): BlobRef {
+  return {
+    field: v.getUint32(at + 0, true),
+    reserved: v.getUint32(at + 4, true),
+    offset: v.getBigUint64(at + 8, true),
+    length: v.getBigUint64(at + 16, true),
+  };
+}
+
+export function writeBlobRef(v: DataView, at: number, s: BlobRef): void {
+  v.setUint32(at + 0, s.field, true);
+  v.setUint32(at + 4, s.reserved, true);
+  v.setBigUint64(at + 8, BigInt(s.offset), true);
+  v.setBigUint64(at + 16, BigInt(s.length), true);
+}
+
+function zeroBlobRef(): BlobRef {
+  return readBlobRef(new DataView(new ArrayBuffer(24)), 0);
 }
 
 export interface EnvelopeInit {
@@ -44,6 +77,8 @@ export interface EnvelopeInit {
   maxInflight?: number;
   credit?: bigint | number;
   detail?: number;
+  blobs?: BlobRef[];
+  arena?: bigint | number;
 }
 
 export class Envelope {
@@ -124,11 +159,19 @@ export class Envelope {
     return this.table.u32(56, 0);
   }
 
+  get blobs(): BlobRef[] {
+    return readList(this.table.view, this.table.vector(3), 24, (v, a) => readBlobRef(v, a));
+  }
+
+  get arena(): bigint {
+    return this.table.u64(64, 0n);
+  }
+
 }
 
 /** Writes `init` as a table of the message being built; returns the table's offset. */
 export function writeEnvelope(mb: MessageBuilder, init: EnvelopeInit): number {
-  const t = mb.table(60, 3);
+  const t = mb.table(72, 4);
   if (init.id !== undefined) {
     mb.setU32(t + 4, init.id, 0);
   }
@@ -142,7 +185,7 @@ export function writeEnvelope(mb: MessageBuilder, init: EnvelopeInit): number {
     mb.setU16(t + 10, init.code, 0);
   }
   if (init.message !== undefined) {
-    mb.setRef(t, 60, 0, mb.string(init.message));
+    mb.setRef(t, 72, 0, mb.string(init.message));
   }
   if (init.deadlineMs !== undefined) {
     mb.setU32(t + 16, init.deadlineMs, 0);
@@ -151,10 +194,10 @@ export function writeEnvelope(mb: MessageBuilder, init: EnvelopeInit): number {
     mb.setU16(t + 20, init.protocol, 0);
   }
   if (init.peer !== undefined) {
-    mb.setRef(t, 60, 1, mb.string(init.peer));
+    mb.setRef(t, 72, 1, mb.string(init.peer));
   }
   if (init.token !== undefined) {
-    mb.setRef(t, 60, 2, mb.string(init.token));
+    mb.setRef(t, 72, 2, mb.string(init.token));
   }
   if (init.window !== undefined) {
     mb.setU64(t + 24, init.window, 0n);
@@ -173,6 +216,16 @@ export function writeEnvelope(mb: MessageBuilder, init: EnvelopeInit): number {
   }
   if (init.detail !== undefined) {
     mb.setU32(t + 56, init.detail, 0);
+  }
+  if (init.blobs !== undefined) {
+    const vector = mb.vector(init.blobs.length, 24, 8);
+    for (let i = 0; i < init.blobs.length; i++) {
+      writeBlobRef(mb.view, vector + 4 + i * 24, init.blobs[i]);
+    }
+    mb.setRef(t, 72, 3, vector);
+  }
+  if (init.arena !== undefined) {
+    mb.setU64(t + 64, init.arena, 0n);
   }
   return t;
 }

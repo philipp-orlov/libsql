@@ -136,7 +136,7 @@ export class RpcStream<T, Tr = never> implements AsyncIterable<T>, AsyncIterator
   next(): Promise<IteratorResult<T>> {
     const item = this.items.shift();
     if (item) {
-      this.client.consumed(item.frameBytes);
+      this.client.consumed(item.frameBytes, this.items.length === 0);
       return Promise.resolve({ value: item.value, done: false });
     }
     if (this.ended) {
@@ -399,9 +399,9 @@ export class RpcClient {
   }
 
   /** @internal Items the caller consumed (or that were dropped): report them once a quarter window has piled up. */
-  consumed(frameBytes: number): void {
+  consumed(frameBytes: number, drained = false): void {
     this.unreported += frameBytes;
-    if (this.unreported >= Math.max(1, this.window / 4)) {
+    if (drained || this.unreported >= Math.max(1, this.window / 4)) {
       const credit = this.unreported;
       this.unreported = 0;
       try {
