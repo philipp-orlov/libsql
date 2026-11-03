@@ -146,7 +146,7 @@ endif()
 
 # libcore supplies libbase (hashBytes64): normally arrives with libnosql; a sibling checkout otherwise.
 set(SQL_LIBCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libcore" CACHE PATH "Path to a libcore checkout")
-if(NOT TARGET develop::base)
+if(NOT TARGET core::base)
     set(DEVELOP_BUILD_TESTS OFF CACHE BOOL "")
     add_subdirectory("${SQL_LIBCORE_DIR}" libcore)
 endif()
@@ -180,7 +180,7 @@ add_library(sql
     src/internal/types.cpp
 )
 add_library(sql::sql ALIAS sql)
-target_link_libraries(sql PUBLIC $<BUILD_INTERFACE:develop::mem> $<BUILD_INTERFACE:develop::json> $<BUILD_INTERFACE:develop::base>)
+target_link_libraries(sql PUBLIC $<BUILD_INTERFACE:core::mem> $<BUILD_INTERFACE:core::json> $<BUILD_INTERFACE:core::base>)
 
 target_include_directories(sql
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
