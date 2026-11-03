@@ -201,8 +201,8 @@ assert(fs.readdirSync(downloads).some(f => f.endsWith('.pdf')), 'the PDF is expo
 await send('Page.navigate', { url: `http://127.0.0.1:${port}/` });
 await until('the tabs', `[...document.querySelectorAll('[role=tab]')].some(t => t.textContent.includes('Report Designer'))`);
 await clickText('[role=tab]', 'Report Designer');
-await until('the designer', `document.querySelector('app-report-designer app-select.open')`);
-await choose('app-report-designer app-select.open', 'Executive Dashboard');
+await until('the designer', `document.querySelector('app-report-designer ui-select.open')`);
+await choose('app-report-designer ui-select.open', 'Executive Dashboard');
 await until('the preview', `document.querySelector('app-report-designer .sheet svg .bar')`);
 await sleep(900);
 assert((await count('app-data-pane .field')) > 5, 'the data pane lists the fields of the datasets');

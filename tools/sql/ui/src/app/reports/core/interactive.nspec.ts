@@ -4,9 +4,9 @@ import * as zlib from 'node:zlib';
 import { ChartData, drawChart, Measurer } from './chart';
 import { newReport, ReportDef, validateReport } from './definition';
 import { DataSet, layoutReport, ViewState } from './layout';
-import { buildPdf } from './pdf';
-import { pageToSvg } from './svg';
-import { Hit, PageDoc, Prim, TextPrim } from './primitives';
+import { buildPdf } from '@ui-kit/core/export';
+import { pageToSvg } from '@ui-kit/core/export';
+import { Hit, PageDoc, Prim, TextPrim } from '@ui-kit/core/export';
 import { testFonts } from './test-fonts';
 
 const fonts = testFonts();

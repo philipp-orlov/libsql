@@ -2,10 +2,10 @@
 
 import { Measurer } from './chart';
 import { BodyItem, newReport, ReportDef, validateReport } from './definition';
-import { decodeDataUri, imageInfo } from './image';
+import { decodeDataUri, imageInfo } from '@ui-kit/core/export';
 import { DataSet, layoutReport } from './layout';
 import { heatFill, inkOn, matrixModel } from './matrix';
-import { Action, Prim, TextPrim } from './primitives';
+import { Action, Prim, TextPrim } from '@ui-kit/core/export';
 import { checkRich, parseRich, plainText, wrapRich } from './richtext';
 import { resolveSubreports, subKey } from './subreport';
 import { testFonts } from './test-fonts';

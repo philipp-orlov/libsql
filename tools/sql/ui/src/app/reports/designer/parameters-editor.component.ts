@@ -6,8 +6,8 @@ import { MatIconModule } from '@angular/material/icon';
 
 import { ParamDef, ParamType, ReportDef } from '../core';
 import { MatCheckboxModule } from '@angular/material/checkbox';
-import { TextComponent } from '../shared/text.component';
-import { SelectComponent } from '../shared/select.component';
+import { TextComponent } from '@ui-kit/angular/forms';
+import { SelectComponent } from '@ui-kit/angular/forms';
 import { assign, Edit, move, unique } from './editing';
 
 const TYPES: ParamType[] = ['text', 'integer', 'real', 'date', 'boolean'];

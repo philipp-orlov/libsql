@@ -9,15 +9,15 @@
 import { chartData, drawChart, ChartSpec, Measurer } from './chart';
 import { BandItem, BodyItem, ChartItem, ColumnsItem, DrillDef, ImageItem, MatrixItem, pageDimensions, ReportDef, Style, SubreportItem, TableItem, TextItem } from './definition';
 import { evaluate, interpolate } from './expr';
-import { formatValue, Value } from './format';
-import { imageInfo } from './image';
+import { formatValue, Value } from '@ui-kit/core/format';
+import { imageInfo } from '@ui-kit/core/export';
 import { heatFill, heatRamp, inkOn, matrixModel } from './matrix';
-import { Action, FontFace, PageDoc, Prim } from './primitives';
+import { Action, FontFace, PageDoc, Prim } from '@ui-kit/core/export';
 import { parseRich, wrapRich, BULLET_INDENT } from './richtext';
 import { columnIndex, context, DataSet, Env } from './scope';
 import { subCalls, SubRuns, subKey } from './subreport';
 import { tableModel } from './tablemodel';
-import { TrueTypeFont } from './ttf';
+import { TrueTypeFont } from '@ui-kit/core/export';
 
 export * from './scope';
 

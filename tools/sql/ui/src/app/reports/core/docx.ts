@@ -7,11 +7,11 @@
 import { Block } from './blocks';
 import { ChartData } from './chart';
 import { pageDimensions, ReportDef } from './definition';
-import { formatValue, Value } from './format';
+import { formatValue, Value } from '@ui-kit/core/format';
 import { heatFill, inkOn } from './matrix';
 import { Paragraph } from './richtext';
 import { effective } from './richtext';
-import { buildZip } from './zip';
+import { buildZip } from '@ui-kit/core/export';
 
 type ChartBlock = Extract<Block, { t: 'chart' }>;
 

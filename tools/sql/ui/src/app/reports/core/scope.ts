@@ -4,7 +4,7 @@
 // names, as the context the expressions evaluate in. Free of Angular imports on purpose.
 
 import { ExprContext } from './expr';
-import { Value } from './format';
+import { Value } from '@ui-kit/core/format';
 import type { ReportDef } from './definition';
 
 export interface DataSet {

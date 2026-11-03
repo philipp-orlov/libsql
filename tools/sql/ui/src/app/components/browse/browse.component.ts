@@ -7,16 +7,16 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
-import { AutofocusDirective } from '../../directives/autofocus.directive';
+import { AutofocusDirective } from '@ui-kit/angular/forms';
 import { BrowseReply, Cell, SortSpec } from '../../models/api.models';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { WorkspaceService } from '../../services/workspace.service';
-import { CellRef, DataGridComponent, GridCellDirective, GroupDescriptor, SortDescriptor, effectiveSort } from '../../shared/data-grid';
+import { CellRef, DataGridComponent, GridCellDirective, GroupDescriptor, SortDescriptor, effectiveSort } from '@ui-kit/angular/data-grid';
 import { cellColumn, cellEditText, cellKind, cellText, inputToCell, isEditableCell, toCsv } from '../../utils/cell';
-import { downloadBlob, downloadText } from '../../utils/download';
+import { downloadBlob, downloadText } from '@ui-kit/core/dom';
 import { ExportFormat, ReportService } from '../../reports/report.service';
-import { ConfirmDialogComponent } from '../confirm-dialog/confirm-dialog.component';
+import { ConfirmDialogComponent } from '@ui-kit/angular/dialogs';
 import { RecordDialogComponent } from '../record-dialog/record-dialog.component';
 
 const PAGE_SIZES = [50, 100, 500, 1000];

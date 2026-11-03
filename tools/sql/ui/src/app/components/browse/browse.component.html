@@ -48,7 +48,7 @@
 
   <div class="body">
     @if (page(); as current) {
-      <app-data-grid
+      <ui-data-grid
         class="grid-area"
         mode="server"
         selectable="multiple"
@@ -74,7 +74,7 @@
           @if (isEditing(index, column.field)) {
             <input
               matInput
-              appAutofocus
+              uiAutofocus
               class="cell-input"
               #box
               [value]="editing()!.text"
@@ -97,7 +97,7 @@
             }
           }
         </ng-template>
-      </app-data-grid>
+      </ui-data-grid>
     } @else {
       <p class="hint grid-area">Select a table or view to browse its data.</p>
     }
@@ -110,7 +110,7 @@
             <span class="mono">{{ page()?.table }}.{{ column.name }}</span>
             <span>{{ cellKind(activeValue()!) }}, {{ cellText(activeValue()!).length }} characters</span>
           </p>
-          <textarea matInput class="mono panel-text" [value]="panelText()" [readOnly]="!panelEditable()" (input)="panelText.set(panelBox.value)" #panelBox spellcheck="false"></textarea>
+          <textarea matInput class="mono panel-text" [value]="panelText()" [readonly]="!panelEditable()" (input)="panelText.set(panelBox.value)" #panelBox spellcheck="false"></textarea>
           <div class="panel-actions">
             <button mat-flat-button class="apply" (click)="applyPanel()" [disabled]="!panelEditable() || !panelChanged()">Apply</button>
             <button mat-button class="reset" (click)="panelText.set(cellEditText(activeValue()!))" [disabled]="!panelChanged()">Revert</button>

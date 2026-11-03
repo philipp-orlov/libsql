@@ -3,7 +3,7 @@
 import { newReport, ReportDef, validateReport, parseReport, isValidReportName } from './definition';
 import { layoutReport, DataSet } from './layout';
 import { testFonts } from './test-fonts';
-import { TextPrim } from './primitives';
+import { TextPrim } from '@ui-kit/core/export';
 
 const fonts = testFonts();
 const texts = (pages: { prims: any[] }[], i: number): string[] => pages[i].prims.filter(p => p.k === 'text').map((p: TextPrim) => p.text);

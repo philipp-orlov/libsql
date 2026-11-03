@@ -45,11 +45,11 @@
       <form class="params tab-bar" (submit)="$event.preventDefault(); run()">
         @for (p of report.parameters; track p.name) {
           @if (hasChoices(p)) {
-            <app-select [label]="(p.label || p.name) + (p.required ? ' *' : '')" [value]="form()[p.name]" [options]="choiceOptions(p)" [width]="200" (valueChange)="setValue(p.name, $event)" />
+            <ui-select [label]="(p.label || p.name) + (p.required ? ' *' : '')" [value]="form()[p.name]" [options]="choiceOptions(p)" [width]="200" (valueChange)="setValue(p.name, $event)" />
           } @else if (p.type === 'boolean') {
             <mat-checkbox class="param-check" [checked]="form()[p.name] === 'true'" (change)="setValue(p.name, $event.checked ? 'true' : '')">{{ p.label || p.name }}</mat-checkbox>
           } @else if (p.type === 'date') {
-            <app-date [label]="(p.label || p.name) + (p.required ? ' *' : '')" [value]="form()[p.name]" [width]="180" (valueChange)="setValue(p.name, $event)" />
+            <ui-date [label]="(p.label || p.name) + (p.required ? ' *' : '')" [value]="form()[p.name]" [width]="180" (valueChange)="setValue(p.name, $event)" />
           } @else {
             <mat-form-field appearance="outline" subscriptSizing="dynamic" class="param-field">
               <mat-label>{{ p.label || p.name }}{{ p.required ? ' *' : '' }}</mat-label>

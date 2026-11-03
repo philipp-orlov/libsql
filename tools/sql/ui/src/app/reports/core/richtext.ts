@@ -5,7 +5,7 @@
 // bracket (`\[`) is a plain bracket; a line that starts with `- ` is a bullet. The `{{ expressions }}` of the template are
 // replaced first, and what they give is never read as markup. Free of Angular imports on purpose.
 
-import type { FontFace } from './primitives';
+import type { FontFace } from '@ui-kit/core/export';
 
 export interface RunStyle {
   bold?: boolean;

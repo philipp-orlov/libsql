@@ -8,7 +8,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatToolbarModule } from '@angular/material/toolbar';
 
-import { ThemeToggleComponent } from '../../shared/theme/theme-toggle.component';
+import { ThemeToggleComponent } from '@ui-kit/angular/theme';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { ReportRunnerComponent } from '../runner/report-runner.component';
@@ -28,7 +28,7 @@ import { ReportService } from '../report.service';
         <span class="title">Reports</span>
         <span class="spacer"></span>
         <span class="path mono">{{ db.info()?.path }}</span>
-        <app-theme-toggle />
+        <ui-theme-toggle />
       </mat-toolbar>
       @if (db.authRequired()) {
         <form class="token" (ngSubmit)="signIn(token.value)">

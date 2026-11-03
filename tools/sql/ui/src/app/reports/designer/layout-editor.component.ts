@@ -6,10 +6,10 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 
 import { BandItem, BodyItem, ChartItem, ColumnDef, ColumnsItem, DrillDef, ImageItem, MatrixItem, ReportDef, SeriesDef, SubreportItem, TableItem } from '../core';
-import { ComboComponent } from '../shared/combo.component';
+import { ComboComponent } from '@ui-kit/angular/forms';
 import { MatCheckboxModule } from '@angular/material/checkbox';
-import { TextComponent } from '../shared/text.component';
-import { Choice, SelectComponent } from '../shared/select.component';
+import { TextComponent } from '@ui-kit/angular/forms';
+import { Choice, SelectComponent } from '@ui-kit/angular/forms';
 import { ItemPick } from '../viewer/report-viewer.component';
 import { assign, Edit, listAt, move, numberOf } from './editing';
 import { FIELD_MIME, FieldDrag, FieldInfo, KIND_ICON } from './fields';

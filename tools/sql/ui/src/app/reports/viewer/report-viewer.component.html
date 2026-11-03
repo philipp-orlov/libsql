@@ -19,7 +19,7 @@
     @if (changed()) {
       <button mat-button class="reset-view" (click)="reset()"><mat-icon>restart_alt</mat-icon>Reset view</button>
     }
-    <app-select class="zoom" label="Zoom" [value]="zoomKey()" [options]="zoomOptions" [width]="130" (valueChange)="setZoom($event)" />
+    <ui-select class="zoom" label="Zoom" [value]="zoomKey()" [options]="zoomOptions" [width]="130" (valueChange)="setZoom($event)" />
   </div>
   <div class="stage">
     @if (count() > 0) {

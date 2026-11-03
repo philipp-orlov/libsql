@@ -7,8 +7,8 @@
 import { ChartData, chartData } from './chart';
 import { BodyItem, ChartItem, defaultParams, ImageItem, MatrixItem, ReportDef, Style, TableItem } from './definition';
 import { interpolate } from './expr';
-import { Value } from './format';
-import { imageInfo, ImageInfo } from './image';
+import { Value } from '@ui-kit/core/format';
+import { imageInfo, ImageInfo } from '@ui-kit/core/export';
 import { matrixModel, MatrixModel } from './matrix';
 import { Paragraph, parseRich } from './richtext';
 import { context, DataSet, Env } from './scope';

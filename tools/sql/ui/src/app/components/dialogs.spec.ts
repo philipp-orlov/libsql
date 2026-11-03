@@ -5,7 +5,7 @@ import { MatDialog, MatDialogRef } from '@angular/material/dialog';
 import { firstValueFrom } from 'rxjs';
 
 import { PERSON_COLUMNS, query, sampleSchema, settle, typeInto } from '../testing/test-helpers';
-import { ConfirmDialogComponent } from './confirm-dialog/confirm-dialog.component';
+import { ConfirmDialogComponent } from '@ui-kit/angular/dialogs';
 import { CreateIndexDialogComponent } from './create-index-dialog/create-index-dialog.component';
 import { CreateTableDialogComponent } from './create-table-dialog/create-table-dialog.component';
 import { ModifyTableDialogComponent } from './modify-table-dialog/modify-table-dialog.component';

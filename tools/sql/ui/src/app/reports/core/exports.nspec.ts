@@ -7,12 +7,12 @@ import { buildBlocks, walkBlocks } from './blocks';
 import { BodyItem, newReport, ReportDef } from './definition';
 import { buildDocx } from './docx';
 import { tableData, tableToCsv } from './export';
-import { decodePng } from './image';
+import { decodePng } from '@ui-kit/core/export';
 import { DataSet, layoutReport } from './layout';
-import { buildPdf } from './pdf';
+import { buildPdf } from '@ui-kit/core/export';
 import { testFonts } from './test-fonts';
 import { buildXlsx, excelFormat } from './xlsx';
-import { readZip } from './zip';
+import { readZip } from '@ui-kit/core/export';
 
 const fonts = testFonts();
 const decoder = new TextDecoder();

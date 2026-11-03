@@ -9,7 +9,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 
 import { DatabaseService } from '../../services/database.service';
 import { StorageTree, formatBytes, treeLabel, treePages } from '../../services/storage';
-import { SplitComponent, SplitPaneComponent } from '../../shared/split-layout';
+import { SplitComponent, SplitPaneComponent } from '@ui-kit/angular/split-layout';
 import { PageInspectorComponent } from './page-inspector.component';
 import { PageMapComponent } from './page-map.component';
 import { TreeExplorerComponent } from './tree-explorer.component';

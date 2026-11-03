@@ -5,7 +5,7 @@
 
 import { ColumnDef, TableItem } from './definition';
 import { evaluate, interpolate } from './expr';
-import { formatValue, Value } from './format';
+import { formatValue, Value } from '@ui-kit/core/format';
 import { columnIndex, compareValues, context, DataSet, Env } from './scope';
 
 export type Align = 'left' | 'center' | 'right';

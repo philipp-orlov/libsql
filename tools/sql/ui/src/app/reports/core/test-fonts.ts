@@ -3,8 +3,8 @@
 // The report fonts for specs that run in Node (scripts/unit.mjs sets REPORT_FONTS to tools/sql/fonts).
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { FontFace } from './primitives';
-import { TrueTypeFont } from './ttf';
+import { FontFace } from '@ui-kit/core/export';
+import { TrueTypeFont } from '@ui-kit/core/export';
 
 export function testFonts(): Record<FontFace, TrueTypeFont> {
   const dir = process.env['REPORT_FONTS'] ?? '';

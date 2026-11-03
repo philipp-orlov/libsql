@@ -174,7 +174,7 @@
           @if (d.kind === 'overflow' && bytesPages() < d.runPages) {
             <p class="note">The first {{ bytesPages() }} of {{ d.runPages }} pages of the run.</p>
           }
-          <app-hex-dump [bytes]="bytes()" [regions]="regions()" [highlight]="highlight()" [base]="d.pgno * d.pageSize" (pick)="pickByte($event)" />
+          <ui-hex-dump [bytes]="bytes()" [regions]="regions()" [highlight]="highlight()" [base]="d.pgno * d.pageSize" (pick)="pickByte($event)" />
         </div>
       </mat-tab>
     </mat-tab-group>

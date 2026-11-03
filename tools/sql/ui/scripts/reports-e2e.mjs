@@ -176,7 +176,7 @@ await until('the tabs', `[...document.querySelectorAll('[role=tab]')].some(t => 
 assert(await click('[role=tab]', 'Reports'), 'no Reports tab');
 await until('the report list', `[...document.querySelectorAll('.entry')].some(e => e.textContent.includes('Sales by region'))`);
 await click('.entry', 'Sales by region');
-await choose('app-report-runner app-select', 'North');
+await choose('app-report-runner ui-select', 'North');
 await until('Run enabled', `!document.querySelector('button.run').disabled`);
 await click('button.run');
 await until('the first page', `document.querySelector('.sheet svg')`);
@@ -214,8 +214,8 @@ await until('all rows', `document.querySelector('.sheet svg')?.textContent.inclu
 
 // ---- the designer ----------------------------------------------------------------------------------------------------------
 assert(await click('[role=tab]', 'Report Designer'), 'no Report Designer tab');
-await until('the designer', `document.querySelector('app-report-designer app-select.open')`);
-await choose('app-report-designer app-select.open', 'Sales');
+await until('the designer', `document.querySelector('app-report-designer ui-select.open')`);
+await choose('app-report-designer ui-select.open', 'Sales');
 await until('the preview', `document.querySelector('app-report-designer .sheet svg')`);
 await click('[role=tab]', 'Layout');
 await until('the layout items', `document.querySelector('app-layout-editor .card')`);
@@ -238,7 +238,7 @@ await shot('designer.png');
 // the theme button: dark for everything but the page, which is paper
 const bg = () => evaluate(`getComputedStyle(document.body).backgroundColor`);
 const lightBg = await bg();
-await click('app-theme-toggle button.theme');
+await click('ui-theme-toggle button.theme');
 await until('the theme menu', `document.querySelector('.theme-dark')`);
 await click('.theme-dark');
 await until('the dark theme', `document.documentElement.dataset.theme === 'dark'`);
@@ -247,7 +247,7 @@ assert((await evaluate(`localStorage.getItem('sql.theme')`)) === 'dark', 'the th
 await click('[role=tab]', 'Layout');
 assert((await evaluate(`getComputedStyle(document.querySelector('app-report-designer .sheet')).backgroundColor`)) === 'rgb(255, 255, 255)', 'the page is not white in the dark theme');
 await shot('designer-dark.png');
-await click('app-theme-toggle button.theme');
+await click('ui-theme-toggle button.theme');
 await until('the theme menu', `document.querySelector('.theme-light')`);
 await click('.theme-light');
 await until('the light theme', `document.documentElement.dataset.theme === 'light'`);
