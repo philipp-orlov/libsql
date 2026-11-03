@@ -28,6 +28,9 @@ env:
   # Pin it to a commit once the libhttp work is on main.
   LIBHTTP_REPO: philipp-orlov/libhttp
   LIBHTTP_REF: main
+  # librpc, likewise: the remote protocol (SQL_WITH_REMOTE) and its compiler, rpcc.
+  LIBRPC_REPO: philipp-orlov/librpc
+  LIBRPC_REF: main
 
 jobs:
   test:
@@ -92,6 +95,13 @@ jobs:
           repository: ${{ env.LIBHTTP_REPO }}
           ref: ${{ env.LIBHTTP_REF }}
           path: libhttp
+
+      - name: Check out librpc
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LIBRPC_REPO }}
+          ref: ${{ env.LIBRPC_REF }}
+          path: librpc
 
       - name: Install build tools
         run: |
