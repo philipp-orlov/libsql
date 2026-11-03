@@ -480,6 +480,19 @@ TEST(service_server_no_alloc)
     CHECK(g_serverNews.load() > 0);
 }
 
+// Memory-growth checks are for the real allocator only (the same test as test_soak.cpp).
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+constexpr bool kSanitized = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+constexpr bool kSanitized = true;
+#else
+constexpr bool kSanitized = false;
+#endif
+#else
+constexpr bool kSanitized = false;
+#endif
+
 static long residentKiB()
 {
     long pages = 0, resident = 0;
@@ -518,7 +531,10 @@ TEST(service_soak_memory_is_flat)
     }
     const long end = residentKiB();
     std::printf("      RSS after warm-up %ld KiB, at the end %ld KiB (%d requests)\n", afterWarmup, end, kSessions * kRounds);
-    CHECK(end - afterWarmup < 4096);
+    // A sanitizer's allocator holds freed blocks back (ASan's quarantine) and adds its own memory, so resident memory
+    // grows without a leak: the check means something only with the real allocator (as in test_soak.cpp).
+    if (!kSanitized)
+        CHECK(end - afterWarmup < 4096);
     CHECK_EQ(served.socket->stats().sessions, std::size_t(kSessions));
 }
 
