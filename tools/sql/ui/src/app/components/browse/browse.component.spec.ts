@@ -4,7 +4,7 @@ import { MatPaginator } from '@angular/material/paginator';
 import { By } from '@angular/platform-browser';
 
 import { WorkspaceService } from '../../services/workspace.service';
-import { DataGridComponent } from '@ui-kit/angular/data-grid';
+import { DataGridComponent } from '@web-ui-kit/angular/data-grid';
 import {
   FakeDatabase,
   PERSON_COLUMNS,
@@ -17,7 +17,7 @@ import {
   settle,
   typeInto,
 } from '../../testing/test-helpers';
-import { ConfirmDialogComponent } from '@ui-kit/angular/dialogs';
+import { ConfirmDialogComponent } from '@web-ui-kit/angular/dialogs';
 import { RecordDialogComponent } from '../record-dialog/record-dialog.component';
 import { BrowseComponent } from './browse.component';
 

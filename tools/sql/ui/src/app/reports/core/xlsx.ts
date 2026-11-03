@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Philipp Orlov
 
 // A report as an Excel workbook: a first sheet with the title, the parameters and the text, and a sheet of its own for
-// every table, matrix and chart. The workbook writer (styles, sheets, packaging) is @ui-kit/core/export's; this file
+// every table, matrix and chart. The workbook writer (styles, sheets, packaging) is @web-ui-kit/core/export's; this file
 // only walks the report's blocks. Free of Angular imports on purpose.
 
-import { XlsxLook, XlsxSheet, XlsxStyles, buildWorkbook, columnName, excelFormat, sheetName, xlsxCellValue } from '@ui-kit/core/export';
-import { formatValue, Value } from '@ui-kit/core/format';
+import { XlsxLook, XlsxSheet, XlsxStyles, buildWorkbook, columnName, excelFormat, sheetName, xlsxCellValue } from '@web-ui-kit/core/export';
+import { formatValue, Value } from '@web-ui-kit/core/format';
 
 import { Block, walkBlocks } from './blocks';
 import { ReportDef } from './definition';

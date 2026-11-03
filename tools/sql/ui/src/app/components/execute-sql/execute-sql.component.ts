@@ -6,9 +6,9 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 
 import { Cell, SqlResult } from '../../models/api.models';
 import { DatabaseService } from '../../services/database.service';
-import { DataGridComponent, GridCellDirective, GridColumn } from '@ui-kit/angular/data-grid';
+import { DataGridComponent, GridCellDirective, GridColumn } from '@web-ui-kit/angular/data-grid';
 import { cellColumnOf, cellKind, rowIndexes, toCsvOf } from '../../utils/cell';
-import { downloadText } from '@ui-kit/core/dom';
+import { downloadText } from '@web-ui-kit/core/dom';
 import { SqlEditorComponent } from '../sql-editor/sql-editor.component';
 
 export interface Editor {

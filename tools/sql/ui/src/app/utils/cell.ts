@@ -1,5 +1,5 @@
 import { BlobCell, Cell, ColumnInfo, IntegerCell, SqlResult } from '../models/api.models';
-import type { GridColumn } from '@ui-kit/core/grid';
+import type { GridColumn } from '@web-ui-kit/core/grid';
 
 export type CellKind = 'null' | 'integer' | 'real' | 'text' | 'blob';
 

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Philipp Orlov
 
-import { TextComponent } from '@ui-kit/angular/forms';
+import { TextComponent } from '@web-ui-kit/angular/forms';
 import { Component, inject, input, output, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';

@@ -7,7 +7,7 @@
 //   Format(value, pattern) Upper Lower Trim Len Round(value, decimals) Abs Iif(c, a, b) Coalesce(...) Substring(s, start, len).
 // Nothing is evaluated with eval or Function: expressions are parsed and walked. Free of Angular imports on purpose.
 
-import { formatValue, Value } from '@ui-kit/core/format';
+import { formatValue, Value } from '@web-ui-kit/core/format';
 
 export class ExprError extends Error {}
 

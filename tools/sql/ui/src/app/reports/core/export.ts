@@ -6,11 +6,11 @@
 
 import { buildBlocks, walkBlocks } from './blocks';
 import { ReportDef } from './definition';
-import { Value } from '@ui-kit/core/format';
+import { Value } from '@web-ui-kit/core/format';
 import { ViewState } from './layout';
 import { DataSet } from './scope';
 import { SubRuns } from './subreport';
-import { toCsv } from '@ui-kit/core/export';
+import { toCsv } from '@web-ui-kit/core/export';
 
 export interface TableData {
   /** For the file name and the menu: `Table 2 (sales)`. */

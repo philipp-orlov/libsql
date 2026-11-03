@@ -1,6 +1,6 @@
 import { provideHttpClient } from '@angular/common/http';
 import { ApplicationConfig, provideBrowserGlobalErrorListeners, provideZonelessChangeDetection } from '@angular/core';
-import { THEME_STORAGE_KEY } from '@ui-kit/angular/theme';
+import { THEME_STORAGE_KEY } from '@web-ui-kit/angular/theme';
 
 /** Where the theme choice was kept before the ui-kit, so that nobody loses theirs. */
 export const THEME_KEY = 'sql.theme';

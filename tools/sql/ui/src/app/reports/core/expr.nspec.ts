@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Philipp Orlov
 
 import { checkTemplate, evaluate, ExprContext, ExprError, interpolate } from './expr';
-import { Value } from '@ui-kit/core/format';
+import { Value } from '@web-ui-kit/core/format';
 
 const columns = ['region', 'amount'];
 const rows: Value[][] = [['N', 10], ['S', 30], ['N', null]];

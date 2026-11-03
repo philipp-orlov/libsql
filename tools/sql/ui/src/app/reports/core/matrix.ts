@@ -5,7 +5,7 @@
 // Free of Angular imports on purpose.
 
 import { Aggregate, HeatScale, MatrixItem } from './definition';
-import { formatValue, Value } from '@ui-kit/core/format';
+import { formatValue, Value } from '@web-ui-kit/core/format';
 import { columnIndex, compareValues, DataSet } from './scope';
 
 export interface MatrixColumn {

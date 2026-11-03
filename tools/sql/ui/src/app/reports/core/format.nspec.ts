@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Philipp Orlov
 
-import { formatDate, formatNumber, formatValue, toDate } from '@ui-kit/core/format';
-import { toCsv } from '@ui-kit/core/export';
+import { formatDate, formatNumber, formatValue, toDate } from '@web-ui-kit/core/format';
+import { toCsv } from '@web-ui-kit/core/export';
 import { bindNames } from './sql-params';
 
 describe('formatNumber', () => {

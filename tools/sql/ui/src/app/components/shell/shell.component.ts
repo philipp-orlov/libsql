@@ -8,7 +8,7 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatTooltipModule } from '@angular/material/tooltip';
 
-import { ThemeToggleComponent } from '@ui-kit/angular/theme';
+import { ThemeToggleComponent } from '@web-ui-kit/angular/theme';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { WorkspaceService } from '../../services/workspace.service';

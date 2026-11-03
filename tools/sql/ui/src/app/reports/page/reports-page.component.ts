@@ -8,7 +8,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatToolbarModule } from '@angular/material/toolbar';
 
-import { ThemeToggleComponent } from '@ui-kit/angular/theme';
+import { ThemeToggleComponent } from '@web-ui-kit/angular/theme';
 import { DatabaseService } from '../../services/database.service';
 import { NoticeService } from '../../services/notice.service';
 import { ReportRunnerComponent } from '../runner/report-runner.component';

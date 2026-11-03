@@ -16,7 +16,7 @@ Open `http://127.0.0.1:8080/`. The window has the four tabs of DB Browser:
 | Edit Pragmas | Shows the pragmas that change what libsql does, in three groups: saved in the database file, this connection only, and reported by the store. |
 | Execute SQL | Runs SQL from editor tabs. The editor colors the SQL and completes keywords, functions, tables and columns (`Ctrl+Space`, or as you type; `alias.` and `table.` offer columns). Runs the selection when there is one; `Ctrl+Enter` runs. Opens and saves `.sql` files, and saves the rows as CSV. The rows show in the same grid, sorted, filtered and grouped in the browser. |
 
-Both grids (`ui-data-grid` of the shared ui-kit, `@ui-kit/angular/data-grid`) work like Kendo UI's: drag a column heading into the bar above
+Both grids (`ui-data-grid` of the shared ui-kit, `@web-ui-kit/angular/data-grid`) work like Kendo UI's: drag a column heading into the bar above
 the grid to group the rows by it, drag more to nest groups, click a group chip to turn its order around
 and drag it away to ungroup. Drag headings to rearrange the columns and their right edge to resize them.
 The menu of a heading sorts, groups, and shows or hides columns. In Browse Data the server sorts by the
@@ -196,9 +196,10 @@ build/tools/sql/sql catalog.db --listen 8080
 
 The front end is an Angular and Angular Material application in [ui/](ui/). Its grid, split panes, form
 fields, theme toggle, hex dump and confirm dialog come from the shared web-ui-kit (`../../../web-ui-kit`:
-`@ui-kit/angular`), and so do the report engine's PDF, SVG, XLSX, CSV and ZIP writers, number and date
-formats and chart drawing (`@ui-kit/core`, framework-free). Build the kit before `npm install` in `ui/`,
-and install again after each rebuild (`ui/.npmrc` sets `install-links`, so npm copies the kit in):
+`@web-ui-kit/angular`), and so do the report engine's PDF, SVG, XLSX, CSV and ZIP writers, number and date
+formats and chart drawing (`@web-ui-kit/core`, framework-free). Build the kit before `npm install` in `ui/`,
+and run `npm run kit` in `ui/` after each rebuild of it (`ui/.npmrc` sets `install-links`, so npm copies the
+kit in, and it copies it again only when the old copy is removed first, which `npm run kit` does):
 
 ```
 (cd ../../../web-ui-kit/angular && npm install && npm run build)

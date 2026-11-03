@@ -10,7 +10,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 
 import { DatabaseService } from '../../services/database.service';
 import { PageDetails, PageNode, flagNames, formatBytes, loadBytes, loadNodes, loadPage, preview, toHex, treeLabel } from '../../services/storage';
-import { HexDumpComponent, HexRegion, HexSelection } from '@ui-kit/angular/hex-dump';
+import { HexDumpComponent, HexRegion, HexSelection } from '@web-ui-kit/angular/hex-dump';
 import { KIND_COLORS, KIND_LABELS, VisualizeStore } from './visualize.store';
 
 export interface Segment {

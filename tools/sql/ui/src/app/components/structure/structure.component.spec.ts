@@ -3,7 +3,7 @@ import { TestBed } from '@angular/core/testing';
 
 import { WorkspaceService } from '../../services/workspace.service';
 import { FakeDatabase, databaseProviders, dialogAnswering, fakeDatabase, fakeInfo, fakeNotice, query, settle } from '../../testing/test-helpers';
-import { ConfirmDialogComponent } from '@ui-kit/angular/dialogs';
+import { ConfirmDialogComponent } from '@web-ui-kit/angular/dialogs';
 import { CreateIndexDialogComponent } from '../create-index-dialog/create-index-dialog.component';
 import { CreateTableDialogComponent } from '../create-table-dialog/create-table-dialog.component';
 import { ModifyTableDialogComponent } from '../modify-table-dialog/modify-table-dialog.component';

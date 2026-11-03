@@ -7,7 +7,7 @@
 
 import { BodyItem, defaultParams, paramValue, ReportDef, SubreportItem } from './definition';
 import { interpolate } from './expr';
-import { Value } from '@ui-kit/core/format';
+import { Value } from '@web-ui-kit/core/format';
 import { context, DataSet, Env } from './scope';
 
 export interface SubRun {

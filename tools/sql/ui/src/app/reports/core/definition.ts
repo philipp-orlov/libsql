@@ -5,7 +5,7 @@
 
 import { checkTemplate, parseExpression } from './expr';
 import { checkRich } from './richtext';
-import { isDatePattern } from '@ui-kit/core/format';
+import { isDatePattern } from '@web-ui-kit/core/format';
 import { bindNames } from './sql-params';
 
 export const REPORT_FORMAT = 1;

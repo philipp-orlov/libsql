@@ -6,7 +6,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 
 import { Action, PageDoc, pageToSvg, Region, Tip, ViewState } from '../core';
-import { Choice, SelectComponent } from '@ui-kit/angular/forms';
+import { Choice, SelectComponent } from '@web-ui-kit/angular/forms';
 import { FONT_FAMILY } from '../report.service';
 
 /** Open this report with these parameters (texts, as the parameter form holds them). */

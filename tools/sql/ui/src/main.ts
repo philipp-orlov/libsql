@@ -3,7 +3,7 @@ import { bootstrapApplication } from '@angular/platform-browser';
 import { appConfig } from './app/app.config';
 import { ShellComponent } from './app/components/shell/shell.component';
 import { ReportsPageComponent } from './app/reports/page/reports-page.component';
-import { applyTheme, storedTheme } from '@ui-kit/core/theme';
+import { applyTheme, storedTheme } from '@web-ui-kit/core/theme';
 
 import { THEME_KEY } from './app/app.config';
 

@@ -10,13 +10,13 @@ import { MatMenuModule } from '@angular/material/menu';
 
 import { NoticeService } from '../../services/notice.service';
 import { DatabaseService } from '../../services/database.service';
-import { downloadBlob, downloadText } from '@ui-kit/core/dom';
+import { downloadBlob, downloadText } from '@web-ui-kit/core/dom';
 import { LayoutResult, ParamDef, ParamOption, paramText, paramValue, ReportDef, tableData, tableToCsv, TableData, Value, ViewState } from '../core';
 import { ReportService, RunResult } from '../report.service';
-import { Choice, SelectComponent } from '@ui-kit/angular/forms';
-import { DateComponent } from '@ui-kit/angular/forms';
-import { SplitComponent } from '@ui-kit/angular/split-layout';
-import { SplitPaneComponent } from '@ui-kit/angular/split-layout';
+import { Choice, SelectComponent } from '@web-ui-kit/angular/forms';
+import { DateComponent } from '@web-ui-kit/angular/forms';
+import { SplitComponent } from '@web-ui-kit/angular/split-layout';
+import { SplitPaneComponent } from '@web-ui-kit/angular/split-layout';
 import { DrillRequest, ReportViewerComponent } from '../viewer/report-viewer.component';
 
 /** Lists the reports, asks for the parameters, runs one, shows it page by page, and exports it as PDF or CSV. */

@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Philipp Orlov
 
 // A chart item's data from its dataset. The drawing (bars, lines, areas, pies as primitives for the preview and the
-// PDF) is @ui-kit/core/charts', re-exported here for the rest of the report engine. Free of Angular imports on purpose.
+// PDF) is @web-ui-kit/core/charts', re-exported here for the rest of the report engine. Free of Angular imports on purpose.
 
-import { ChartData, PALETTE } from '@ui-kit/core/charts';
-import { formatValue } from '@ui-kit/core/format';
+import { ChartData, PALETTE } from '@web-ui-kit/core/charts';
+import { formatValue } from '@web-ui-kit/core/format';
 
 import type { ChartItem } from './definition';
 import { columnIndex, DataSet } from './scope';
@@ -21,7 +21,7 @@ export {
   type ChartSeries,
   type ChartSpec,
   type Measurer,
-} from '@ui-kit/core/charts';
+} from '@web-ui-kit/core/charts';
 
 /** The most rows a chart draws. */
 export const CHART_MAX_ROWS = 200;
