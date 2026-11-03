@@ -28,7 +28,7 @@ namespace sql::internal {
 /// a variable-length copy, which would be a library call.
 inline std::uint64_t hashBytes(const char* p, std::size_t n) noexcept
 {
-    return base::hashBytes64(p, n);   // moved unchanged to develop-core's libbase
+    return base::hashBytes64(p, n);   // moved unchanged to libcore's libbase
 }
 
 /// A set of byte strings that numbers its members in insertion order

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // A bump allocator for objects that live and die together: the expression nodes of one parsed statement. Allocation is
-// a pointer bump inside the current chunk; nothing is freed until the arena goes. The chunks now come from develop-core's
+// a pointer bump inside the current chunk; nothing is freed until the arena goes. The chunks now come from libcore's
 // mem::Arena over the process-wide size-class pool, so a dropped statement hands its chunks back to a bounded, shared
 // pool instead of leaving holes in the heap, and a statement's tree sits in a few contiguous, cache-line aligned blocks.
 #pragma once
