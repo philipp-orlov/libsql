@@ -147,7 +147,7 @@ endif()
 # libcore supplies libbase (hashBytes64): normally arrives with libnosql; a sibling checkout otherwise.
 set(SQL_LIBCORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../libcore" CACHE PATH "Path to a libcore checkout")
 if(NOT TARGET core::base)
-    set(DEVELOP_BUILD_TESTS OFF CACHE BOOL "")
+    set(CORE_BUILD_TESTS OFF CACHE BOOL "")
     add_subdirectory("${SQL_LIBCORE_DIR}" libcore)
 endif()
 
