@@ -17,10 +17,13 @@ env:
   # libnosql is built from source next to this checkout. Bump the pin together
   # with any change that depends on a newer libnosql API.
   LIBNOSQL_REPO: philipp-orlov/libnosql
-  LIBNOSQL_REF: ee990484a49967a4d1ad80c6ab2c3da25d9295f7
+  LIBNOSQL_REF: main
+  # libcore (base, json, ...): libnosql and libsql both expect it as a sibling checkout.
+  LIBCORE_REPO: philipp-orlov/libcore
+  LIBCORE_REF: main
   # libbufs, likewise: the binary result format (SQL_WITH_BUFS) builds from source.
   LIBBUFS_REPO: philipp-orlov/libbufs
-  LIBBUFS_REF: be14e8bb4dfb74bfd12371fa9313dfec725fd3a6
+  LIBBUFS_REF: main
   # libhttp, likewise: the WebSocket server routes and client behind remote databases (SQL_WITH_REMOTE).
   # Pin it to a commit once the libhttp work is on main.
   LIBHTTP_REPO: philipp-orlov/libhttp
@@ -68,6 +71,13 @@ jobs:
           repository: ${{ env.LIBNOSQL_REPO }}
           ref: ${{ env.LIBNOSQL_REF }}
           path: libnosql
+
+      - name: Check out libcore
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LIBCORE_REPO }}
+          ref: ${{ env.LIBCORE_REF }}
+          path: libcore
 
       - name: Check out libbufs
         uses: actions/checkout@v4
