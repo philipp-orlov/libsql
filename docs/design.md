@@ -1840,6 +1840,8 @@ Public headers live under [`../include/sql/`](../include/sql/).
   once verified until the page is replaced (writers always re-verify);
 - `busyTimeout`, the initial `PRAGMA busy_timeout`;
 - `sortMemoryLimit`, the bytes an `ORDER BY` holds before spilling (§13.5);
+- `statementMemoryLimit`, the working memory one statement may use before it
+  fails (0 = no limit; `Compact` sets 128 MiB; also `PRAGMA hard_heap_limit`);
 - `memoryProfile` (`Compact`, `Balanced`, `Throughput`) setting
   `statementCacheSize`, `scratchRetain`, `sortMemoryLimit` and
   `arenaBlockSize` together; each can also be set alone, and an explicit

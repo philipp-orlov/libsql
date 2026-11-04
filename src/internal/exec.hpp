@@ -75,8 +75,10 @@ public:
     Value* append()
     {
         const std::size_t need = (rows_ + 1) * width_;
-        if (cells_.size() < need)
+        if (cells_.size() < need) {
+            chargeStatement((need - cells_.size()) * sizeof(Value));
             cells_.resize(need);
+        }
         return &cells_[rows_++ * width_];
     }
     void appendRow(const Value* v)
@@ -658,6 +660,8 @@ struct ConnectionState
     std::int64_t cacheSize = -2000;
     /// PRAGMA temp_store: 0 default, 1 file, 2 memory (sorts never spill).
     std::atomic<int> tempStore{0};
+    /// Bytes of working memory one statement may use; 0 = no limit. PRAGMA hard_heap_limit.
+    std::atomic<std::uint64_t> statementMemory{0};
     /// Bytes a sort may hold before it spills sorted runs to a temp file.
     std::atomic<std::uint64_t> sortMemory{64ull << 20};
     /// Bytes of per-run scratch (group tables, DISTINCT and IN key sets) a

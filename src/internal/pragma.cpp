@@ -449,7 +449,14 @@ PragmaResult runPragma(Session& s, const std::string& schema, const std::string&
             single(Value(std::int64_t(1)));
         return r;
     }
-    if (name == "journal_size_limit" || name == "soft_heap_limit" || name == "hard_heap_limit" ||
+    if (name == "hard_heap_limit" || name == "soft_heap_limit") {
+        if (value)
+            conn.statementMemory = std::uint64_t(std::max<std::int64_t>(toInt64(*value), 0));
+        else
+            single(Value(std::int64_t(conn.statementMemory.load())));
+        return r;
+    }
+    if (name == "journal_size_limit" ||
         name == "threads" || name == "wal_autocheckpoint" || name == "analysis_limit") {
         if (!value)
             single(Value(std::int64_t(name == "journal_size_limit" ? -1 : (name == "wal_autocheckpoint" ? 1000 : 0))));

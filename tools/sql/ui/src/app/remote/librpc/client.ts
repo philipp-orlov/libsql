@@ -166,6 +166,8 @@ export class RpcClient {
   private nextId = 1;
   private readonly calls = new Map<number, Call>();
   private pingTimer?: ReturnType<typeof setInterval>;
+  private heardFrame = true;
+  private missedPings = 0;
   private unreported = 0;
   private closedWith?: RpcError;
   private window = 0;
@@ -413,6 +415,7 @@ export class RpcClient {
   }
 
   private onFrame(data: ArrayBuffer): void {
+    this.heardFrame = true;
     let env: Envelope;
     let body: Uint8Array | undefined;
     try {
@@ -531,6 +534,19 @@ export class RpcClient {
     const every = this.options.pingIntervalMs ?? 15000;
     if (every <= 0) return;
     this.pingTimer = setInterval(() => {
+      // Nothing heard since the ping before last: the peer is gone without saying so (Wi-Fi drop, power loss).
+      // TCP would take many minutes to report it; until then the caller would keep showing old data.
+      this.missedPings = this.heardFrame ? 0 : this.missedPings + 1;
+      this.heardFrame = false;
+      if (this.missedPings >= 2) {
+        this.lost(new RpcError(Code.Unavailable, 'no reply from the server'));
+        try {
+          this.ws.close();
+        } catch {
+          /* already closing */
+        }
+        return;
+      }
       try {
         this.ws.send(Envelope.encode({ kind: Kind.Ping }));
       } catch {

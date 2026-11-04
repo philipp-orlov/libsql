@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -60,6 +61,7 @@ constexpr const char* kUsage =
     "                token to present\n"
     "  --auth VALUE  with a ws:// URL, sent as the Authorization header (\"Bearer abc\")\n"
     "  --unix PATH   with --listen, also serve the database to local programs on this Unix socket (sql unix://PATH)\n"
+    "  --statement-timeout S  with --listen, interrupt a request running longer than S seconds (default 300; 0 = no limit)\n"
     "  --reports DIR with --listen, keep report definitions (one JSON file each) in DIR (default: <database>.reports)\n"
     "  --ws-path P   with --listen, the WebSocket route (default /api/v1/ws/sql; the page looks for that one)\n"
     "  --tls-cert F  with --listen, serve https and wss with this certificate (PEM); needs --tls-key\n"
@@ -452,6 +454,7 @@ int main(int argc, char** argv)
     std::string token, authorization, socketPath = "/api/v1/ws/sql", unixSocket, reportsDir;
     std::string tlsCertificate, tlsKey, caFile;
     bool insecure = false;
+    long statementTimeoutSeconds = 300;
 
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -515,6 +518,13 @@ int main(int argc, char** argv)
             socketPath = value("--ws-path");
         } else if (arg == "--unix") {
             unixSocket = value("--unix");
+        } else if (arg == "--statement-timeout") {
+            const std::string_view text = value("--statement-timeout");
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), statementTimeoutSeconds);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || statementTimeoutSeconds < 0) {
+                std::fprintf(stderr, "sql: --statement-timeout wants a number of seconds, 0 or more\n");
+                return kUsageError;
+            }
         } else if (arg == "--reports") {
             reportsDir = value("--reports");
 #ifdef SQL_TOOL_WEB
@@ -573,7 +583,7 @@ int main(int argc, char** argv)
             options.readOnly(readOnly).token(token).authorization(authorization).caFile(caFile).insecureSkipVerify(insecure);
             db = Database::connect(path, options);
         } else {
-            db = Database::configure().readOnly(readOnly).createIfMissing(!readOnly).open(path);
+            db = Database::configure().readOnly(readOnly).createIfMissing(!readOnly).allowAttach(listenPort == 0).open(path);
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "sql: %s\n", e.what());
@@ -594,6 +604,7 @@ int main(int argc, char** argv)
         options.socketPath = socketPath;
         options.unixSocket = unixSocket;
         options.reportsDir = reportsDir;
+        options.statementTimeout = std::chrono::seconds(statementTimeoutSeconds);
         options.tlsCertificate = tlsCertificate;
         options.tlsKey = tlsKey;
         options.token = token;

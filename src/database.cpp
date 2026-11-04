@@ -63,6 +63,7 @@ struct OpenOptions
     bool cacheReads = true;
     std::chrono::milliseconds revalidate{60000};
     std::size_t statementCache = 32;
+    bool allowAttach = true;
     std::size_t arenaBlock = 4096;
     /// libnosql settings passed through when set (kUnset or negative: its own
     /// default).
@@ -589,6 +590,7 @@ Result runOne(Batch& b, std::size_t k, TxnImpl& t, const std::vector<Value>& par
               const RowVisitor* each = nullptr, Result* into = nullptr, ResultConsumer* consumer = nullptr)
 {
     DatabaseImpl& db = *t.db;
+    const StatementMemoryScope memory(db.conn.statementMemory.load(std::memory_order_relaxed));
     const StatementMeta& m = b.meta[k];
     checkWritable(db, m, &t);
     ensureStarted(t, m.mutating || m.writesPragma);
@@ -802,6 +804,8 @@ void copyStore(nosql::Env& from, const std::filesystem::path& to)
 Result connectionStatement(DatabaseImpl& db, StatementNode& node, const std::vector<Value>& params)
 {
     if (auto* a = std::get_if<AttachStmt>(&node.body)) {
+        if (!db.options.allowAttach)
+            throw Error(ErrorCode::Runtime, "ATTACH is not allowed on this database");
         const Value file = evalConstant(db, *a->file, params);
         const Value name = evalConstant(db, *a->schema, params);
         std::string fname, sname;
@@ -1691,6 +1695,7 @@ Database Database::Options::open(const std::filesystem::path& path) const
                                    ? durability_
                                    : (durable_ ? nosql::Durability::Safe : nosql::Durability::None);
     impl->options.cacheReads = cacheReads_;
+    impl->options.allowAttach = allowAttach_;
     impl->options.revalidate = revalidateAfter_;
     impl->options.syncInterval = syncInterval_;
     impl->options.pageSize = pageSize_;
@@ -1711,6 +1716,7 @@ Database Database::Options::open(const std::filesystem::path& path) const
     const Preset& preset = kPresets[static_cast<int>(profile_)];
     auto pick = [](std::uint64_t set, std::uint64_t fallback) { return set == kUnset ? fallback : set; };
     impl->conn.sortMemory = pick(sortMemory_, preset.sort);
+    impl->conn.statementMemory = pick(statementMemory_, profile_ == MemoryProfile::Compact ? 128ull << 20 : 0);
     impl->conn.scratchRetain = pick(scratchRetain_, preset.scratch);
     impl->options.statementCache = std::size_t(pick(statementCache_, preset.statements));
     impl->options.arenaBlock = std::size_t(pick(arenaBlock_, preset.arena));
@@ -1819,6 +1825,7 @@ Database siblingOf(internal::DatabaseImpl& source, bool readOnly, std::shared_pt
     auto impl = std::make_shared<internal::DatabaseImpl>();
     impl->options = source.options;
     impl->conn.sortMemory = source.conn.sortMemory.load(std::memory_order_relaxed);
+    impl->conn.statementMemory = source.conn.statementMemory.load(std::memory_order_relaxed);
     impl->conn.scratchRetain = source.conn.scratchRetain.load(std::memory_order_relaxed);
     impl->conn.busyTimeout = source.conn.busyTimeout.load(std::memory_order_relaxed);
     impl->cache.configure(impl->options);

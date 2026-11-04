@@ -729,7 +729,8 @@ public:
             return *this;
         }
         /// The most dirty page bytes one write transaction may hold (256 MiB
-        /// by default); a larger one fails with nosql::ErrorCode::OutOfMemory.
+        /// by default); a larger one spills its dirty pages to the file first (see
+        /// libnosql/docs/limitations.md) and fails with nosql::ErrorCode::OutOfMemory only if spilling is turned off.
         Options& dirtyLimit(std::uint64_t bytes)
         {
             dirtyLimit_ = bytes;
@@ -777,6 +778,23 @@ public:
             return *this;
         }
 
+        /// Whether ATTACH may open files. Turn it off for a database served to others: ATTACH takes any path the
+        /// process can reach, and creates the file when the database is writable.
+        Options& allowAttach(bool on)
+        {
+            allowAttach_ = on;
+            return *this;
+        }
+
+        /// Bytes of working memory one statement may use (group tables, DISTINCT key sets, materialized rows); past it
+        /// the statement fails instead of the process running out of memory. Row text is not counted, so treat the
+        /// figure as approximate. 0 = no limit, the default; MemoryProfile::Compact defaults to 128 MiB.
+        Options& statementMemoryLimit(std::uint64_t bytes)
+        {
+            statementMemory_ = bytes;
+            return *this;
+        }
+
         /// Sets the memory figures below (and sortMemoryLimit) from a
         /// profile; any of them set explicitly keeps its explicit value.
         Options& memoryProfile(MemoryProfile profile)
@@ -816,10 +834,12 @@ public:
         std::uint64_t scratchRetain_ = kUnset;
         std::uint64_t arenaBlock_ = kUnset;
         std::uint64_t sortMemory_ = kUnset;
+        std::uint64_t statementMemory_ = kUnset;
         std::chrono::milliseconds busyTimeout_{0};
         std::uint64_t maxSize_ = 64ull << 30;
         bool readOnly_ = false;
         bool create_ = true;
+        bool allowAttach_ = true;
         bool durable_ = true;
         bool cacheReads_ = true;
         std::chrono::milliseconds revalidateAfter_{60000};

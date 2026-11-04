@@ -11,6 +11,7 @@
 // The front end does everything through that route (SQL in the bufs protocol of sql-remote.md, nothing else): there is
 // no JSON API. All requests that touch the database run, one at a time, on one worker thread.
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -41,6 +42,8 @@ struct WebOptions
     std::string token;
     /// Where report definitions are kept (one JSON file each; /api/v1/reports). Empty: `<database file>.reports`.
     std::string reportsDir;
+    /// A request running longer than this is interrupted, so a runaway query cannot run for ever. 0 = no limit.
+    std::chrono::milliseconds statementTimeout{std::chrono::minutes(5)};
     /// Both set: serve https and wss on `port` instead of http and ws (needs a libhttp built with OpenSSL).
     std::string tlsCertificate;
     std::string tlsKey;

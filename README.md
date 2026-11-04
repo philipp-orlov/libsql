@@ -766,6 +766,9 @@ sql::Database db = sql::Database::configure()
 - `sortMemoryLimit`: what an `ORDER BY` holds before it spills to a temporary
   file.
 - `arenaBlockSize`: the block size of each parsed statement's arena.
+- `statementMemoryLimit`: the working memory one statement (group tables, `DISTINCT` key sets, materialized rows) may
+  use before it fails with an error instead of the process running out of memory. Approximate, since row text is
+  not counted. 0 (no limit) by default; `Compact` sets 128 MiB. `PRAGMA hard_heap_limit` sets the same limit.
 
 A reader from `openReader()` keeps the figures of the `Database` it came from. `openHandle()` is the same for a
 writable handle: another connection to the open store, with its own transactions, statements and counters, that takes
@@ -774,6 +777,18 @@ turns with the others on the writer slot (waiting up to `busyTimeout`).
 The soak also re-checks, at every sample point, that each index returns exactly
 what a full scan finds. A stale index entry is the failure mode that a long run
 produces and a short one hides.
+
+### Settings for a small device
+
+These values are starting points for a small device. They were not tuned on real hardware, so adjust them to the device; the defaults suit a large machine.
+
+```cpp
+auto db = sql::Database::configure()
+    .memoryProfile(sql::MemoryProfile::Compact) // includes the 128 MiB statement limit
+    .dirtyLimit(32u << 20)                      // default 256 MiB
+    .bufferCache(4u << 20)                      // default 32 MiB
+    .open(path);
+```
 
 ## Errors
 

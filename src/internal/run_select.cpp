@@ -695,6 +695,7 @@ Group& findGroup(CorePlan& p, std::string_view key, bool& fresh)
         gt.groups.push_back(std::make_unique<Group>());
     Group& g = *gt.groups[gt.used];
     initGroup(p, g);
+    chargeStatement(sizeof(Group) + g.aggs.size() * sizeof(AggSlot));
     ++gt.used;
     return g;
 }

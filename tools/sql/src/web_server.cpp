@@ -73,6 +73,17 @@ const std::string& embeddedIndexPlain()
 }
 #endif
 
+// No early exit on the first difference: how long a compare takes must not say how much of a guess was right.
+bool sameToken(std::string_view given, std::string_view expected)
+{
+    if (given.size() != expected.size())
+        return false;
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < given.size(); ++i)
+        diff |= static_cast<unsigned char>(given[i] ^ expected[i]);
+    return diff == 0;
+}
+
 bool isLoopback(const std::string& host)
 {
     return host == "127.0.0.1" || host == "localhost" || host == "::1";
@@ -182,14 +193,7 @@ struct WebServer::Impl
     {
         if (options.token.empty())
             return true;
-        const std::string_view header = context.request().headers.get("Authorization");
-        const std::string expected = "Bearer " + options.token;
-        if (header.size() != expected.size())
-            return false;
-        unsigned char diff = 0;  // no early exit on the first difference
-        for (std::size_t i = 0; i < header.size(); ++i)
-            diff |= static_cast<unsigned char>(header[i] ^ expected[i]);
-        return diff == 0;
+        return sameToken(context.request().headers.get("Authorization"), "Bearer " + options.token);
     }
 
     void registerReports()
@@ -274,6 +278,7 @@ struct WebServer::Impl
             .readOnly(options.readOnly)
             .interceptor(std::make_shared<ManagedExec>())
             .executor([this](std::function<void()> task) { return server.pool().tryEnqueue(std::move(task)); })
+            .statementTimeout(options.statementTimeout)
             .serverName(std::string("sql/") + sql::version());
         if (!options.token.empty()) {
             const std::string token = options.token;
@@ -282,12 +287,12 @@ struct WebServer::Impl
                     const std::string_view header = h.header("Authorization");
                     if (header.empty())
                         return 0;  // a browser: the token comes in the first message
-                    if (header == "Bearer " + token)
+                    if (sameToken(header, "Bearer " + token))
                         return sql::remote::Principal{"token", false, nullptr};
                     return 401;
                 })
                 .authenticate([token](std::string_view given) -> std::optional<sql::remote::Principal> {
-                    if (given == token)
+                    if (sameToken(given, token))
                         return sql::remote::Principal{"token", false, nullptr};
                     return std::nullopt;
                 })

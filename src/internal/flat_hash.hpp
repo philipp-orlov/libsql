@@ -23,6 +23,49 @@
 
 namespace sql::internal {
 
+/// Working memory of the running statement, so one query cannot take the whole device. Charged where result rows and
+/// key sets grow (RowStore, FlatKeySet, GroupTable); never given back during the statement, so the figure is a
+/// conservative upper bound. Thread-local: a statement runs on one thread, and RowStore has no link to its connection.
+struct StatementMemory
+{
+    std::uint64_t limit = 0;  ///< 0 = no limit
+    std::uint64_t used = 0;
+};
+inline thread_local StatementMemory* t_statementMemory = nullptr;
+
+inline void chargeStatement(std::size_t bytes)
+{
+    StatementMemory* m = t_statementMemory;
+    if (m && m->limit && (m->used += bytes) > m->limit)
+        throw Error(ErrorCode::Runtime, "statement memory limit exceeded (PRAGMA hard_heap_limit)");
+}
+
+/// The outermost statement owns the budget; a statement a trigger runs shares it.
+struct StatementMemoryScope
+{
+    explicit StatementMemoryScope(std::uint64_t limit)
+    {
+        if (!t_statementMemory) {
+            own.limit = limit;
+            t_statementMemory = &own;
+            owner = true;
+        }
+    }
+    ~StatementMemoryScope()
+    {
+        if (owner)
+            t_statementMemory = nullptr;
+    }
+    StatementMemoryScope(const StatementMemoryScope&) = delete;
+    StatementMemoryScope& operator=(const StatementMemoryScope&) = delete;
+    StatementMemory own;
+    bool owner = false;
+};
+
+}  // namespace sql::internal
+
+namespace sql::internal {
+
 /// A fast 64-bit hash for short byte strings (keys are mostly < 32 bytes).
 /// Fixed-size loads only: the tail is read with overlapping loads rather than
 /// a variable-length copy, which would be a library call.
@@ -86,6 +129,7 @@ public:
             while (table_[i] != kEmpty)
                 i = (i + 1) & mask_;
         }
+        chargeStatement(key.size() + sizeof(Entry) + 2 * sizeof(std::uint64_t));
         // Finish allocations before publishing a member or its byte range.
         if (entries_.size() == entries_.capacity())
             entries_.reserve(entries_.empty() ? 1 : entries_.capacity() * 2);
