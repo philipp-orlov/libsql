@@ -133,7 +133,7 @@ void foreignKeyCheck(Session& s, const std::string& only, PragmaResult& r)
                     std::int64_t rowid = 0;
                     if (t.payloadRowid()) {
                         const std::uint64_t z = getVarint(payload);
-                        rowid = std::int64_t((z >> 1) ^ -(z & 1));
+                        rowid = std::int64_t((z >> 1) ^ (0 - (z & 1)));
                     } else if (t.keyedByRowid()) {
                         std::string_view k = viewOf(cur.key());
                         rowid = readRowidKey(k);
@@ -155,7 +155,7 @@ void foreignKeyCheck(Session& s, const std::string& only, PragmaResult& r)
                             std::int64_t prowid = 0;
                             if (parent->payloadRowid()) {
                                 const std::uint64_t z = getVarint(pp);
-                                prowid = std::int64_t((z >> 1) ^ -(z & 1));
+                                prowid = std::int64_t((z >> 1) ^ (0 - (z & 1)));
                             } else if (parent->keyedByRowid()) {
                                 std::string_view k = viewOf(pc.key());
                                 prowid = readRowidKey(k);

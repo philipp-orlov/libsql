@@ -79,7 +79,7 @@ std::int64_t readInt(const nosql::Db& db, std::string_view key, std::int64_t fal
     if (const auto raw = db.get(sliceOf(key))) {
         std::string_view in = viewOf(*raw);
         const std::uint64_t v = getVarint(in);
-        return std::int64_t((v >> 1) ^ -(v & 1));
+        return std::int64_t((v >> 1) ^ (0 - (v & 1)));
     }
     return fallback;
 }
@@ -116,11 +116,10 @@ std::shared_ptr<const Schema> loadSchema(nosql::Txn& txn)
     nosql::Db db = txn.db(nosql::Slice(kMetaDb));
     // libsql 0.1 kept 't', 'i' and 'r' records here; this format never does.
     for (const char legacy : {'t', 'i', 'r'}) {
-        for (auto entry : db.prefix(nosql::Slice(&legacy, 1))) {
-            (void)entry;
+        auto records = db.prefix(nosql::Slice(&legacy, 1));
+        if (records.begin() != records.end())
             throw Error(ErrorCode::Internal,
                         "this store was written by libsql 0.1, whose catalog format is not supported");
-        }
     }
     s->version = std::uint64_t(readInt(db, std::string_view(&kVersion, 1), 0));
     const std::int64_t format = readInt(db, std::string_view(&kFormat, 1), 0);

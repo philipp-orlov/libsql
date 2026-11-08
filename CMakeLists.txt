@@ -225,7 +225,9 @@ else()
 endif()
 
 if(MSVC)
-    target_compile_options(sql PRIVATE /W4 /permissive- /Zc:__cplusplus)
+    # C4324: alignas padding is intended (cache lines).
+    target_compile_options(sql PRIVATE /W4 /permissive- /Zc:__cplusplus /wd4324)
+    target_compile_options(sql INTERFACE /wd4324)  # sql.hpp's aligned Values reaches the code that includes it
     target_compile_definitions(sql PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 else()
     target_compile_options(sql PRIVATE -Wall -Wextra -Wpedantic -Wshadow)

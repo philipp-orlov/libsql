@@ -441,7 +441,7 @@ bool Writer::loadStored(TablePlan& tp, Ctx& c, std::string_view key, std::size_t
     std::int64_t rowid = 0;
     if (t.payloadRowid()) {
         const std::uint64_t z = getVarint(p);
-        rowid = std::int64_t((z >> 1) ^ -(z & 1));
+        rowid = std::int64_t((z >> 1) ^ (0 - (z & 1)));
     } else if (t.keyedByRowid()) {
         std::string_view k = key;
         rowid = readRowidKey(k);

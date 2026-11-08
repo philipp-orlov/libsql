@@ -482,7 +482,7 @@ void loadRow(SourceNode& s, Ctx& c, std::string_view key, std::string_view paylo
     std::int64_t rowid = 0;
     if (t.payloadRowid()) {
         const std::uint64_t z = getVarint(payload);
-        rowid = std::int64_t((z >> 1) ^ -(z & 1));
+        rowid = std::int64_t((z >> 1) ^ (0 - (z & 1)));
     } else if (t.keyedByRowid()) {
         std::string_view k = key;
         if (k.size() < 8)
