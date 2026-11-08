@@ -9,6 +9,7 @@
 #include <deque>
 #include <limits>
 
+#include "base/overflow.hpp"
 #include "internal/func.hpp"
 
 namespace sql::internal {
@@ -138,8 +139,7 @@ private:
             std::int64_t x = v.type() == Type::Integer ? v.integer() : v.datetime().usec;
             if (!approx_) {
                 std::int64_t r;
-                const bool ovf = sign > 0 ? __builtin_add_overflow(isum_, x, &r)
-                                          : __builtin_sub_overflow(isum_, x, &r);
+                const bool ovf = sign > 0 ? base::addOverflow(isum_, x, &r) : base::subOverflow(isum_, x, &r);
                 if (!ovf) {
                     isum_ = r;
                     return;

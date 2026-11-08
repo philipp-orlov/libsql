@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 
+#include "base/overflow.hpp"
 #include "internal/encoding.hpp"
 #include "internal/exec.hpp"
 #include "internal/raise.hpp"
@@ -41,21 +42,21 @@ void arithmetic(BinaryOp op, const Value& left, const Value& right, Value& out)
         std::int64_t r = 0;
         switch (op) {
             case BinaryOp::Add:
-                if (!__builtin_add_overflow(x, y, &r)) {
+                if (!base::addOverflow(x, y, &r)) {
                     out.setInteger(r);
                     return;
                 }
                 out.setReal(double(x) + double(y));
                 return;
             case BinaryOp::Sub:
-                if (!__builtin_sub_overflow(x, y, &r)) {
+                if (!base::subOverflow(x, y, &r)) {
                     out.setInteger(r);
                     return;
                 }
                 out.setReal(double(x) - double(y));
                 return;
             case BinaryOp::Mul:
-                if (!__builtin_mul_overflow(x, y, &r)) {
+                if (!base::mulOverflow(x, y, &r)) {
                     out.setInteger(r);
                     return;
                 }

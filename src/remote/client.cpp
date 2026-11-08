@@ -136,7 +136,7 @@ struct Ended
 
 // ================================================================================================= session ===
 
-class RemoteSession : public std::enable_shared_from_this<RemoteSession>
+struct RemoteSession : public std::enable_shared_from_this<RemoteSession>
 {
 public:
     RemoteSession(std::string url, RemoteOptions options) : options_(std::move(options)), url_(std::move(url)), path_(url_)

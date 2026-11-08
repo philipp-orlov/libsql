@@ -10,6 +10,7 @@
 
 #include "internal/cnumeric.hpp"
 #include "internal/encoding.hpp"
+#include "base/overflow.hpp"
 #include "internal/exec.hpp"
 #include "internal/util.hpp"
 #include "sql/sql.hpp"
@@ -17,6 +18,8 @@
 namespace sql::internal {
 
 namespace {
+
+constexpr double kPi = 3.14159265358979323846;  // M_PI is not standard C++, and MSVC defines it only on request
 
 const char* const kSqliteVersion = "3.45.1";
 
@@ -869,11 +872,11 @@ void math2(FuncContext&, int, Args argv, Value& out)
 
 double degrees(double x)
 {
-    return x * 180.0 / M_PI;
+    return x * 180.0 / kPi;
 }
 double radians(double x)
 {
-    return x * M_PI / 180.0;
+    return x * kPi / 180.0;
 }
 double ln(double x)
 {
@@ -953,7 +956,7 @@ void fnLog(FuncContext&, int argc, Args argv, Value& out)
 
 void fnPi(FuncContext&, int, Args, Value& out)
 {
-    out.setReal(M_PI);
+    out.setReal(kPi);
 }
 
 void add(FunctionRegistry& r, const char* name, int minArgs, int maxArgs, ScalarFn fn,
