@@ -353,10 +353,12 @@ struct WebServer::Impl
             server.onHead(path, [this](http::HttpContext& context) { serveIndex(context); });
         }
 #endif
-        const bool haveDirectory = std::filesystem::is_directory(options.publicDir);
+        // Only a directory named with --public is served: a ./public that happens to sit in the
+        // working directory must not be published unasked.
+        const bool haveDirectory = options.publicDirOverridden && std::filesystem::is_directory(options.publicDir);
         if (haveDirectory)
             server.onStaticFiles("/", options.publicDir);
-        if (!haveDirectory && (options.publicDirOverridden || !hasEmbeddedIndex()))
+        if (!haveDirectory && options.publicDirOverridden)
             std::fprintf(stderr,
                          "sql: the public directory %s does not exist; serving the database socket only\n",
                          options.publicDir.c_str());

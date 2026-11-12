@@ -297,3 +297,14 @@ int main()
 {
     return tst::runAll("json");
 }
+
+TEST(deeply_nested_property_path_is_refused)
+{
+    tst::Scratch s("json");
+    Database db = s.open();
+    std::string alias;
+    for (int i = 0; i < 100000; ++i)
+        alias += "a.";
+    alias += "a";
+    CHECK_THROWS(db.exec("SELECT 1 AS \"" + alias + "\" FOR JSON PATH"), ErrorCode::InvalidArgument);
+}

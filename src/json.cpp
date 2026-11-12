@@ -227,8 +227,12 @@ void JsonWriter::Impl::plan(const std::vector<std::string>& names, std::size_t c
     for (std::size_t i = 0; i < columns; ++i) {
         std::string_view rest = paths[i];
         int node = 0;
+        unsigned depth = 0;
         for (std::size_t dot = rest.find('.'); dot != std::string_view::npos;
              dot = rest.find('.')) {
+            // The renderer recurses once per segment.
+            if (++depth > 64)
+                throw Error(ErrorCode::InvalidArgument, "JSON property path nests deeper than 64");
             const std::string_view segment = rest.substr(0, dot);
             rest.remove_prefix(dot + 1);
             int child = -1;
