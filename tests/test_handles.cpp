@@ -177,3 +177,32 @@ int main()
 {
     return tst::runAll("handles");
 }
+
+TEST(store_added_during_a_read_transaction_does_not_crash_it)
+{
+    tst::Scratch s("handles");
+    Database db = s.open();
+    db.exec("CREATE TABLE t(a INTEGER)");
+    Transaction rd = db.beginRead();
+    db.exec("CREATE TEMP TABLE tt(x)");  // the temp store appears after the transaction began
+    (void)rd.exec("SELECT * FROM temp.sqlite_schema");
+    rd.commit();
+}
+
+TEST(savepoints_survive_a_busy_first_write)
+{
+    tst::Scratch s("handles");
+    Database db = Database::configure().busyTimeout(50ms).open(s.file());
+    db.exec("CREATE TABLE t(a INTEGER)");
+    Database other = db.openHandle();
+    Transaction holder = db.begin();
+    holder.exec("INSERT INTO t VALUES (1)");
+    other.exec("BEGIN");
+    other.exec("SAVEPOINT s1");
+    other.exec("SELECT 1");
+    CHECK_THROWS(other.exec("INSERT INTO t VALUES (2)"), ErrorCode::Busy);
+    other.exec("RELEASE s1");
+    other.exec("ROLLBACK");
+    CHECK(!other.inTransaction());
+    holder.commit();
+}

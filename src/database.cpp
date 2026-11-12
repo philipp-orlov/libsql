@@ -499,6 +499,7 @@ void upgrade(TxnImpl& t)
         throw Error(ErrorCode::ReadOnly, "attempt to write a readonly database");
     std::vector<std::unique_ptr<Level>> markers = std::move(t.levels);
     t.levels.clear();
+    try {
     if (!t.started) {
         start(t, true);
     } else if (!t.writer) {
@@ -522,6 +523,10 @@ void upgrade(TxnImpl& t)
             openStore(t, i);
         }
         refreshSession(t);
+    }
+    } catch (...) {
+        t.levels = std::move(markers);  // Busy leaves the savepoints where they were
+        throw;
     }
     // Savepoints made while reading become real nested transactions now.
     for (auto& m : markers)
@@ -594,6 +599,12 @@ Result runOne(Batch& b, std::size_t k, TxnImpl& t, const std::vector<Value>& par
     const StatementMeta& m = b.meta[k];
     checkWritable(db, m, &t);
     ensureStarted(t, m.mutating || m.writesPragma);
+    // A store added since the transaction began (a temp table, an ATTACH from another
+    // connection state) has no root yet; give it one before the session indexes it.
+    if (t.started)
+        for (std::size_t i = 0; i < db.stores.size(); ++i)
+            if (db.stores[i] && (i >= t.roots.size() || !t.roots[i].valid()))
+                openStore(t, i);
     refreshSession(t);
     ensurePlanned(b, k, t.session);
     Program& p = *b.programs[k];
