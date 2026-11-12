@@ -185,3 +185,24 @@ int main()
 {
     return tst::runAll("storage");
 }
+
+TEST(vacuum_gives_the_free_tail_back)
+{
+    tst::Scratch s("vacuum");
+    sql::Database db = s.open();
+    db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, pad TEXT)");
+    for (int c = 0; c < 20; ++c) {
+        db.exec("BEGIN");
+        for (int i = 0; i < 5000; ++i)
+            db.exec("INSERT INTO t(pad) VALUES (?)", {sql::Value(std::string(60, 'x'))});
+        db.exec("COMMIT");
+    }
+    db.exec("DELETE FROM t");
+    db.exec("INSERT INTO t(pad) VALUES ('keep')");
+    const auto before = std::filesystem::file_size(s.file());
+    db.exec("VACUUM");
+    const auto after = std::filesystem::file_size(s.file());
+    CHECK(after * 4 < before);
+    CHECK_EQ(tst::only(db.exec("PRAGMA integrity_check")), std::string("ok"));
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM t")), std::string("1"));
+}

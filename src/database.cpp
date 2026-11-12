@@ -880,9 +880,11 @@ Result connectionStatement(DatabaseImpl& db, StatementNode& node, const std::vec
         std::string fname;
         appendText(file, fname);
         copyStore(db.stores[store]->env, fname);
+    } else if (!db.stores[store]->readOnly) {
+        // In place: libnosql reuses freed pages by itself; what VACUUM adds is giving the free tail back
+        // to the filesystem. It waits for the writer slot (and for open snapshots, as shrink() does).
+        db.stores[store]->env.shrink();
     }
-    // In place: libnosql already reuses freed pages, and the store may be
-    // open in other handles, so there is nothing to rebuild (divergence V17).
     return Result();
 }
 
