@@ -284,3 +284,19 @@ int main()
 {
     return tst::runAll("types");
 }
+
+TEST(is_true_is_a_truth_test)
+{
+    tst::Scratch s("types");
+    sql::Database db = s.open();
+    CHECK_EQ(tst::flatten(db.exec("SELECT 2 IS TRUE, 0.5 IS TRUE, '1abc' IS TRUE, 'abc' IS FALSE, -1 IS TRUE, "
+                                  "2 IS NOT TRUE, NULL IS TRUE, NULL IS NOT TRUE")),
+             std::string("1|1|1|1|1|0|0|1"));
+}
+
+TEST(printf_accepts_long_length_modifiers)
+{
+    tst::Scratch s("types");
+    sql::Database db = s.open();
+    CHECK_EQ(tst::only(db.exec("SELECT printf('%ld|%lld|%5lld|%llx', 7, 8, 9, 255)")), std::string("7|8|    9|ff"));
+}

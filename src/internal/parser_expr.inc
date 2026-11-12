@@ -102,9 +102,39 @@
             }
             if (acceptKeyword("IS")) {
                 bool negated = acceptKeyword("NOT");
+                bool distinct = false;
                 if (acceptKeyword("DISTINCT")) {
                     expectKeyword("FROM");
                     negated = !negated;
+                    distinct = true;
+                }
+                // `x IS TRUE` is a truth test of x (2 and 0.5 are true), not `x IS 1`: coalesce((x + 0) <> 0, 0).
+                if (!distinct && (cur().isKeyword("TRUE") || cur().isKeyword("FALSE")) && !peek().isPunct(".") &&
+                    !peek().isPunct("(")) {
+                    const bool wantTrue = cur().isKeyword("TRUE");
+                    ++at_;
+                    ExprPtr numeric = binary(BinaryOp::Add, std::move(e), literal(Value(std::int64_t(0)), begin));
+                    ExprPtr test = binary(wantTrue ? BinaryOp::Ne : BinaryOp::Eq, std::move(numeric),
+                                          literal(Value(std::int64_t(0)), begin));
+                    ExprPtr call = makeExpr(ExprKind::Function);
+                    call->name = "coalesce";
+                    call->begin = begin;
+                    call->end = prevEnd();
+                    call->list.push_back(std::move(test));
+                    call->list.push_back(literal(Value(std::int64_t(0)), begin));
+                    settle(*call);
+                    if (negated) {
+                        ExprPtr n = makeExpr(ExprKind::Unary);
+                        n->op = std::uint8_t(UnaryOp::Not);
+                        n->begin = begin;
+                        n->end = prevEnd();
+                        n->lhs = std::move(call);
+                        settle(*n);
+                        e = std::move(n);
+                    } else {
+                        e = std::move(call);
+                    }
+                    continue;
                 }
                 ExprPtr r = relational();
                 ExprPtr x = makeExpr(ExprKind::Is);

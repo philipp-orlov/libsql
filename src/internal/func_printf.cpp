@@ -467,6 +467,12 @@ bool sqlitePrintfImpl(FuncContext& ctx, std::string_view format, FormatArg& args
                 case 'l':
                     if (pos + 1 < format.size() && format[pos + 1] == 'l')
                         ++pos;
+                    // The length modifier is consumed; the conversion character follows it.
+                    if (pos + 1 >= format.size()) {
+                        out.resize(initialSize);
+                        return false;
+                    }
+                    c = format[++pos];
                     done = true;
                     break;
                 case '*': {
