@@ -598,3 +598,28 @@ TEST(service_refuses_file_statements_by_default)
     CHECK(!std::filesystem::exists(attached));
     CHECK(!std::filesystem::exists(copy));
 }
+
+TEST(service_constructor_leaves_the_callers_database_alone_unless_shared)
+{
+    const auto copy = std::filesystem::temp_directory_path() / "sqsvc-own-copy.db";
+    std::filesystem::remove(copy);
+    {
+        remote_test::Served served;  // PerSession: sessions get handles of their own
+        seed(served.db);
+        served.db.exec("VACUUM INTO '" + copy.string() + "'");  // the application's own backup still works
+        CHECK(std::filesystem::exists(copy));
+    }
+    std::filesystem::remove(copy);
+    {
+        remote_test::Served served(sql::remote::SqlSocketOptions().isolation(sql::remote::Isolation::Shared));
+        seed(served.db);
+        bool refused = false;
+        try {
+            served.db.exec("VACUUM INTO '" + copy.string() + "'");
+        } catch (const sql::Error&) {
+            refused = true;
+        }
+        CHECK(refused);  // documented: in Shared mode the served Database is the sessions' handle
+        CHECK(!std::filesystem::exists(copy));
+    }
+}

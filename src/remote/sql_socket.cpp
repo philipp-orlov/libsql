@@ -14,7 +14,6 @@
 
 #include "sql/remote/sql_socket.hpp"
 
-#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
@@ -156,8 +155,13 @@ struct SessionState
     Database own;
     Database* handle = nullptr;
     std::vector<std::pair<std::uint32_t, Statement>> statements;
-    std::vector<std::pair<std::uint32_t, Transaction>> transactions;
-    std::vector<std::uint32_t> readOnlyTransactions;  ///< ids in `transactions` that do not write
+    struct OpenTransaction
+    {
+        std::uint32_t id;
+        Transaction txn;
+        bool readOnly;
+    };
+    std::vector<OpenTransaction> transactions;
     // Reused for every request.
     Params params;
     NamedParams named;
@@ -317,11 +321,9 @@ public:
             if (id == 0)
                 throw Error(ErrorCode::InvalidArgument, "a transaction needs a non-zero id");
             for (auto& entry : s.transactions)
-                if (entry.first == id)
+                if (entry.id == id)
                     throw Error(ErrorCode::InvalidArgument, "transaction id is already in use");
-            s.transactions.emplace_back(id, readOnly ? s.handle->beginRead() : s.handle->begin());
-            if (readOnly)
-                s.readOnlyTransactions.push_back(id);
+            s.transactions.push_back({id, readOnly ? s.handle->beginRead() : s.handle->begin(), readOnly});
         } catch (const std::exception& e) {
             finishError(e);
             throw detail::toRpcError(e);
@@ -539,8 +541,8 @@ private:
     static Transaction* findTransaction(SessionState& s, std::uint32_t id)
     {
         for (auto& entry : s.transactions)
-            if (entry.first == id)
-                return &entry.second;
+            if (entry.id == id)
+                return &entry.txn;
         throw Error(ErrorCode::BadTransaction, "no such transaction: " + std::to_string(id));
     }
 
@@ -554,10 +556,8 @@ private:
 
     static void eraseTransaction(SessionState& s, std::uint32_t id)
     {
-        s.readOnlyTransactions.erase(std::remove(s.readOnlyTransactions.begin(), s.readOnlyTransactions.end(), id),
-                                     s.readOnlyTransactions.end());
         for (std::size_t i = 0; i < s.transactions.size(); ++i)
-            if (s.transactions[i].first == id) {
+            if (s.transactions[i].id == id) {
                 s.transactions.erase(s.transactions.begin() + static_cast<std::ptrdiff_t>(i));
                 return;
             }
@@ -662,9 +662,8 @@ private:
             // A write transaction of this session holds the writer slot of this very handle: a statement
             // outside it would wait for a slot its own session holds.
             if (!txn && handle == &s.own)
-                for (auto& entry : s.transactions)
-                    if (std::find(s.readOnlyTransactions.begin(), s.readOnlyTransactions.end(), entry.first) ==
-                        s.readOnlyTransactions.end())
+                for (const auto& entry : s.transactions)
+                    if (!entry.readOnly)
                         throw Error(ErrorCode::BadTransaction,
                                     "a transaction is open on this session; run the statement in it");
             managed = !txn && !prepared && impl_.o.interceptor_;
@@ -794,10 +793,15 @@ SqlSocket::SqlSocket(Database& db, SqlSocketOptions options) : impl_(std::make_s
 {
     impl_->db = &db;
     impl_->o = std::move(options);
-    if (!impl_->o.allowFileStatements_)
-        db.allowFileStatements(false);
-    if (db.busyTimeout().count() == 0)
-        db.setBusyTimeout(impl_->o.busyTimeout_);
+    // With Isolation::Shared the served Database is the sessions' handle, and these settings apply to it
+    // (documented on the options). Per-session handles get them in acquireHandle; the caller's own
+    // Database must stay as the application set it.
+    if (impl_->o.isolation_ == Isolation::Shared) {
+        if (!impl_->o.allowFileStatements_)
+            db.allowFileStatements(false);
+        if (db.busyTimeout().count() == 0)
+            db.setBusyTimeout(impl_->o.busyTimeout_);
+    }
     impl_->serverName = impl_->o.serverName_.empty() ? "libsql" : impl_->o.serverName_;
     impl_->service = std::make_unique<Service>(*impl_);
     impl_->endpoint = std::make_unique<rpc::Endpoint>(endpointOptions(*impl_));
