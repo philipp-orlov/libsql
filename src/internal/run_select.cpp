@@ -1062,7 +1062,15 @@ private:
             frame(spec, i, ps, pe, gs, ge, gn, order, okeys, start, end);
             const bool slide = spec.exclude == FrameExclude::NoOthers && start >= curStart &&
                                end >= curEnd && (start == curStart || invertible);
-            if (slide) {
+            if (slide && start >= curEnd) {
+                // The new frame lies wholly past the old one (it starts N FOLLOWING): nothing of the
+                // old frame is in it, and the rows between the two were never added.
+                state_->reset();
+                for (std::size_t k = start; k < end; ++k)
+                    apply(k, true);
+                curStart = start;
+                curEnd = std::max(end, start);
+            } else if (slide) {
                 for (std::size_t k = curEnd; k < end; ++k)
                     apply(k, true);
                 for (std::size_t k = curStart; k < start && k < curEnd; ++k)

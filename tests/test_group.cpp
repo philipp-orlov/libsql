@@ -199,3 +199,19 @@ int main()
 {
     return tst::runAll("group");
 }
+
+TEST(window_frames_that_start_n_following)
+{
+    tst::Scratch s("group");
+    sql::Database db = s.open();
+    db.exec("CREATE TABLE w(id INTEGER PRIMARY KEY, v INTEGER)");
+    db.exec("INSERT INTO w VALUES (1,10),(2,20),(3,30),(4,40),(5,5)");
+    CHECK_EQ(tst::flatten(db.exec("SELECT sum(v) OVER (ORDER BY id ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING) FROM w")),
+             std::string("50;70;45;5;NULL"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT count(v) OVER (ORDER BY id ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING) FROM w")),
+             std::string("2;2;2;1;0"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT group_concat(v) OVER (ORDER BY id ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING) FROM w")),
+             std::string("20,30;30,40;40,5;5;NULL"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT sum(v) OVER (ORDER BY id GROUPS BETWEEN 1 FOLLOWING AND 2 FOLLOWING) FROM w")),
+             std::string("50;70;45;5;NULL"));
+}
