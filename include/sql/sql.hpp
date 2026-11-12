@@ -778,7 +778,7 @@ public:
             return *this;
         }
 
-        /// Whether ATTACH may open files (and VACUUM INTO write one). Turn it off for a database served to others: ATTACH takes any path the
+        /// Whether ATTACH may open files (and VACUUM INTO write one, and VACUUM shrink the file). Turn it off for a database served to others: ATTACH takes any path the
         /// process can reach, and creates the file when the database is writable.
         Options& allowAttach(bool on)
         {
@@ -953,7 +953,7 @@ public:
     /// Bytes of working memory one statement may use (PRAGMA hard_heap_limit); zero is no limit.
     std::uint64_t statementMemoryLimit() const;
     void setStatementMemoryLimit(std::uint64_t bytes);
-    /// Turns ATTACH, DETACH and VACUUM INTO on or off for this handle (see Options::allowAttach()).
+    /// Turns ATTACH, DETACH, VACUUM and VACUUM INTO on or off for this handle (see Options::allowAttach()).
     void allowFileStatements(bool on);
     /// Asks the statement running on this handle (from another thread) to stop
     /// with ErrorCode::Interrupted at its next row.

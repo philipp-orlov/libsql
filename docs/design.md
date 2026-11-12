@@ -1628,8 +1628,8 @@ have one ("wrong # of entries in index X"). It stops adding messages at 100.
 inside an active SQL transaction. `VACUUM INTO` copies all sub-databases to a
 new libnosql file (and is refused unless the database allows `ATTACH`). In-place `VACUUM` does not rebuild
 anything, because libnosql reuses free pages itself; it calls `Env::shrink()`, which moves live pages
-down and gives the free tail of the file back to the filesystem. It waits for the writer slot and for
-snapshots older than the free pages it moves.
+down and gives the free tail of the file back to the filesystem. It waits for the writer slot no longer than `busy_timeout`, and is refused where `ATTACH` is. It does not
+wait for open snapshots: pages they can still see are skipped.
 
 ---
 

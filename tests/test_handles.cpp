@@ -224,3 +224,26 @@ TEST(detach_inside_a_transaction_is_refused)
     txn.commit();
     db.exec("DETACH aux1");  // fine once nothing is open
 }
+
+TEST(vacuum_waits_no_longer_than_the_busy_timeout)
+{
+    tst::Scratch s("handles");
+    Database db = Database::configure().busyTimeout(200ms).open(s.file());
+    db.exec("CREATE TABLE t(a INTEGER)");
+    Database other = db.openHandle();
+    Transaction holder = db.begin();
+    holder.exec("INSERT INTO t VALUES (1)");
+    const auto started = std::chrono::steady_clock::now();
+    CHECK_THROWS(other.exec("VACUUM"), ErrorCode::Busy);
+    CHECK(std::chrono::steady_clock::now() - started < 5s);
+    holder.commit();
+    other.exec("VACUUM");
+}
+
+TEST(vacuum_is_refused_where_file_statements_are)
+{
+    tst::Scratch s("handles");
+    Database db = Database::configure().allowAttach(false).open(s.file());
+    db.exec("CREATE TABLE t(a INTEGER)");
+    CHECK_THROWS(db.exec("VACUUM"), ErrorCode::Runtime);
+}

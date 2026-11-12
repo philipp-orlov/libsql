@@ -205,7 +205,7 @@ public:
         retainBytes_ = n;
         return *this;
     }
-    /// Whether sessions may run ATTACH, DETACH and VACUUM INTO, which take any path the server process can
+    /// Whether sessions may run ATTACH, DETACH, VACUUM and VACUUM INTO, which take any path or rewrite the file the server process can
     /// reach. Off by default. With Isolation::Shared this applies to the shared Database itself.
     SqlSocketOptions& allowFileStatements(bool on = true)
     {

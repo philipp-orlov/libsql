@@ -882,8 +882,21 @@ Result connectionStatement(DatabaseImpl& db, StatementNode& node, const std::vec
         copyStore(db.stores[store]->env, fname);
     } else if (!db.stores[store]->readOnly) {
         // In place: libnosql reuses freed pages by itself; what VACUUM adds is giving the free tail back
-        // to the filesystem. It waits for the writer slot (and for open snapshots, as shrink() does).
-        db.stores[store]->env.shrink();
+        // to the filesystem. Like any other file-level statement it is not for a database served to others.
+        if (!db.options.allowAttach)
+            throw Error(ErrorCode::Runtime, "VACUUM is not allowed on this database");
+        // It takes the writer slot, so it waits no longer than a writer does.
+        const std::int64_t ms = db.conn.busyTimeout.load(std::memory_order_relaxed);
+        try {
+            if (ms > 0)
+                db.stores[store]->env.shrink(std::chrono::milliseconds(ms));
+            else
+                db.stores[store]->env.shrink();
+        } catch (const nosql::Error& e) {
+            if (e.code() == nosql::ErrorCode::Busy)
+                throw Error(ErrorCode::Busy, "database is locked");
+            throw;
+        }
     }
     return Result();
 }
