@@ -1371,12 +1371,14 @@ bool Writer::remove(TablePlan& tp, Ctx& c, const std::string& key, bool fireTrig
             return false;
         }
     }
-    if (fkEnabled(c))
-        fkParentActions(tp, c, true, nullptr);
+    // The row goes first: a row that references itself (ON DELETE CASCADE) would otherwise find itself
+    // among its own children and delete itself again for ever. The actions read the OLD slots, not the tree.
     removeEntries(tp, c, key);
     cat.rows(t).erase(sliceOf(key));
     if (t.hasRowid())
         cat.rowidRemoved(t, c.slots[tp.oldBase + t.columns.size()].integer());
+    if (fkEnabled(c))
+        fkParentActions(tp, c, true, nullptr);
     if (fkEnabled(c))
         fkChildCheck(tp, c, tp.oldBase, -1, nullptr);
     if (triggers)

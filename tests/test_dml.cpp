@@ -254,3 +254,23 @@ int main()
 {
     return tst::runAll("dml");
 }
+
+TEST(deleting_a_self_referencing_row_with_cascade_terminates)
+{
+    tst::Scratch s("dml");
+    sql::Database db = s.open();
+    db.exec("PRAGMA foreign_keys=ON");
+    db.exec("CREATE TABLE s(id INTEGER PRIMARY KEY, parent REFERENCES s(id) ON DELETE CASCADE)");
+    db.exec("INSERT INTO s VALUES (10, 10)");
+    db.exec("DELETE FROM s WHERE id=10");
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM s")), std::string("0"));
+    // A chain 1 <- 2 <- 3 where 3 also references itself.
+    db.exec("INSERT INTO s VALUES (1, NULL)");
+    db.exec("INSERT INTO s VALUES (2, 1)");
+    db.exec("INSERT INTO s VALUES (3, 2)");
+    db.exec("UPDATE s SET parent=3 WHERE id=3");
+    db.exec("DELETE FROM s WHERE id=1");  // takes 2; 3 now references only itself
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM s")), std::string("1"));
+    db.exec("DELETE FROM s WHERE id=3");
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM s")), std::string("0"));
+}
