@@ -1936,10 +1936,19 @@ void runRecursive(SubqueryPlan& s, Ctx& c)
             ordered.insert(std::move(row));
         else
             fifo.push_back(std::move(row));
+        // A recursion with no end must end in an error, not in the kernel's out-of-memory killer.
+        if (c.session && c.session->conn) {
+            const std::uint64_t cap = c.session->conn->statementMemory.load(std::memory_order_relaxed);
+            const std::uint64_t held = std::uint64_t(fifo.size() + ordered.size() + s.rows.size()) * w * sizeof(Value);
+            if (cap != 0 && held > cap)
+                throw Error(ErrorCode::Runtime, "recursive query exceeded the statement memory limit");
+        }
     };
     runSelect(*s.select, c, push);
     std::vector<Value> current;
     while (useOrdered ? !ordered.empty() : !fifo.empty()) {
+        if (c.session && c.session->interrupt && c.session->interrupt->load(std::memory_order_relaxed))
+            interrupted();
         if (useOrdered) {
             current = *ordered.begin();
             ordered.erase(ordered.begin());

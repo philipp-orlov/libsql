@@ -205,3 +205,12 @@ TEST(a_long_chain_of_ctes_is_refused_and_a_short_one_works)
     CHECK_EQ(tst::only(db.exec(chain(150))), std::string("1"));
     CHECK_THROWS(db.exec(chain(5000)), sql::ErrorCode::InvalidArgument);
 }
+
+TEST(a_runaway_recursive_query_ends_in_an_error_under_a_memory_limit)
+{
+    tst::Scratch s("limits");
+    sql::Database db = s.open();
+    db.exec("PRAGMA hard_heap_limit=8388608");
+    CHECK_THROWS(db.exec("WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM c) SELECT count(*) FROM c"),
+                 sql::ErrorCode::Runtime);
+}
