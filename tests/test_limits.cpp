@@ -191,3 +191,17 @@ TEST(a_hard_heap_limit_cannot_be_lifted_by_the_session)
     db.exec("PRAGMA hard_heap_limit=1048576");  // lowering is allowed
     CHECK_EQ(tst::only(db.exec("PRAGMA hard_heap_limit")), std::string("1048576"));
 }
+
+TEST(a_long_chain_of_ctes_is_refused_and_a_short_one_works)
+{
+    tst::Scratch s("limits");
+    sql::Database db = s.open();
+    auto chain = [](int n) {
+        std::string q = "WITH c0(x) AS (SELECT 1)";
+        for (int i = 1; i < n; ++i)
+            q += ", c" + std::to_string(i) + "(x) AS (SELECT x FROM c" + std::to_string(i - 1) + ")";
+        return q + " SELECT x FROM c" + std::to_string(n - 1);
+    };
+    CHECK_EQ(tst::only(db.exec(chain(150))), std::string("1"));
+    CHECK_THROWS(db.exec(chain(5000)), sql::ErrorCode::InvalidArgument);
+}

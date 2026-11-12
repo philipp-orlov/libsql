@@ -114,6 +114,21 @@ public:
     void planFiltersImpl(CorePlan& core, Expr* where);
 
 private:
+    /// Levels of nested CTEs and views being planned; the planner recurses once per level.
+    int nesting_ = 0;
+    struct NestingGuard
+    {
+        int& depth;
+        explicit NestingGuard(int& d) : depth(d)
+        {
+            if (++depth > 200) {
+                --depth;
+                throw Error(ErrorCode::InvalidArgument, "too many levels of nested views or common table expressions");
+            }
+        }
+        ~NestingGuard() { --depth; }
+    };
+
     void planCore(SelectCore& core, CorePlan& plan, Scope& scope, SelectPlan& sp, bool first,
                   std::vector<OrderTerm>* order, bool compound);
     void resolveColumn(ExprPtr& e, Scope& scope, unsigned flags);

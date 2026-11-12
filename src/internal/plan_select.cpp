@@ -823,6 +823,7 @@ SubqueryPlan* Planner::planCte(CteDef& d, Scope& scope)
 {
     if (d.plan)
         return d.plan;
+    NestingGuard nesting(nesting_);
     SubqueryPlan* sub = newSubquery(SubqueryPlan::Kind::Rows);
     d.plan = sub;
     d.planning = true;
@@ -929,6 +930,7 @@ SubqueryPlan* Planner::planCte(CteDef& d, Scope& scope)
 
 SubqueryPlan* Planner::planView(const View& v, std::size_t store)
 {
+    NestingGuard nesting(nesting_);
     (void)store;
     for (const std::string& n : viewsInProgress_) {
         if (equalsNoCase(n, v.name))
