@@ -166,11 +166,13 @@ bool datetimeAffinity(Value& v)
 
 Affinity comparisonAffinity(const Expr& self, const Expr& other) noexcept
 {
-    const Affinity a = self.hasAffinity ? self.affinity : Affinity::Blob;
     const Affinity b = other.hasAffinity ? other.affinity : Affinity::Blob;
+    const Affinity a = self.hasAffinity ? self.affinity : Affinity::Blob;
     if (isNumericAffinity(b) && !isNumericAffinity(a))
         return Affinity::Numeric;
-    if (b == Affinity::Text && a == Affinity::Blob)
+    // TEXT affinity is applied to the other operand only when that operand has no affinity at all;
+    // a column of no declared type has BLOB affinity, which is an affinity.
+    if (b == Affinity::Text && !self.hasAffinity)
         return Affinity::Text;
     return Affinity::Blob;
 }

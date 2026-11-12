@@ -300,3 +300,14 @@ TEST(printf_accepts_long_length_modifiers)
     sql::Database db = s.open();
     CHECK_EQ(tst::only(db.exec("SELECT printf('%ld|%lld|%5lld|%llx', 7, 8, 9, 255)")), std::string("7|8|    9|ff"));
 }
+
+TEST(text_column_compared_with_an_untyped_column)
+{
+    tst::Scratch s("types");
+    sql::Database db = s.open();
+    db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, t TEXT, n)");
+    db.exec("INSERT INTO t VALUES (1,'1',1),(2,'a','a')");
+    CHECK_EQ(tst::flatten(db.exec("SELECT id FROM t WHERE t = n")), std::string("2"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT id FROM t WHERE t IN (SELECT n FROM t) ORDER BY id")), std::string("2"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT id FROM t WHERE t = +n ORDER BY id")), std::string("1;2"));
+}
