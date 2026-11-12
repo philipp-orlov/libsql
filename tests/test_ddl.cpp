@@ -252,3 +252,19 @@ TEST(rollbackToSavepointRestoresADroppedTable)
     CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM t")), std::string("240"));
     CHECK_EQ(tst::only(db.exec("PRAGMA integrity_check")), std::string("ok"));
 }
+
+TEST(create_table_as_select_from_a_table_a_view_and_a_join)
+{
+    tst::Scratch s("ctas");
+    Database db = s.open();
+    db.exec("CREATE TABLE d(a INTEGER, b TEXT)");
+    db.exec("INSERT INTO d VALUES (1,'x'),(2,'y'),(3,'z')");
+    db.exec("CREATE VIEW v AS SELECT a, b FROM d WHERE a > 1");
+    db.exec("CREATE TABLE ct AS SELECT a, b FROM d");
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM ct")), std::string("3"));
+    db.exec("CREATE TABLE cv AS SELECT * FROM v");
+    CHECK_EQ(tst::flatten(db.exec("SELECT a, b FROM cv ORDER BY a")), std::string("2|y;3|z"));
+    db.exec("CREATE TABLE cj AS SELECT d.a AS da, ct.b AS cb FROM d JOIN ct ON d.a = ct.a WHERE d.a < 3");
+    CHECK_EQ(tst::flatten(db.exec("SELECT da, cb FROM cj ORDER BY da")), std::string("1|x;2|y"));
+    CHECK_EQ(tst::only(db.exec("SELECT sql FROM sqlite_schema WHERE name='ct'")), std::string("CREATE TABLE ct(a INT,b TEXT)"));
+}

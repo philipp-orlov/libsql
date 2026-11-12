@@ -253,6 +253,26 @@ struct CreateTablePlan final : ExecPlan
         } else {
             sql = normalizedCreateSql(p->text, *p->node, st.nameBegin, "CREATE TABLE ");
         }
+        // Run the select before the new table enters the catalog: adding it replaces the schema
+        // the plan's table pointers belong to.
+        RowStore rows;
+        if (source) {
+            Ctx inner = c;
+            inner.slots = source->frame.data();
+            rows.reset(source->select->columns);
+            class Collect final : public RowSink
+            {
+            public:
+                RowStore* r;
+                bool row(Ctx&, const Value* v, std::size_t) override
+                {
+                    r->appendRow(v);
+                    return true;
+                }
+            } sink;
+            sink.r = &rows;
+            runSelect(*source->select, inner, sink);
+        }
         const StatementNode node = parseOne(sql);
         const auto& def = std::get<CreateTableStmt>(node.body);
         Table t = buildTable(def, sql);
@@ -272,22 +292,6 @@ struct CreateTablePlan final : ExecPlan
         if (source) {
             const std::string insert = "INSERT INTO " + std::string(store == 1 ? "temp." : "") +
                                        quoteIdentifier(name) + " VALUES(";
-            Ctx inner = c;
-            inner.slots = source->frame.data();
-            RowStore rows;
-            rows.reset(source->select->columns);
-            class Collect final : public RowSink
-            {
-            public:
-                RowStore* r;
-                bool row(Ctx&, const Value* v, std::size_t) override
-                {
-                    r->appendRow(v);
-                    return true;
-                }
-            } sink;
-            sink.r = &rows;
-            runSelect(*source->select, inner, sink);
             std::string text = insert;
             for (std::size_t i = 0; i < rows.width(); ++i)
                 text += i ? ",?" : "?";
