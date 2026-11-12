@@ -832,6 +832,12 @@ struct AlterPlan final : ExecPlan
                 Table nt = buildTable(std::get<CreateTableStmt>(node.body), sql);
                 nt.name = tableName;
                 cat.replaceTable(tableName, std::move(nt));
+                // As CREATE TABLE does: a generated expression or CHECK that does not resolve would leave
+                // the table unusable. A throw here rolls the statement back with its nested transaction.
+                {
+                    Scratch sc(s, c);
+                    sc.writer->plan(*cat.findTable(tableName), store);
+                }
                 // Existing rows must satisfy a CHECK on the new column.
                 if (!d.checks.empty() || (d.generated && d.notNull)) {
                     Program probe;

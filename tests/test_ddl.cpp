@@ -268,3 +268,16 @@ TEST(create_table_as_select_from_a_table_a_view_and_a_join)
     CHECK_EQ(tst::flatten(db.exec("SELECT da, cb FROM cj ORDER BY da")), std::string("1|x;2|y"));
     CHECK_EQ(tst::only(db.exec("SELECT sql FROM sqlite_schema WHERE name='ct'")), std::string("CREATE TABLE ct(a INT,b TEXT)"));
 }
+
+TEST(add_column_with_an_unresolvable_generated_expression_is_refused)
+{
+    tst::Scratch s("addcol");
+    Database db = s.open();
+    db.exec("CREATE TABLE t(a INTEGER)");
+    db.exec("INSERT INTO t VALUES (1)");
+    CHECK_THROWS(db.exec("ALTER TABLE t ADD COLUMN l AS (nosuch * 2)"), ErrorCode::NoSuchColumn);
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM t")), std::string("1"));
+    db.exec("INSERT INTO t VALUES (2)");
+    db.exec("ALTER TABLE t ADD COLUMN ok AS (a * 2)");
+    CHECK_EQ(tst::flatten(db.exec("SELECT a, ok FROM t ORDER BY a")), std::string("1|2;2|4"));
+}
