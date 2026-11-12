@@ -323,3 +323,14 @@ TEST(json_functions_give_null_for_a_null_document)
     CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM json_each(NULL)")), std::string("0"));
     CHECK_EQ(tst::only(db.exec("SELECT json_quote(NULL)")), std::string("null"));
 }
+
+TEST(json_set_and_insert_create_missing_containers)
+{
+    tst::Scratch s("types");
+    sql::Database db = s.open();
+    CHECK_EQ(tst::only(db.exec("SELECT json_set('{}','$.x.y',99)")), std::string("{\"x\":{\"y\":99}}"));
+    CHECK_EQ(tst::only(db.exec("SELECT json_set('{}','$.b[0]',99)")), std::string("{\"b\":[99]}"));
+    CHECK_EQ(tst::only(db.exec("SELECT json_insert('{}','$.a.b[#]',1)")), std::string("{\"a\":{\"b\":[1]}}"));
+    CHECK_EQ(tst::only(db.exec("SELECT json_set('{}','$.b[3]',99)")), std::string("{}"));  // not at the end
+    CHECK_EQ(tst::only(db.exec("SELECT json_replace('{}','$.x.y',99)")), std::string("{}"));
+}

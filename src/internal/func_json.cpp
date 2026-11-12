@@ -1377,10 +1377,77 @@ enum class EditMode
     Set,
 };
 
+/// Like findParent(), but creates the containers a set or insert needs on the way: an object for a
+/// key step, an array for an index step. An array element is created only at its end (or `#`).
+Node* makeParent(Node& root, const Path& path)
+{
+    Node* cur = &root;
+    for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+        const PathLeg& leg = path[i];
+        const PathLeg::Type next = path[i + 1].type;
+        auto fresh = [&] {
+            Node n;
+            n.kind = next == PathLeg::Type::Key ? JKind::Object : JKind::Array;
+            return n;
+        };
+        if (leg.type == PathLeg::Type::Key) {
+            if (cur->kind != JKind::Object)
+                return nullptr;
+            auto found = std::find_if(cur->object.begin(), cur->object.end(),
+                                      [&](const Member& m) { return m.key.text == leg.key; });
+            if (found == cur->object.end()) {
+                Member m;
+                m.key.kind = JKind::Text;
+                m.key.text = leg.key;
+                m.key.raw = leg.key;
+                m.key.jsonbType = 10;
+                m.value = fresh();
+                cur->object.push_back(std::move(m));
+                cur = &cur->object.back().value;
+            } else {
+                cur = &found->value;
+            }
+        } else {
+            if (cur->kind != JKind::Array)
+                return nullptr;
+            long long idx = leg.index;
+            if (leg.type == PathLeg::Type::Append)
+                idx = static_cast<long long>(cur->array.size());
+            else if (leg.type == PathLeg::Type::FromEnd)
+                idx = static_cast<long long>(cur->array.size()) - idx;
+            if (idx < 0 || static_cast<std::size_t>(idx) > cur->array.size())
+                return nullptr;
+            if (static_cast<std::size_t>(idx) == cur->array.size())
+                cur->array.push_back(fresh());
+            cur = &cur->array[std::size_t(idx)];
+        }
+    }
+    return cur;
+}
+
 void applyEdit(Node& root, const Path& path, Node value, EditMode mode)
 {
     const PathLeg* last = nullptr;
     Node* parent = findParent(root, path, last);
+    if (parent == nullptr && last != nullptr && mode != EditMode::Replace) {
+        // A missing container on the way: set and insert create it, replace does not.
+        Node trial = root;
+        if (Node* made = makeParent(trial, path)) {
+            // Only if the last step can then be taken: a key in an object, or an array's end.
+            const PathLeg& leg = path.back();
+            const bool fits =
+                leg.type == PathLeg::Type::Key
+                    ? made->kind == JKind::Object
+                    : made->kind == JKind::Array &&
+                          (leg.type == PathLeg::Type::Append ||
+                           (leg.type == PathLeg::Type::Index && static_cast<std::size_t>(leg.index) == made->array.size()));
+            if (fits) {
+                root = std::move(trial);
+                parent = makeParent(root, path);
+                last = &path.back();
+            }
+        }
+    }
     if (last == nullptr) {
         if (mode != EditMode::Insert)
             root = std::move(value);
