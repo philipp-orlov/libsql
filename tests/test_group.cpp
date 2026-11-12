@@ -215,3 +215,21 @@ TEST(window_frames_that_start_n_following)
     CHECK_EQ(tst::flatten(db.exec("SELECT sum(v) OVER (ORDER BY id GROUPS BETWEEN 1 FOLLOWING AND 2 FOLLOWING) FROM w")),
              std::string("50;70;45;5;NULL"));
 }
+
+TEST(a_named_window_built_on_a_named_window_keeps_the_base_of_its_base)
+{
+    tst::Scratch s("group");
+    sql::Database db = s.open();
+    db.exec("CREATE TABLE w(id INTEGER PRIMARY KEY, p, o)");
+    db.exec("INSERT INTO w VALUES (1,'a',1),(2,'a',2),(3,'b',1),(4,'b',2)");
+    CHECK_EQ(tst::flatten(db.exec("SELECT id, row_number() OVER w2 FROM w WINDOW w1 AS (PARTITION BY p), "
+                                  "w2 AS (w1 ORDER BY o) ORDER BY id")),
+             std::string("1|1;2|2;3|1;4|2"));
+    bool circular = false;
+    try {
+        db.exec("SELECT row_number() OVER w1 FROM w WINDOW w1 AS (w2), w2 AS (w1)");
+    } catch (const sql::Error& err) {
+        circular = std::string(err.what()).find("circular window reference") != std::string::npos;
+    }
+    CHECK(circular);
+}

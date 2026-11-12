@@ -215,6 +215,9 @@ ExprPtr Planner::copyExpr(const Expr& e, std::string_view text)
 {
     ExprPtr copy = parseExpression(text.substr(e.begin, e.end - e.begin));
     copyParams(e, *copy);
+    // Keep the source positions, so that a copy can itself be copied from the same text.
+    copy->begin = e.begin;
+    copy->end = e.end;
     return copy;
 }
 
@@ -689,49 +692,62 @@ void Planner::resolveWindow(Expr& e, Scope& scope, unsigned flags)
     if (!e.list.empty() && e.list[0]->collationStrength)
         e.collation = e.list[0]->collation;
 
-    // Merge a named window: OVER name, or OVER (name ...).
+    // Merge a named window: OVER name, or OVER (name ...). A named window may itself be built on another
+    // (`w2 AS (w1 ORDER BY o)`): the chain is flattened from its far end, and a repeat is an error.
     WindowSpec& spec = *e.window;
+    std::function<void(WindowSpec&, bool, std::vector<std::string>&)> mergeBase =
+        [&](WindowSpec& target, bool bare, std::vector<std::string>& visiting) {
+            if (target.base.empty())
+                return;
+            WindowSpec* base = nullptr;
+            if (core.core) {
+                for (NamedWindow& nw : core.core->windows) {
+                    if (equalsNoCase(nw.name, target.base))
+                        base = &nw.spec;
+                }
+            }
+            if (!base)
+                error("no such window: " + target.base);
+            const std::string baseName = toLower(target.base);
+            if (std::find(visiting.begin(), visiting.end(), baseName) != visiting.end())
+                error("circular window reference: " + target.base);
+            visiting.push_back(baseName);
+            mergeBase(*base, false, visiting);  // the base's own base first
+            visiting.pop_back();
+            if (!bare && !target.partition.empty())
+                error("cannot override PARTITION clause of window " + target.base);
+            if (!bare && !base->order.empty() && !target.order.empty())
+                error("cannot override ORDER BY clause of window " + target.base);
+            if (!bare && base->hasFrame)
+                error("cannot override frame specification of window " + target.base);
+            // Copy the base's clauses into this spec (re-parsed copies).
+            for (const ExprPtr& p : base->partition)
+                target.partition.push_back(copyExpr(*p, scope.text));
+            if (target.order.empty()) {
+                for (const OrderTerm& t : base->order) {
+                    OrderTerm c;
+                    c.expr = copyExpr(*t.expr, scope.text);
+                    c.desc = t.desc;
+                    c.nulls = t.nulls;
+                    target.order.push_back(std::move(c));
+                }
+            }
+            if (bare || (!target.hasFrame && base->hasFrame)) {
+                target.hasFrame = base->hasFrame;
+                target.unit = base->unit;
+                target.startKind = base->startKind;
+                target.endKind = base->endKind;
+                if (base->startExpr)
+                    target.startExpr = copyExpr(*base->startExpr, scope.text);
+                if (base->endExpr)
+                    target.endExpr = copyExpr(*base->endExpr, scope.text);
+                target.exclude = base->exclude;
+            }
+            target.base.clear();
+        };
     if (!spec.base.empty()) {
-        const WindowSpec* base = nullptr;
-        if (core.core) {
-            for (const NamedWindow& nw : core.core->windows) {
-                if (equalsNoCase(nw.name, spec.base))
-                    base = &nw.spec;
-            }
-        }
-        if (!base)
-            error("no such window: " + spec.base);
-        const bool bare = e.literal.type() == Type::Integer;
-        if (!bare && !spec.partition.empty())
-            error("cannot override PARTITION clause of window " + spec.base);
-        if (!bare && !base->order.empty() && !spec.order.empty())
-            error("cannot override ORDER BY clause of window " + spec.base);
-        if (!bare && base->hasFrame)
-            error("cannot override frame specification of window " + spec.base);
-        // Copy the base's clauses into this spec (re-parsed copies).
-        for (const ExprPtr& p : base->partition)
-            spec.partition.push_back(copyExpr(*p, scope.text));
-        if (spec.order.empty()) {
-            for (const OrderTerm& t : base->order) {
-                OrderTerm c;
-                c.expr = copyExpr(*t.expr, scope.text);
-                c.desc = t.desc;
-                c.nulls = t.nulls;
-                spec.order.push_back(std::move(c));
-            }
-        }
-        if (bare || (!spec.hasFrame && base->hasFrame)) {
-            spec.hasFrame = base->hasFrame;
-            spec.unit = base->unit;
-            spec.startKind = base->startKind;
-            spec.endKind = base->endKind;
-            if (base->startExpr)
-                spec.startExpr = copyExpr(*base->startExpr, scope.text);
-            if (base->endExpr)
-                spec.endExpr = copyExpr(*base->endExpr, scope.text);
-            spec.exclude = base->exclude;
-        }
-        spec.base.clear();
+        std::vector<std::string> visiting;
+        mergeBase(spec, e.literal.type() == Type::Integer, visiting);
     }
     for (ExprPtr& p : spec.partition)
         resolve(p, scope, inner);
