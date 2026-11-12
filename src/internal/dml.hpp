@@ -28,6 +28,7 @@ struct TriggerInstance
     std::unique_ptr<Program> whenProgram;
     Expr* when = nullptr;
     std::size_t whenNew = 0, whenOld = 0;
+    bool running = false;  ///< the body is executing (any statement of it), not just the first
 };
 
 struct TriggerPlan

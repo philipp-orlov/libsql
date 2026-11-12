@@ -274,3 +274,16 @@ TEST(deleting_a_self_referencing_row_with_cascade_terminates)
     db.exec("DELETE FROM s WHERE id=3");
     CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM s")), std::string("0"));
 }
+
+TEST(a_multi_statement_trigger_does_not_recurse_when_recursive_triggers_is_off)
+{
+    tst::Scratch s("dml");
+    sql::Database db = s.open();
+    db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, b)");
+    db.exec("INSERT INTO t VALUES (1,0),(2,0),(3,0)");
+    db.exec("CREATE TABLE u(x)");
+    db.exec("CREATE TRIGGER u_ai AFTER INSERT ON u BEGIN UPDATE t SET b=b+1 WHERE id=new.x; "
+            "INSERT INTO u SELECT new.x+1 WHERE new.x<3; END");
+    db.exec("INSERT INTO u VALUES (1)");
+    CHECK_EQ(tst::flatten(db.exec("SELECT x FROM u ORDER BY x")), std::string("1;2"));
+}

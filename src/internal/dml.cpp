@@ -683,15 +683,15 @@ void Writer::runTriggerBody(TriggerPlan& tr, TablePlan& tp, Ctx& c)
     // Without recursive triggers, a trigger never fires while it is running.
     std::size_t slot = std::size_t(depth);
     if (!conn->recursiveTriggers) {
-        for (const auto& inst : tr.byDepth) {
-            if (inst && !inst->body.empty() && inst->body.front()->active)
-                return;
-        }
+        // A trigger never fires while its own body is running, however many programs deep that is.
+        if (std::find(conn->runningTriggers.begin(), conn->runningTriggers.end(),
+                      static_cast<const void*>(tr.trigger)) != conn->runningTriggers.end())
+            return;
         slot = 0;
     }
     if (tr.byDepth.size() <= slot)
         tr.byDepth.resize(slot + 1);
-    if (!tr.byDepth[slot] || tr.byDepth[slot]->body.empty() || tr.byDepth[slot]->body.front()->active) {
+    if (!tr.byDepth[slot] || tr.byDepth[slot]->body.empty() || tr.byDepth[slot]->running) {
         // Plan a fresh instance for this depth.
         auto inst = std::make_unique<TriggerInstance>();
         const StatementNode def = parseOne(tr.trigger->sql);
@@ -776,6 +776,21 @@ void Writer::runTriggerBody(TriggerPlan& tr, TablePlan& tp, Ctx& c)
             return;
     }
     const std::int64_t savedRowid = conn->lastInsertRowid;
+    struct RunningGuard
+    {
+        TriggerInstance& i;
+        ConnectionState& c;
+        RunningGuard(TriggerInstance& x, ConnectionState& cs, const void* trigger) : i(x), c(cs)
+        {
+            i.running = true;
+            c.runningTriggers.push_back(trigger);
+        }
+        ~RunningGuard()
+        {
+            i.running = false;
+            c.runningTriggers.pop_back();
+        }
+    } runningGuard(inst, *conn, tr.trigger);
     for (std::size_t k = 0; k < inst.body.size(); ++k) {
         Program& p = *inst.body[k];
         p.frame.resize(p.frameSize);

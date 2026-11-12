@@ -673,6 +673,8 @@ struct ConnectionState
     std::atomic<std::int64_t> totalChanges{0};
     std::atomic<std::int64_t> lastInsertRowid{0};
     std::atomic<std::uint64_t> runCounter{0};  ///< statement executions, for sub-query caches
+    /// Triggers whose body is executing now, innermost last: without recursive_triggers none fires again.
+    std::vector<const void*> runningTriggers;
 };
 
 /// One open store (main, temp or attached) inside a session.
