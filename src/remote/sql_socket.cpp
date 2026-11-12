@@ -80,6 +80,9 @@ struct SqlSocket::Impl
 
     std::mutex mutex;
     std::vector<Database> idleWriters, idleReaders;
+    /// Isolation::Shared: the session whose statement opened the SQL transaction now open on the shared
+    /// handle (BEGIN ... without COMMIT), or null. Guarded by `mutex`.
+    const void* sqlTxnOwner = nullptr;
     std::unordered_map<std::string, std::size_t> perAddress;
 
     // Statements running now (one per session at most). The engine clears a handle's interrupt flag when a statement
@@ -189,7 +192,24 @@ struct SessionState
             else
                 own = Database();
         }
-        // (A shared handle's SQL transaction belongs to no single session: it is not rolled back here.)
+        // A shared handle's SQL transaction is rolled back when the session that opened it goes away, and
+        // only then: another session may have work of its own in flight on the handle.
+        else if (handle) {
+            bool mine = false;
+            {
+                std::lock_guard<std::mutex> lock(impl->mutex);
+                mine = impl->sqlTxnOwner == this;
+                if (mine)
+                    impl->sqlTxnOwner = nullptr;
+            }
+            if (mine) {
+                try {
+                    if (handle->inTransaction())
+                        handle->exec("ROLLBACK");
+                } catch (...) {
+                }
+            }
+        }
         if (countedAddress) {
             std::lock_guard<std::mutex> lock(impl->mutex);
             auto it = impl->perAddress.find(address);
@@ -538,6 +558,20 @@ private:
         report(s, commit ? "commit" : "rollback", {}, started, outcome);
     }
 
+    /// Isolation::Shared: remembers which session's statement opened the SQL transaction on the shared handle,
+    /// and forgets it once somebody ended it.
+    void trackSqlTransaction(SessionState& s, Database* handle)
+    {
+        if (handle == &s.own)
+            return;
+        const bool open = handle->inTransaction();
+        std::lock_guard<std::mutex> lock(impl_.mutex);
+        if (!impl_.sqlTxnOwner && open)
+            impl_.sqlTxnOwner = &s;
+        else if (impl_.sqlTxnOwner && !open)
+            impl_.sqlTxnOwner = nullptr;
+    }
+
     static Transaction* findTransaction(SessionState& s, std::uint32_t id)
     {
         for (auto& entry : s.transactions)
@@ -690,6 +724,7 @@ private:
             writer.onBatch({});
             s.params.clear();
             s.named.clear();
+            trackSqlTransaction(s, handle);
             if (managed)
                 impl_.o.interceptor_->after(*handle, text, hints, false);
         } catch (...) {

@@ -623,3 +623,38 @@ TEST(service_constructor_leaves_the_callers_database_alone_unless_shared)
         CHECK(!std::filesystem::exists(copy));
     }
 }
+
+TEST(service_shared_handle_transaction_is_rolled_back_when_its_session_leaves)
+{
+    remote_test::Served served(sql::remote::SqlSocketOptions().isolation(sql::remote::Isolation::Shared));
+    seed(served.db);
+    {
+        Wire a(served.url());
+        a.run("BEGIN");
+        a.run("INSERT INTO t(name) VALUES ('abandoned')");
+        // dropped without COMMIT or ROLLBACK
+    }
+    for (int i = 0; i < 100 && served.socket->stats().sessions != 0; ++i)
+        std::this_thread::sleep_for(20ms);
+    Wire b(served.url());
+    b.run("INSERT INTO t(name) VALUES ('after')");  // no Busy: the writer slot was released
+    CHECK_EQ(b.run("SELECT count(*) FROM t WHERE name='abandoned'").firstCell, std::string("0"));
+    CHECK_EQ(b.run("SELECT count(*) FROM t WHERE name='after'").firstCell, std::string("1"));
+}
+
+TEST(service_shared_handle_transaction_survives_another_sessions_disconnect)
+{
+    remote_test::Served served(sql::remote::SqlSocketOptions().isolation(sql::remote::Isolation::Shared));
+    seed(served.db);
+    Wire a(served.url());
+    a.run("BEGIN");
+    a.run("INSERT INTO t(name) VALUES ('mine')");
+    {
+        Wire b(served.url());
+        b.run("SELECT 1");
+    }
+    for (int i = 0; i < 100 && served.socket->stats().sessions != 1; ++i)
+        std::this_thread::sleep_for(20ms);
+    a.run("COMMIT");
+    CHECK_EQ(a.run("SELECT count(*) FROM t WHERE name='mine'").firstCell, std::string("1"));
+}
