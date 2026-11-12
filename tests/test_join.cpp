@@ -133,3 +133,21 @@ int main()
 {
     return tst::runAll("join");
 }
+
+TEST(right_and_full_join_keep_unmatched_right_rows_whatever_the_on_clause_pins)
+{
+    tst::Scratch s("join");
+    sql::Database db = s.open();
+    db.exec("CREATE TABLE a(id INTEGER PRIMARY KEY, x, y)");
+    db.exec("CREATE TABLE b(id INTEGER PRIMARY KEY, x, z)");
+    db.exec("INSERT INTO a VALUES (1,1,'a1'),(2,2,'a2'),(3,3,'a3')");
+    db.exec("INSERT INTO b VALUES (1,2,'b1'),(2,2,'b2'),(3,9,'b3'),(4,3,'b4')");
+    CHECK_EQ(tst::flatten(db.exec("SELECT a.id, b.id FROM a RIGHT JOIN b ON a.id = b.id ORDER BY 1, 2")),
+             std::string("NULL|4;1|1;2|2;3|3"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT a.id, b.id FROM a FULL JOIN b ON a.id = b.id ORDER BY 1, 2")),
+             std::string("NULL|4;1|1;2|2;3|3"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT a.id, b.id FROM a RIGHT JOIN b USING (id) ORDER BY 1, 2")),
+             std::string("NULL|4;1|1;2|2;3|3"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT a.id, b.id FROM a RIGHT JOIN b ON a.x = b.x AND b.id < 2 ORDER BY 1, 2")),
+             std::string("NULL|2;NULL|3;NULL|4;2|1"));
+}

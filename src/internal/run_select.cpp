@@ -452,14 +452,24 @@ bool rightRemainder(CorePlan& p, Ctx& c, Emit& emit)
             continue;
         for (std::size_t l = 0; l < d; ++l)
             nullSource(p.sources[l], c);
+        // Every row of the right side is a candidate here, matched or not: the access path the ON terms
+        // gave it looks rows up by values of the left side, which are all NULL now, and would find none.
+        AccessPath joinPath = std::move(s.access);
+        s.access = AccessPath{};
         openSource(s, c);
+        bool keepGoing = true;
         while (nextSource(s, c)) {
             if (s.matchedKeys.count(s.rowKey))
                 continue;
             finishRow(s, c);
-            if (!nest(p, c, d + 1, emit))
-                return false;
+            if (!nest(p, c, d + 1, emit)) {
+                keepGoing = false;
+                break;
+            }
         }
+        s.access = std::move(joinPath);
+        if (!keepGoing)
+            return false;
     }
     return true;
 }
