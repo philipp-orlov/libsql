@@ -311,3 +311,15 @@ TEST(text_column_compared_with_an_untyped_column)
     CHECK_EQ(tst::flatten(db.exec("SELECT id FROM t WHERE t IN (SELECT n FROM t) ORDER BY id")), std::string("2"));
     CHECK_EQ(tst::flatten(db.exec("SELECT id FROM t WHERE t = +n ORDER BY id")), std::string("1;2"));
 }
+
+TEST(json_functions_give_null_for_a_null_document)
+{
+    tst::Scratch s("types");
+    sql::Database db = s.open();
+    for (const char* q : {"json_extract(NULL,'$.a')", "(NULL)->'a'", "(NULL)->>'a'", "json_type(NULL)",
+                          "json_array_length(NULL)", "json_set(NULL,'$.a',1)", "json_patch(NULL,'{}')",
+                          "json_valid(NULL)", "json(NULL)", "json_remove(NULL,'$.a')"})
+        CHECK_EQ(tst::only(db.exec(std::string("SELECT ") + q + " IS NULL")), std::string("1"));
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM json_each(NULL)")), std::string("0"));
+    CHECK_EQ(tst::only(db.exec("SELECT json_quote(NULL)")), std::string("null"));
+}

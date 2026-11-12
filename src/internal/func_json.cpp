@@ -836,6 +836,15 @@ Node parseJsonArg(FuncContext& ctx, const Value& value)
     return JsonParser(ctx, text, true).parse();
 }
 
+/// A NULL document gives a NULL result, as in SQLite, not "malformed JSON".
+bool nullDoc(const Value& v, Value& out)
+{
+    if (!v.isNull())
+        return false;
+    out.setNull();
+    return true;
+}
+
 std::string realJson(double d)
 {
     if (std::isnan(d))
@@ -1169,11 +1178,15 @@ void setBlobResult(Value& out, const std::string& bytes)
 
 void fnJson(FuncContext& ctx, int, Args argv, Value& out)
 {
+    if (nullDoc(*argv[0], out))
+        return;
     jsonResult(out, toJson(parseJsonArg(ctx, *argv[0])));
 }
 
 void fnJsonb(FuncContext& ctx, int, Args argv, Value& out)
 {
+    if (nullDoc(*argv[0], out))
+        return;
     setBlobResult(out, toJsonb(parseJsonArg(ctx, *argv[0])));
 }
 
@@ -1236,6 +1249,8 @@ void fnJsonQuote(FuncContext& ctx, int, Args argv, Value& out)
 
 void fnJsonExtract(FuncContext& ctx, int argc, Args argv, Value& out)
 {
+    if (nullDoc(*argv[0], out))
+        return;
     Node root = parseJsonArg(ctx, *argv[0]);
     if (argc == 1) {
         out.setNull();
@@ -1271,6 +1286,8 @@ void fnJsonbExtract(FuncContext& ctx, int argc, Args argv, Value& out)
 
 void fnJsonArrayLength(FuncContext& ctx, int argc, Args argv, Value& out)
 {
+    if (nullDoc(*argv[0], out))
+        return;
     Node root = parseJsonArg(ctx, *argv[0]);
     const Node* n = &root;
     if (argc == 2) {
@@ -1288,6 +1305,8 @@ void fnJsonArrayLength(FuncContext& ctx, int argc, Args argv, Value& out)
 
 void fnJsonType(FuncContext& ctx, int argc, Args argv, Value& out)
 {
+    if (nullDoc(*argv[0], out))
+        return;
     Node root = parseJsonArg(ctx, *argv[0]);
     const Node* n = &root;
     if (argc == 2) {
@@ -1411,6 +1430,8 @@ void editJson(FuncContext& ctx, int argc, Args argv, Value& out, EditMode mode, 
 {
     if ((argc & 1) == 0)
         ctx.error("json_insert() needs an odd number of arguments");
+    if (nullDoc(*argv[0], out))
+        return;
     Node root = parseJsonArg(ctx, *argv[0]);
     for (int i = 1; i < argc; i += 2) {
         std::string scratch;
@@ -1475,6 +1496,8 @@ void removePath(Node& root, const Path& path)
 
 void fnJsonRemove(FuncContext& ctx, int argc, Args argv, Value& out)
 {
+    if (nullDoc(*argv[0], out))
+        return;
     Node root = parseJsonArg(ctx, *argv[0]);
     for (int i = 1; i < argc; ++i) {
         std::string scratch;
@@ -1514,6 +1537,10 @@ Node mergePatch(const Node& target, const Node& patch)
 
 void fnJsonPatch(FuncContext& ctx, int, Args argv, Value& out)
 {
+    if (nullDoc(*argv[1], out))
+        return;
+    if (nullDoc(*argv[0], out))
+        return;
     jsonResult(out, toJson(mergePatch(parseJsonArg(ctx, *argv[0]), parseJsonArg(ctx, *argv[1]))));
 }
 
@@ -1527,6 +1554,8 @@ void fnJsonbPatch(FuncContext& ctx, int argc, Args argv, Value& out)
 void fnJsonArrow(FuncContext& ctx, int argc, Args argv, Value& out)
 {
     (void)argc;
+    if (nullDoc(*argv[0], out))
+        return;
     std::string scratch;
     std::string rhs = textValue(*argv[1], scratch);
     if (rhs.empty() || rhs[0] != '$') {
@@ -1776,6 +1805,12 @@ public:
             originalRoot_ = *argv[1];
         else
             originalRoot_.setText("$");
+        if (argv[0]->isNull()) {
+            // json_each(NULL) has no rows.
+            rows_.clear();
+            pos_ = 0;
+            return;
+        }
         root_ = parseJsonArg(ctx, *argv[0]);
         assignIds(root_);
         const Node* start = &root_;
