@@ -233,3 +233,20 @@ TEST(a_named_window_built_on_a_named_window_keeps_the_base_of_its_base)
     }
     CHECK(circular);
 }
+
+TEST(window_frame_offsets_near_int64_max_do_not_overflow)
+{
+    tst::Scratch s("group");
+    sql::Database db = s.open();
+    db.exec("CREATE TABLE w(id INTEGER PRIMARY KEY, v INTEGER)");
+    db.exec("INSERT INTO w VALUES (1,1),(2,2),(3,3)");
+    CHECK_EQ(tst::flatten(db.exec("SELECT sum(v) OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND 9223372036854775807 "
+                                  "FOLLOWING) FROM w")),
+             std::string("6;5;3"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT sum(v) OVER (ORDER BY id ROWS BETWEEN 9223372036854775807 PRECEDING AND "
+                                  "CURRENT ROW) FROM w")),
+             std::string("1;3;6"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT sum(v) OVER (ORDER BY id GROUPS BETWEEN CURRENT ROW AND 9223372036854775807 "
+                                  "FOLLOWING) FROM w")),
+             std::string("6;5;3"));
+}

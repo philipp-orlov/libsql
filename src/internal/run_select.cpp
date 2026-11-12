@@ -960,7 +960,10 @@ private:
                 case FrameBound::Following: {
                     const bool preceding = kind == FrameBound::Preceding;
                     if (spec.unit == FrameUnit::Rows) {
-                        const std::int64_t off = offsetValue(e, isStart ? "starting" : "ending");
+                        // Clamped to the partition first: i +/- INT64_MAX overflows, and nothing past the
+                        // partition's size matters anyway.
+                        const std::int64_t off = std::min<std::int64_t>(
+                            offsetValue(e, isStart ? "starting" : "ending"), std::int64_t(pe - ps) + 1);
                         std::int64_t pos = std::int64_t(i) + (preceding ? -off : off);
                         if (!isStart)
                             ++pos;
@@ -968,7 +971,8 @@ private:
                         return std::size_t(pos);
                     }
                     if (spec.unit == FrameUnit::Groups) {
-                        const std::int64_t off = offsetValue(e, isStart ? "starting" : "ending");
+                        const std::int64_t off = std::min<std::int64_t>(
+                            offsetValue(e, isStart ? "starting" : "ending"), std::int64_t(pe - ps) + 1);
                         const std::int64_t target = std::int64_t(gn[i - ps]) + (preceding ? -off : off);
                         // Find the peer group `target`.
                         if (target < 0)
