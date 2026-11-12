@@ -658,3 +658,25 @@ TEST(service_shared_handle_transaction_survives_another_sessions_disconnect)
     a.run("COMMIT");
     CHECK_EQ(a.run("SELECT count(*) FROM t WHERE name='mine'").firstCell, std::string("1"));
 }
+
+TEST(service_shared_handle_transaction_opened_by_a_failing_batch_is_still_owned)
+{
+    remote_test::Served served(sql::remote::SqlSocketOptions().isolation(sql::remote::Isolation::Shared));
+    seed(served.db);
+    {
+        Wire a(served.url());
+        bool failed = false;
+        try {
+            a.run("BEGIN; INSERT INTO t(name) VALUES ('half'); SELECT * FROM nosuch");
+        } catch (const std::exception&) {
+            failed = true;
+        }
+        CHECK(failed);
+        CHECK(served.db.inTransaction());  // the batch left its transaction open
+    }
+    for (int i = 0; i < 100 && served.socket->stats().sessions != 0; ++i)
+        std::this_thread::sleep_for(20ms);
+    Wire b(served.url());
+    b.run("INSERT INTO t(name) VALUES ('after')");
+    CHECK_EQ(b.run("SELECT count(*) FROM t WHERE name='half'").firstCell, std::string("0"));
+}

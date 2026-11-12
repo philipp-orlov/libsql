@@ -728,6 +728,11 @@ private:
             if (managed)
                 impl_.o.interceptor_->after(*handle, text, hints, false);
         } catch (...) {
+            // A batch can open a transaction and then fail: the owner is recorded on this path too.
+            try {
+                trackSqlTransaction(s, handle);
+            } catch (...) {
+            }
             writer.onBatch({});
             s.params.clear();
             s.named.clear();
