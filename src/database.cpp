@@ -273,6 +273,9 @@ struct DatabaseImpl
     FuncContext fctx;
     std::shared_ptr<TxnImpl> sqlTxn;  ///< opened by BEGIN or SAVEPOINT
     std::atomic<bool> interrupted{false};
+    /// Transactions with store transactions open. TxnImpl::roots and catalogs are indexed by store
+    /// position, so the set of stores must not change while one is live.
+    std::atomic<int> liveTxns{0};
     /// Recently run one-off texts, so `exec` in a loop plans once. Used by
     /// Database::exec only; transactions have their own.
     BatchCache cache;
@@ -331,6 +334,8 @@ struct TxnImpl
         }
         for (nosql::Txn& t : roots)
             t.abort();
+        if (started)
+            db->liveTxns.fetch_sub(1);
         started = false;
         writer = false;
         session.beginAtomic = nullptr;
@@ -429,6 +434,7 @@ void start(TxnImpl& t, bool write)
             openStore(t, i);
     }
     t.started = true;
+    db.liveTxns.fetch_add(1);
     refreshSession(t);
     TxnImpl* self = &t;
     t.session.openTemp = [self](Session&) {
@@ -814,6 +820,9 @@ void copyStore(nosql::Env& from, const std::filesystem::path& to)
 /// ATTACH, DETACH, VACUUM: only outside a transaction.
 Result connectionStatement(DatabaseImpl& db, StatementNode& node, const std::vector<Value>& params)
 {
+    if (std::holds_alternative<AttachStmt>(node.body) || std::holds_alternative<DetachStmt>(node.body))
+        if (db.liveTxns.load() > 0)
+            throw Error(ErrorCode::Runtime, "cannot ATTACH or DETACH a database within a transaction");
     if (auto* a = std::get_if<AttachStmt>(&node.body)) {
         if (!db.options.allowAttach)
             throw Error(ErrorCode::Runtime, "ATTACH is not allowed on this database");
@@ -865,6 +874,8 @@ Result connectionStatement(DatabaseImpl& db, StatementNode& node, const std::vec
             throw Error(ErrorCode::Runtime, "unknown database " + v.schema);
     }
     if (v.into) {
+        if (!db.options.allowAttach)
+            throw Error(ErrorCode::Runtime, "VACUUM INTO is not allowed on this database");
         const Value file = evalConstant(db, *v.into, params);
         std::string fname;
         appendText(file, fname);
@@ -1906,6 +1917,17 @@ bool Database::inTransaction() const
     if (remote_)
         return internal::remoteInTransaction(*remote_);
     return internal::open(impl_).sqlTxn != nullptr;
+}
+
+bool Database::pristine() const
+{
+    if (remote_)
+        return false;
+    const internal::DatabaseImpl& d = internal::open(impl_);
+    const internal::ConnectionState& c = d.conn;
+    return d.stores.size() == 2 && !d.stores[1] && !d.sqlTxn && !c.foreignKeys && !c.recursiveTriggers &&
+           !c.caseSensitiveLike && !c.deferForeignKeys && !c.ignoreCheckConstraints && !c.queryOnly &&
+           !c.reverseUnorderedSelects && !c.legacyAlterTable && c.cacheSize == -2000 && c.tempStore == 0;
 }
 
 void Database::interrupt()

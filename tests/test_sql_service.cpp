@@ -542,3 +542,26 @@ int main()
 {
     return tst::runAll("service");
 }
+
+TEST(service_a_recycled_handle_carries_nothing_of_the_previous_session)
+{
+    remote_test::Served served;
+    seed(served.db);
+    {
+        Wire a(served.url());
+        a.run("CREATE TEMP TABLE secret(x)");
+        a.run("INSERT INTO secret VALUES ('session-1 private data')");
+        a.run("PRAGMA foreign_keys=ON");
+    }
+    for (int i = 0; i < 100 && served.socket->stats().sessions != 0; ++i)
+        std::this_thread::sleep_for(20ms);
+    Wire b(served.url());
+    bool threw = false;
+    try {
+        b.run("SELECT x FROM temp.secret");
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK_EQ(b.run("PRAGMA foreign_keys").firstCell, std::string("0"));
+}

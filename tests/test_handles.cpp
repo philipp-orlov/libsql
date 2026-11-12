@@ -206,3 +206,21 @@ TEST(savepoints_survive_a_busy_first_write)
     CHECK(!other.inTransaction());
     holder.commit();
 }
+
+TEST(detach_inside_a_transaction_is_refused)
+{
+    tst::Scratch s("handles");
+    Database db = s.open();
+    db.exec("CREATE TABLE t(a INTEGER)");
+    db.exec("ATTACH '" + s.file("aux1.db").string() + "' AS aux1");
+    db.exec("ATTACH '" + s.file("aux2.db").string() + "' AS aux2");
+    db.exec("CREATE TABLE aux1.t(x TEXT)");
+    db.exec("CREATE TABLE aux2.t(x TEXT)");
+    db.exec("INSERT INTO aux2.t VALUES ('row of aux2')");
+    Transaction txn = db.begin();
+    txn.exec("INSERT INTO t VALUES (1)");
+    CHECK_THROWS(db.exec("DETACH aux1"), ErrorCode::Runtime);
+    CHECK_EQ(tst::only(txn.exec("SELECT x FROM aux2.t")), std::string("row of aux2"));
+    txn.commit();
+    db.exec("DETACH aux1");  // fine once nothing is open
+}

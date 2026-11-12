@@ -944,6 +944,9 @@ public:
     std::int64_t lastInsertRowid() const;
     /// True while a transaction opened with SQL BEGIN or SAVEPOINT is open.
     bool inTransaction() const;
+    /// True when nothing a session could have left on this handle remains: no temp store, no
+    /// attached database and every connection PRAGMA at its default. A pool reuses only these.
+    bool pristine() const;
     /// Asks the statement running on this handle (from another thread) to stop
     /// with ErrorCode::Interrupted at its next row.
     void interrupt();

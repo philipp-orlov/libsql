@@ -225,6 +225,8 @@ const Table* Planner::findTable(std::string_view schema, std::string_view name, 
         if (i < 0)
             throw Error(ErrorCode::NoSuchTable, "unknown database " + std::string(schema));
         store = std::size_t(i);
+        if (!session_.stores[store].catalog)
+            return nullptr;  // e.g. temp, before anything created it
         return session_.catalog(store).findTable(name);
     }
     for (std::size_t i = 0; i < session_.stores.size(); ++i) {

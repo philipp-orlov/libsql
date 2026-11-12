@@ -177,17 +177,13 @@ struct SessionState
             }
             std::lock_guard<std::mutex> lock(impl->mutex);
             auto& idle = readOnly ? impl->idleReaders : impl->idleWriters;
-            if (healthy && idle.size() < impl->o.idleHandles_)
+            // Pooled only when nothing of this session (temp tables, ATTACHed stores, PRAGMAs) remains.
+            if (healthy && own.pristine() && idle.size() < impl->o.idleHandles_)
                 idle.push_back(std::move(own));
             else
                 own = Database();
-        } else if (handle) {
-            try {
-                if (handle->inTransaction())
-                    handle->exec("ROLLBACK");
-            } catch (...) {
-            }
         }
+        // (A shared handle's SQL transaction belongs to no single session: it is not rolled back here.)
         if (countedAddress) {
             std::lock_guard<std::mutex> lock(impl->mutex);
             auto it = impl->perAddress.find(address);
