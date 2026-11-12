@@ -14,6 +14,7 @@
 
 #include "sql/remote/sql_socket.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
@@ -156,6 +157,7 @@ struct SessionState
     Database* handle = nullptr;
     std::vector<std::pair<std::uint32_t, Statement>> statements;
     std::vector<std::pair<std::uint32_t, Transaction>> transactions;
+    std::vector<std::uint32_t> readOnlyTransactions;  ///< ids in `transactions` that do not write
     // Reused for every request.
     Params params;
     NamedParams named;
@@ -318,6 +320,8 @@ public:
                 if (entry.first == id)
                     throw Error(ErrorCode::InvalidArgument, "transaction id is already in use");
             s.transactions.emplace_back(id, readOnly ? s.handle->beginRead() : s.handle->begin());
+            if (readOnly)
+                s.readOnlyTransactions.push_back(id);
         } catch (const std::exception& e) {
             finishError(e);
             throw detail::toRpcError(e);
@@ -454,6 +458,8 @@ private:
         if (!s.own.valid())
             s.own = s.readOnly ? impl_.db->openReader() : impl_.db->openHandle();
         s.own.allowFileStatements(impl_.o.allowFileStatements_);
+        if (s.own.busyTimeout().count() == 0)
+            s.own.setBusyTimeout(impl_.o.busyTimeout_);
         s.handle = &s.own;
     }
 
@@ -546,6 +552,8 @@ private:
 
     static void eraseTransaction(SessionState& s, std::uint32_t id)
     {
+        s.readOnlyTransactions.erase(std::remove(s.readOnlyTransactions.begin(), s.readOnlyTransactions.end(), id),
+                                     s.readOnlyTransactions.end());
         for (std::size_t i = 0; i < s.transactions.size(); ++i)
             if (s.transactions[i].first == id) {
                 s.transactions.erase(s.transactions.begin() + static_cast<std::ptrdiff_t>(i));
@@ -649,6 +657,14 @@ private:
         try {
             readParams(s, params);
             Transaction* txn = txnId ? findTransaction(s, txnId) : nullptr;
+            // A write transaction of this session holds the writer slot of this very handle: a statement
+            // outside it would wait for a slot its own session holds.
+            if (!txn && handle == &s.own)
+                for (auto& entry : s.transactions)
+                    if (std::find(s.readOnlyTransactions.begin(), s.readOnlyTransactions.end(), entry.first) ==
+                        s.readOnlyTransactions.end())
+                        throw Error(ErrorCode::BadTransaction,
+                                    "a transaction is open on this session; run the statement in it");
             managed = !txn && !prepared && impl_.o.interceptor_;
             if (managed) {
                 impl_.o.interceptor_->before(*handle, text, hints);
@@ -778,6 +794,8 @@ SqlSocket::SqlSocket(Database& db, SqlSocketOptions options) : impl_(std::make_s
     impl_->o = std::move(options);
     if (!impl_->o.allowFileStatements_)
         db.allowFileStatements(false);
+    if (db.busyTimeout().count() == 0)
+        db.setBusyTimeout(impl_->o.busyTimeout_);
     impl_->serverName = impl_->o.serverName_.empty() ? "libsql" : impl_->o.serverName_;
     impl_->service = std::make_unique<Service>(*impl_);
     impl_->endpoint = std::make_unique<rpc::Endpoint>(endpointOptions(*impl_));

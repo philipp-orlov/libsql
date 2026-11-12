@@ -212,6 +212,13 @@ public:
         allowFileStatements_ = on;
         return *this;
     }
+    /// How long a session waits for the writer slot when its handle has no busy timeout of its own
+    /// (default 5 s). Without a limit one session holding the slot would block every other writer for ever.
+    SqlSocketOptions& busyTimeout(std::chrono::milliseconds wait)
+    {
+        busyTimeout_ = wait;
+        return *this;
+    }
     SqlSocketOptions& serverName(std::string name)
     {
         serverName_ = std::move(name);
@@ -248,6 +255,7 @@ public:
     std::size_t idleHandles_ = 4;
     std::size_t retainBytes_ = 8 << 20;
     bool allowFileStatements_ = false;
+    std::chrono::milliseconds busyTimeout_{5000};
     std::string serverName_;
     std::function<void(const Principal&, std::string_view, std::string_view, std::uint64_t, ErrorCode)> onRequest_;
 };

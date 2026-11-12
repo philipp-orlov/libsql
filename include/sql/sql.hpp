@@ -947,6 +947,9 @@ public:
     /// True when nothing a session could have left on this handle remains: no temp store, no
     /// attached database and every connection PRAGMA at its default. A pool reuses only these.
     bool pristine() const;
+    /// How long a writer waits for the writer slot (PRAGMA busy_timeout); zero waits indefinitely.
+    std::chrono::milliseconds busyTimeout() const;
+    void setBusyTimeout(std::chrono::milliseconds wait);
     /// Turns ATTACH, DETACH and VACUUM INTO on or off for this handle (see Options::allowAttach()).
     void allowFileStatements(bool on);
     /// Asks the statement running on this handle (from another thread) to stop

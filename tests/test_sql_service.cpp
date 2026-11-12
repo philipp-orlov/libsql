@@ -290,9 +290,19 @@ TEST(service_disconnect_rolls_back_and_recycles_the_handle)
     seed(served.db);
     {
         Wire a(served.url());
-        a.sql->Begin(1, false);
+        a.run("BEGIN");  // an SQL transaction on the handle ...
+        a.run("SELECT 1");
+        a.run("ROLLBACK");
+        a.sql->Begin(1, false);  // ... and a wire transaction, which holds the writer slot
         a.run("DELETE FROM t", 1);
-        a.run("BEGIN");  // and an SQL transaction on the handle as well
+        // a statement outside the transaction would wait for the slot its own session holds
+        bool refused = false;
+        try {
+            a.run("SELECT 1");
+        } catch (const std::exception&) {
+            refused = true;
+        }
+        CHECK(refused);
         // dropped without Commit or Rollback
     }
     for (int i = 0; i < 100 && served.socket->stats().sessions != 0; ++i)

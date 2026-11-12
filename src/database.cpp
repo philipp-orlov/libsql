@@ -1919,6 +1919,19 @@ bool Database::inTransaction() const
     return internal::open(impl_).sqlTxn != nullptr;
 }
 
+std::chrono::milliseconds Database::busyTimeout() const
+{
+    if (remote_)
+        return std::chrono::milliseconds(0);
+    return std::chrono::milliseconds(internal::open(impl_).conn.busyTimeout.load());
+}
+
+void Database::setBusyTimeout(std::chrono::milliseconds wait)
+{
+    if (!remote_)
+        internal::open(impl_).conn.busyTimeout.store(wait.count());
+}
+
 void Database::allowFileStatements(bool on)
 {
     if (!remote_)
