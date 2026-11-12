@@ -458,6 +458,8 @@ private:
         if (!s.own.valid())
             s.own = s.readOnly ? impl_.db->openReader() : impl_.db->openHandle();
         s.own.allowFileStatements(impl_.o.allowFileStatements_);
+        if (impl_.o.statementMemoryLimit_ != 0 && s.own.statementMemoryLimit() == 0)
+            s.own.setStatementMemoryLimit(impl_.o.statementMemoryLimit_);
         if (s.own.busyTimeout().count() == 0)
             s.own.setBusyTimeout(impl_.o.busyTimeout_);
         s.handle = &s.own;

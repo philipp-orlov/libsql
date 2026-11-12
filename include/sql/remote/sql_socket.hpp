@@ -219,6 +219,13 @@ public:
         busyTimeout_ = wait;
         return *this;
     }
+    /// Working memory one statement of a session may use (default 256 MiB); a session cannot raise it with
+    /// PRAGMA hard_heap_limit. Zero leaves handles as they come.
+    SqlSocketOptions& statementMemoryLimit(std::uint64_t bytes)
+    {
+        statementMemoryLimit_ = bytes;
+        return *this;
+    }
     SqlSocketOptions& serverName(std::string name)
     {
         serverName_ = std::move(name);
@@ -255,6 +262,7 @@ public:
     std::size_t idleHandles_ = 4;
     std::size_t retainBytes_ = 8 << 20;
     bool allowFileStatements_ = false;
+    std::uint64_t statementMemoryLimit_ = 256ull << 20;
     std::chrono::milliseconds busyTimeout_{5000};
     std::string serverName_;
     std::function<void(const Principal&, std::string_view, std::string_view, std::uint64_t, ErrorCode)> onRequest_;

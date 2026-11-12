@@ -21,6 +21,9 @@ namespace sql::internal {
 
 struct ConnectionState;
 
+/// The longest text or blob a function may build (SQLITE_MAX_LENGTH is 1 GB).
+inline constexpr std::size_t kMaxValueBytes = std::size_t(1) << 30;
+
 /// What a call can see besides its arguments. One context serves a whole
 /// statement execution; functions must not keep pointers into it.
 struct FuncContext

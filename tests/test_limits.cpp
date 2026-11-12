@@ -172,3 +172,22 @@ int main()
 {
     return tst::runAll("limits");
 }
+
+TEST(printf_width_past_the_value_limit_is_refused_before_allocating)
+{
+    tst::Scratch s("limits");
+    sql::Database db = s.open();
+    CHECK_THROWS(db.exec("SELECT length(printf('%2000000000d', 1))"), sql::ErrorCode::Runtime);
+}
+
+TEST(a_hard_heap_limit_cannot_be_lifted_by_the_session)
+{
+    tst::Scratch s("limits");
+    sql::Database db = s.open();
+    db.exec("PRAGMA hard_heap_limit=4194304");
+    db.exec("PRAGMA hard_heap_limit=0");
+    db.exec("PRAGMA hard_heap_limit=1073741824");
+    CHECK_EQ(tst::only(db.exec("PRAGMA hard_heap_limit")), std::string("4194304"));
+    db.exec("PRAGMA hard_heap_limit=1048576");  // lowering is allowed
+    CHECK_EQ(tst::only(db.exec("PRAGMA hard_heap_limit")), std::string("1048576"));
+}

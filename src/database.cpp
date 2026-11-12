@@ -1932,6 +1932,17 @@ void Database::setBusyTimeout(std::chrono::milliseconds wait)
         internal::open(impl_).conn.busyTimeout.store(wait.count());
 }
 
+std::uint64_t Database::statementMemoryLimit() const
+{
+    return remote_ ? 0 : internal::open(impl_).conn.statementMemory.load();
+}
+
+void Database::setStatementMemoryLimit(std::uint64_t bytes)
+{
+    if (!remote_)
+        internal::open(impl_).conn.statementMemory.store(bytes);
+}
+
 void Database::allowFileStatements(bool on)
 {
     if (!remote_)

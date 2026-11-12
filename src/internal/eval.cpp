@@ -740,6 +740,8 @@ const Value& eval(const Expr& e, Ctx& c)
                     if (b.isNull())
                         return nullValue();
                     concat(a, b, e.scratch);
+                    if (e.scratch.type() == Type::Text && e.scratch.text().size() > kMaxValueBytes)
+                        throw Error(ErrorCode::Runtime, "string or blob too big");
                     return e.scratch;
                 }
                 case BinaryOp::BitAnd:

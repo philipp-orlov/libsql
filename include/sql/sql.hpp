@@ -950,6 +950,9 @@ public:
     /// How long a writer waits for the writer slot (PRAGMA busy_timeout); zero waits indefinitely.
     std::chrono::milliseconds busyTimeout() const;
     void setBusyTimeout(std::chrono::milliseconds wait);
+    /// Bytes of working memory one statement may use (PRAGMA hard_heap_limit); zero is no limit.
+    std::uint64_t statementMemoryLimit() const;
+    void setStatementMemoryLimit(std::uint64_t bytes);
     /// Turns ATTACH, DETACH and VACUUM INTO on or off for this handle (see Options::allowAttach()).
     void allowFileStatements(bool on);
     /// Asks the statement running on this handle (from another thread) to stop

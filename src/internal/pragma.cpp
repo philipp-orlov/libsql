@@ -461,9 +461,16 @@ PragmaResult runPragma(Session& s, const std::string& schema, const std::string&
         return r;
     }
     if (name == "hard_heap_limit" || name == "soft_heap_limit") {
-        if (value)
-            conn.statementMemory = std::uint64_t(std::max<std::int64_t>(toInt64(*value), 0));
-        else
+        if (value) {
+            // SQLite's rule: a hard limit, once set, can be lowered but not raised or removed. The soft
+            // limit is advisory there and changes nothing here.
+            if (name == "hard_heap_limit") {
+                const std::uint64_t wanted = std::uint64_t(std::max<std::int64_t>(toInt64(*value), 0));
+                const std::uint64_t current = conn.statementMemory.load();
+                if (current == 0 || (wanted != 0 && wanted < current))
+                    conn.statementMemory = wanted;
+            }
+        } else
             single(Value(std::int64_t(conn.statementMemory.load())));
         return r;
     }

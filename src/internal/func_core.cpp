@@ -147,6 +147,8 @@ void fnHex(FuncContext& ctx, int, Args argv, Value& out)
     const std::string_view bytes = argv[0]->isNull() ? std::string_view() : textOf(*argv[0], scratch);
     std::string& s = ctx.buf;
     s.clear();
+    if (bytes.size() > kMaxValueBytes / 2)
+        ctx.tooBig();
     s.reserve(bytes.size() * 2);
     for (const char ch : bytes) {
         const auto b = static_cast<unsigned char>(ch);
@@ -486,6 +488,8 @@ void fnReplace(FuncContext& ctx, int, Args argv, Value& out)
         r.append(s.substr(i, at - i));
         r.append(to);
         i = at + from.size();
+        if (r.size() > kMaxValueBytes)
+            ctx.tooBig();
     }
     r.append(s.substr(i));
     out.setText(r);

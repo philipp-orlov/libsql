@@ -429,7 +429,6 @@ void appendEscaped(std::string_view arg, bool isNull, char quote, bool quoteSql,
 
 bool sqlitePrintfImpl(FuncContext& ctx, std::string_view format, FormatArg& args, std::string& out)
 {
-    (void)ctx;
     const std::size_t initialSize = out.size();
     for (std::size_t pos = 0; pos < format.size() && format[pos] != '\0'; ++pos) {
         if (format[pos] != '%') {
@@ -535,6 +534,13 @@ bool sqlitePrintfImpl(FuncContext& ctx, std::string_view format, FormatArg& args
                 c = format[++pos];
             }
         } while (!done);
+
+        // A width or precision this large would build a string past the value limit: refuse before
+        // allocating it.
+        if (width > static_cast<int>(kMaxValueBytes) || precision > static_cast<int>(kMaxValueBytes))
+            ctx.tooBig();
+        if (out.size() > kMaxValueBytes)
+            ctx.tooBig();
 
         std::string rendered;
         bool renderedUsesUtf8Width = false;
