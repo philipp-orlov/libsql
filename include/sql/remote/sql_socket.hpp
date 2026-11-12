@@ -205,6 +205,13 @@ public:
         retainBytes_ = n;
         return *this;
     }
+    /// Whether sessions may run ATTACH, DETACH and VACUUM INTO, which take any path the server process can
+    /// reach. Off by default. With Isolation::Shared this applies to the shared Database itself.
+    SqlSocketOptions& allowFileStatements(bool on = true)
+    {
+        allowFileStatements_ = on;
+        return *this;
+    }
     SqlSocketOptions& serverName(std::string name)
     {
         serverName_ = std::move(name);
@@ -240,6 +247,7 @@ public:
     std::chrono::milliseconds statementTimeout_{0};
     std::size_t idleHandles_ = 4;
     std::size_t retainBytes_ = 8 << 20;
+    bool allowFileStatements_ = false;
     std::string serverName_;
     std::function<void(const Principal&, std::string_view, std::string_view, std::uint64_t, ErrorCode)> onRequest_;
 };

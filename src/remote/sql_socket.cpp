@@ -453,6 +453,7 @@ private:
         }
         if (!s.own.valid())
             s.own = s.readOnly ? impl_.db->openReader() : impl_.db->openHandle();
+        s.own.allowFileStatements(impl_.o.allowFileStatements_);
         s.handle = &s.own;
     }
 
@@ -775,6 +776,8 @@ SqlSocket::SqlSocket(Database& db, SqlSocketOptions options) : impl_(std::make_s
 {
     impl_->db = &db;
     impl_->o = std::move(options);
+    if (!impl_->o.allowFileStatements_)
+        db.allowFileStatements(false);
     impl_->serverName = impl_->o.serverName_.empty() ? "libsql" : impl_->o.serverName_;
     impl_->service = std::make_unique<Service>(*impl_);
     impl_->endpoint = std::make_unique<rpc::Endpoint>(endpointOptions(*impl_));

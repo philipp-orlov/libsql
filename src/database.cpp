@@ -1919,6 +1919,12 @@ bool Database::inTransaction() const
     return internal::open(impl_).sqlTxn != nullptr;
 }
 
+void Database::allowFileStatements(bool on)
+{
+    if (!remote_)
+        internal::open(impl_).options.allowAttach = on;
+}
+
 bool Database::pristine() const
 {
     if (remote_)

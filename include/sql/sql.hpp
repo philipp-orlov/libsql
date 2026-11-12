@@ -778,7 +778,7 @@ public:
             return *this;
         }
 
-        /// Whether ATTACH may open files. Turn it off for a database served to others: ATTACH takes any path the
+        /// Whether ATTACH may open files (and VACUUM INTO write one). Turn it off for a database served to others: ATTACH takes any path the
         /// process can reach, and creates the file when the database is writable.
         Options& allowAttach(bool on)
         {
@@ -947,6 +947,8 @@ public:
     /// True when nothing a session could have left on this handle remains: no temp store, no
     /// attached database and every connection PRAGMA at its default. A pool reuses only these.
     bool pristine() const;
+    /// Turns ATTACH, DETACH and VACUUM INTO on or off for this handle (see Options::allowAttach()).
+    void allowFileStatements(bool on);
     /// Asks the statement running on this handle (from another thread) to stop
     /// with ErrorCode::Interrupted at its next row.
     void interrupt();

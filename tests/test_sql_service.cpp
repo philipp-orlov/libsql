@@ -565,3 +565,26 @@ TEST(service_a_recycled_handle_carries_nothing_of_the_previous_session)
     CHECK(threw);
     CHECK_EQ(b.run("PRAGMA foreign_keys").firstCell, std::string("0"));
 }
+
+TEST(service_refuses_file_statements_by_default)
+{
+    remote_test::Served served;
+    seed(served.db);
+    Wire a(served.url());
+    const std::filesystem::path attached = std::filesystem::temp_directory_path() / "sqsvc-attach-x.db";
+    const std::filesystem::path copy = std::filesystem::temp_directory_path() / "sqsvc-vacuum-y.db";
+    std::filesystem::remove(attached);
+    std::filesystem::remove(copy);
+    auto refused = [&](const std::string& text) {
+        try {
+            a.run(text);
+        } catch (const std::exception&) {
+            return true;
+        }
+        return false;
+    };
+    CHECK(refused("ATTACH '" + attached.string() + "' AS x"));
+    CHECK(refused("VACUUM INTO '" + copy.string() + "'"));
+    CHECK(!std::filesystem::exists(attached));
+    CHECK(!std::filesystem::exists(copy));
+}
