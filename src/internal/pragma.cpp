@@ -193,6 +193,17 @@ void integrityCheck(Session& s, PragmaResult& r, bool quick)
     // Every index must hold exactly the entries its table's rows imply: each
     // row's entry is looked up, then the counts are compared so that stray
     // entries are caught too. quick_check only walks the trees.
+    // The store itself first: its trees, free list and page accounting.
+    for (std::size_t i = 0; i < s.stores.size(); ++i) {
+        if (!s.stores[i].txn)
+            continue;
+        try {
+            nosql::checkIntegrity(*s.stores[i].txn);
+        } catch (const nosql::Error& e) {
+            if (r.rows.size() < 100)
+                r.rows.push_back({Value("store " + std::string(s.stores[i].name) + ": " + e.what())});
+        }
+    }
     for (std::size_t i = 0; i < s.stores.size(); ++i) {
         if (!s.stores[i].catalog)
             continue;

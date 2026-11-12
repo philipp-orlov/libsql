@@ -232,3 +232,23 @@ int main()
 {
     return tst::runAll("ddl");
 }
+
+TEST(rollbackToSavepointRestoresADroppedTable)
+{
+    tst::Scratch s("ddl-savepoint");
+    Database db = s.open();
+    db.exec("CREATE TABLE t (x INTEGER)");
+    for (int c = 0; c < 6; ++c) {
+        db.exec("BEGIN");
+        for (int i = 0; i < 40; ++i)
+            db.exec("INSERT INTO t VALUES (" + std::to_string(c * 40 + i) + ")");
+        db.exec("COMMIT");
+    }
+    db.exec("BEGIN");
+    db.exec("SAVEPOINT s");
+    db.exec("DROP TABLE t");
+    db.exec("ROLLBACK TO s");
+    db.exec("COMMIT");
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM t")), std::string("240"));
+    CHECK_EQ(tst::only(db.exec("PRAGMA integrity_check")), std::string("ok"));
+}
