@@ -1626,8 +1626,10 @@ have one ("wrong # of entries in index X"). It stops adding messages at 100.
 `ATTACH` and `DETACH` are connection-level statements in
 [`../src/database.cpp`](../src/database.cpp), not `ExecPlan`s. They cannot run
 inside an active SQL transaction. `VACUUM INTO` copies all sub-databases to a
-new libnosql file. In-place `VACUUM` is a no-op because libnosql already
-reuses free pages and the store may be open in other handles.
+new libnosql file (and is refused unless the database allows `ATTACH`). In-place `VACUUM` does not rebuild
+anything, because libnosql reuses free pages itself; it calls `Env::shrink()`, which moves live pages
+down and gives the free tail of the file back to the filesystem. It waits for the writer slot and for
+snapshots older than the free pages it moves.
 
 ---
 
@@ -2121,7 +2123,7 @@ these differences are intentional or known:
     SQLite page number.
 17. `PRAGMA busy_timeout = 0`, the default, waits for the writer slot
     indefinitely rather than failing at once.
-18. In-place `VACUUM` is a no-op; `VACUUM INTO` copies the store.
+18. In-place `VACUUM` shrinks the file (`Env::shrink()`) and rebuilds nothing; `VACUUM INTO` copies the store.
 
 The engine does not implement SQLite's file format, C API, WAL/journal modes,
 virtual table modules, extension loading or network protocols.
