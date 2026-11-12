@@ -206,6 +206,10 @@ public:
     {
         if (!::bufs::verify<ResultSet>(message, size))
             return std::nullopt;
+        // verify() proves the message is well formed, not that its counts agree: the accessors index
+        // one vector with a length taken from another, so a hostile peer needs only to disagree.
+        if (!consistent(::bufs::root<ResultSet>(message)))
+            return std::nullopt;
         BatchView view(message);
         view.external_ = slots;
         return view;
@@ -225,6 +229,100 @@ public:
     ResultSet::Reader reader() const { return r_; }
 
 private:
+    template <class Offsets>
+    static bool ascending(const Offsets& offsets, std::size_t needed, std::size_t limit)
+    {
+        if (offsets.size() < needed)
+            return false;
+        std::uint64_t previous = 0;
+        for (std::size_t i = 0; i < offsets.size(); ++i) {
+            const std::uint64_t at = offsets[i];
+            if (at < previous || at > limit)
+                return false;
+            previous = at;
+        }
+        return true;
+    }
+
+    static bool consistent(ResultSet::Reader r)
+    {
+        const std::size_t rows = r.rowCount();
+        for (auto c : r.data()) {
+            switch (c.encoding()) {
+                case Encoding::Empty: break;
+                case Encoding::Mixed: {
+                    if (c.tags().size() < rows)
+                        return false;
+                    std::size_t ints = 0, reals = 0, bytes = 0;
+                    for (std::size_t i = 0; i < rows; ++i) {
+                        switch (Tag(c.tags()[i])) {
+                            case Tag::Integer:
+                            case Tag::Datetime: ++ints; break;
+                            case Tag::Real: ++reals; break;
+                            case Tag::Text:
+                            case Tag::Blob: ++bytes; break;
+                            default: break;
+                        }
+                    }
+                    if (c.i64().size() < ints || c.f64().size() < reals)
+                        return false;
+                    if (bytes && !ascending(c.offsets(), bytes + 1, c.bytes().size()))
+                        return false;
+                    if (!c.blobSizes().empty() && c.blobSizes().size() < bytes)
+                        return false;
+                    break;
+                }
+                case Encoding::Int:
+                case Encoding::Datetime:
+                    if (!deltasFit(c, rows))
+                        return false;
+                    break;
+                case Encoding::Real:
+                    if ((c.hasF32() ? c.f32().size() : c.f64().size()) < rows)
+                        return false;
+                    break;
+                case Encoding::Text:
+                case Encoding::Blob:
+                    if (!ascending(c.offsets(), rows + 1, c.bytes().size()))
+                        return false;
+                    if (!c.blobSizes().empty() && c.blobSizes().size() < rows)
+                        return false;
+                    break;
+                case Encoding::TextDict: {
+                    const std::size_t codes = c.width() == Width::U8 ? c.u8().size() : c.u16().size();
+                    if (codes < rows)
+                        return false;
+                    const auto offsets = c.dictOffsets();
+                    if (rows && offsets.size() < 2)
+                        return false;
+                    if (!ascending(offsets, 0, c.dictBytes().size()))
+                        return false;
+                    for (std::size_t i = 0; i < rows; ++i) {
+                        const std::size_t code = c.width() == Width::U8 ? c.u8()[i] : c.u16()[i];
+                        if (code + 1 >= offsets.size())
+                            return false;
+                    }
+                    break;
+                }
+                default: break;
+            }
+            if (c.encoding() != Encoding::Empty && c.encoding() != Encoding::Mixed && c.nullCount() > 0 &&
+                c.nulls().size() < (rows + 7) / 8)
+                return false;
+        }
+        return true;
+    }
+
+    static bool deltasFit(Column::Reader c, std::size_t rows)
+    {
+        switch (c.width()) {
+            case Width::U8: return c.u8().size() >= rows;
+            case Width::U16: return c.u16().size() >= rows;
+            case Width::U32: return c.u32().size() >= rows;
+            default: return c.i64().size() >= rows;
+        }
+    }
+
     explicit BatchView(const std::uint8_t* message) : r_(::bufs::root<ResultSet>(message)) {}
     ResultSet::Reader r_;
     mutable std::vector<std::vector<std::uint32_t>> slots_;  ///< Mixed slot indexes, built on first use

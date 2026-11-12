@@ -496,6 +496,8 @@ private:
         }
         if (columns == 0)
             return;
+        if (columns != cols_.size())
+            throw Error(ErrorCode::Protocol, "result batch has a different column count than announced");
         const std::size_t rows = batch->rowCount();
         if (row_.size() < columns)
             row_.resize(columns);
