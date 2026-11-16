@@ -119,6 +119,11 @@ public:
     /// into that sub-query's own WHERE, so it materializes only the rows the
     /// outer query keeps -- by its own keys and indexes, where they apply.
     void pushIntoSubqueries(CorePlan& core, const std::vector<Expr*>& terms);
+    /// After the join order is settled: the join terms between such a
+    /// sub-query and the sources placed (and written) before it are copied
+    /// into it too when that lets it read by a key or an index -- it then
+    /// runs once per outer row, as a join to its table by that key would.
+    void pushJoinTerms(CorePlan& core);
 
 private:
     /// Levels of nested CTEs and views being planned; the planner recurses once per level.

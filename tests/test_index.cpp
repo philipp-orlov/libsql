@@ -361,6 +361,26 @@ TEST(a_filter_on_a_view_or_sub_query_is_applied_inside_it)
                                   "AND x.id IS NULL")),
              tst::flatten(db.exec("WITH q AS (" + plain + ") SELECT u.t_id, x.id FROM u LEFT JOIN q x ON x.id = u.t_id "
                                   "WHERE u.t_id IN (76, 77) AND x.id IS NULL")));
+    // Joined on a key of what it reads, a view runs once per outer row with the join term inside it; a CTE
+    // of the same select is materialized once and joined to. Both ways, the same rows.
+    auto joinSame = [&](const std::string& sql, bool searches) {
+        std::string viaCte = sql;
+        const std::size_t at = viaCte.find("v_plain");
+        CHECK(at != std::string::npos);
+        viaCte.replace(at, 7, "q");
+        CHECK(tst::flatten(db.exec(sql + " ORDER BY 1, 2")) ==
+              tst::flatten(db.exec("WITH q AS (" + plain + ") " + viaCte + " ORDER BY 1, 2")));
+        const std::string plan = tst::flatten(db.exec("EXPLAIN QUERY PLAN " + sql));
+        CHECK_EQ(plan.find("SEARCH t") != std::string::npos, searches);
+    };
+    joinSame("SELECT u.id, x.k FROM u JOIN v_plain x ON x.id = u.t_id WHERE u.id < 400", true);
+    joinSame("SELECT u.id, x.k FROM u JOIN v_plain x ON x.id = u.t_id + 1 AND x.n > u.w", true);
+    joinSame("SELECT u.id, x.id FROM u JOIN v_plain x ON x.k = u.w WHERE u.id < 60", true);
+    joinSame("SELECT u.id, x.id FROM u LEFT JOIN v_plain x ON x.id = u.t_id AND x.n = 3 WHERE u.id < 400", true);
+    joinSame("SELECT u.id, x.id FROM u LEFT JOIN v_plain x ON x.id = u.t_id WHERE u.id < 400 AND x.id IS NULL", true);
+    joinSame("SELECT u.id, x.id FROM u, v_plain x WHERE x.id = u.t_id AND u.w = 2 AND x.n = 5", true);
+    // no key or index of the view's table to join by: it is read once, as before
+    joinSame("SELECT u.id, x.id FROM u JOIN v_plain x ON x.n = u.w WHERE u.id < 40", false);
     // a prepared statement binds the pushed value anew at each run
     Statement st = db.prepare("SELECT note FROM (SELECT id, note FROM t) WHERE id = ?");
     st.bind(1, Value(5));

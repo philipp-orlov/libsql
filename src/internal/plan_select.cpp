@@ -1583,7 +1583,7 @@ namespace {
 /// reads constants, parameters and columns of `s` that are bare columns
 /// there, through operators and deterministic functions only. `reads` is set
 /// when it reads at least one such column.
-bool pushable(const Expr* e, const SourceNode& s, const CorePlan& inner, bool& reads)
+bool pushable(const Expr* e, const SourceNode& s, const CorePlan& inner, bool& reads, std::size_t outerBelow = 0)
 {
     if (!e)
         return true;
@@ -1593,6 +1593,10 @@ bool pushable(const Expr* e, const SourceNode& s, const CorePlan& inner, bool& r
         case ExprKind::Literal:
         case ExprKind::Parameter: break;
         case ExprKind::Column: {
+            // With `outerBelow`: a column in a frame slot below it is a value
+            // the sub-query finds set when it runs, like any outer reference.
+            if (e->slot >= 0 && std::size_t(e->slot) < outerBelow)
+                break;
             if (e->slot < 0 || std::size_t(e->slot) < s.base || std::size_t(e->slot) >= s.base + s.width)
                 return false;
             const std::size_t k = std::size_t(e->slot) - s.base;
@@ -1620,14 +1624,50 @@ bool pushable(const Expr* e, const SourceNode& s, const CorePlan& inner, bool& r
             break;
         default: return false;
     }
-    if (!pushable(e->lhs.get(), s, inner, reads) || !pushable(e->rhs.get(), s, inner, reads) ||
-        !pushable(e->extra.get(), s, inner, reads))
+    if (!pushable(e->lhs.get(), s, inner, reads, outerBelow) || !pushable(e->rhs.get(), s, inner, reads, outerBelow) ||
+        !pushable(e->extra.get(), s, inner, reads, outerBelow))
         return false;
     for (const ExprPtr& x : e->list) {
-        if (!pushable(x.get(), s, inner, reads))
+        if (!pushable(x.get(), s, inner, reads, outerBelow))
             return false;
     }
     return true;
+}
+
+/// A view or FROM sub-query whose filters mean the same inside as outside:
+/// one plain SELECT ... FROM ... WHERE, read by this source alone.
+CorePlan* plainSubquery(const SourceNode& s)
+{
+    if (s.kind != SourceNode::Kind::Rows || !s.rows || !s.rows->exclusive || s.rows->recursive || s.rows->generator ||
+        !s.rows->select)
+        return nullptr;
+    SelectPlan& isp = *s.rows->select;
+    if (isp.cores.size() != 1 || !isp.order.empty() || isp.limit || isp.offset || isp.forJson)
+        return nullptr;
+    CorePlan& inner = isp.cores[0];
+    if (inner.aggregate || !inner.windows.empty() || inner.distinct || !inner.values.empty() || inner.hasRightJoin ||
+        inner.sources.empty())
+        return nullptr;
+    return &inner;
+}
+
+/// Every filter of a planned core, as planFiltersImpl takes them.
+std::vector<Expr*> filtersOf(const CorePlan& core)
+{
+    std::vector<Expr*> all;
+    for (const std::vector<Expr*>& level : core.levelFilters)
+        all.insert(all.end(), level.begin(), level.end());
+    all.insert(all.end(), core.finalFilters.begin(), core.finalFilters.end());
+    return all;
+}
+
+/// How narrowly a core's sources are read, summed.
+int accessRanks(const CorePlan& core)
+{
+    int sum = 0;
+    for (const SourceNode& s : core.sources)
+        sum += accessRank(s);
+    return sum;
 }
 
 /// A copy of `e` (which pushable() passed) that reads the sub-query's own
@@ -1650,7 +1690,9 @@ ExprPtr retarget(const Expr& e, const SourceNode& s, const CorePlan& inner)
     c->begin = e.begin;
     c->end = e.end;
     c->height = e.height;
-    c->slot = e.kind == ExprKind::Column ? inner.outputs[std::size_t(e.slot) - s.base]->slot : e.slot;
+    c->slot = e.kind == ExprKind::Column && std::size_t(e.slot) >= s.base && std::size_t(e.slot) < s.base + s.width
+                  ? inner.outputs[std::size_t(e.slot) - s.base]->slot
+                  : e.slot;
     c->fn = e.fn;
     c->affinity = e.affinity;
     c->hasAffinity = e.hasAffinity;
@@ -1679,18 +1721,10 @@ void Planner::pushIntoSubqueries(CorePlan& core, const std::vector<Expr*>& terms
         SourceNode& s = core.sources[d];
         // A row the filter drops inside the sub-query must be one the outer
         // query would drop too: an inner-joined (or first) source only.
-        if (s.kind != SourceNode::Kind::Rows || !s.rows || !s.rows->exclusive || s.rows->correlated ||
-            s.rows->recursive || s.rows->generator || !s.rows->select || (d > 0 && s.join != JoinType::Inner))
+        CorePlan* plain = plainSubquery(s);
+        if (!plain || s.rows->correlated || (d > 0 && s.join != JoinType::Inner))
             continue;
-        SelectPlan& isp = *s.rows->select;
-        // Only a plain SELECT ... FROM ... WHERE: there a filter on what it
-        // returns is the same filter on what it reads.
-        if (isp.cores.size() != 1 || !isp.order.empty() || isp.limit || isp.offset || isp.forJson)
-            continue;
-        CorePlan& inner = isp.cores[0];
-        if (inner.aggregate || !inner.windows.empty() || inner.distinct || !inner.values.empty() ||
-            inner.hasRightJoin || inner.sources.empty())
-            continue;
+        CorePlan& inner = *plain;
         std::vector<Expr*> pushed;
         auto consider = [&](const Expr* t) {
             bool reads = false;
@@ -1711,15 +1745,61 @@ void Planner::pushIntoSubqueries(CorePlan& core, const std::vector<Expr*>& terms
         // A view over a view: what arrived here may go further down.
         pushIntoSubqueries(inner, pushed);
         // Plan the sub-query's filters again, with these among them.
-        std::vector<Expr*> all;
-        for (const std::vector<Expr*>& level : inner.levelFilters)
-            all.insert(all.end(), level.begin(), level.end());
-        all.insert(all.end(), inner.finalFilters.begin(), inner.finalFilters.end());
+        std::vector<Expr*> all = filtersOf(inner);
         all.insert(all.end(), pushed.begin(), pushed.end());
         inner.levelFilters.clear();
         inner.finalFilters.clear();
         planFiltersImpl(inner, std::move(all), false);
         markCacheable(inner);
+    }
+}
+
+void Planner::pushJoinTerms(CorePlan& core)
+{
+    if (core.hasRightJoin)
+        return;
+    for (std::size_t d = 1; d < core.sources.size(); ++d) {
+        SourceNode& s = core.sources[d];
+        CorePlan* plain = plainSubquery(s);
+        const bool inner = s.join == JoinType::Inner;
+        if (!plain || s.rows->correlated || (!inner && s.join != JoinType::Left))
+            continue;
+        CorePlan& sub = *plain;
+        // The terms that decide whether a row of the sub-query joins (a LEFT
+        // join's WHERE terms run after the match and stay outside). What
+        // they read of other sources must be set before the sub-query runs
+        // and be seen by it as an outer value: a slot below its own.
+        std::vector<const Expr*> terms(s.onTerms.begin(), s.onTerms.end());
+        if (inner)
+            terms.insert(terms.end(), core.levelFilters[d].begin(), core.levelFilters[d].end());
+        std::vector<ExprPtr> copies;
+        for (const Expr* t : terms) {
+            bool reads = false;
+            if (pushable(t, s, sub, reads, sub.slotBegin) && reads)
+                copies.push_back(retarget(*t, s, sub));
+        }
+        if (copies.empty())
+            continue;
+        // Worth it only if the sub-query then reads by a key or an index:
+        // otherwise it would scan once per outer row what it now scans once.
+        const std::vector<Expr*> before = filtersOf(sub);
+        const int rankBefore = accessRanks(sub);
+        std::vector<Expr*> all = before;
+        for (const ExprPtr& c : copies)
+            all.push_back(c.get());
+        sub.levelFilters.clear();
+        sub.finalFilters.clear();
+        planFiltersImpl(sub, std::move(all), false);
+        if (accessRanks(sub) > rankBefore) {
+            for (ExprPtr& c : copies)
+                prog_.owned.push_back(std::move(c));
+            s.rows->correlated = true;
+        } else {
+            sub.levelFilters.clear();
+            sub.finalFilters.clear();
+            planFiltersImpl(sub, before, false);
+        }
+        markCacheable(sub);
     }
 }
 
@@ -1729,6 +1809,7 @@ void Planner::planFilters(CorePlan& core, Expr* where)
     conjuncts(where, whereTerms);
     pushIntoSubqueries(core, whereTerms);
     planFiltersImpl(core, std::move(whereTerms), true);
+    pushJoinTerms(core);
     markCacheable(core);
 }
 
