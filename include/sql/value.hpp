@@ -115,7 +115,18 @@ public:
     Value(BlobView b) { initBytes(Type::Blob, reinterpret_cast<const char*>(b.data()), b.size()); }
     Value(const Blob& b) : Value(BlobView(b)) {}
 
-    Value(const Value& other) { copyFrom(other); }
+    Value(const Value& other)
+    {
+        // A scalar, or text short enough to sit in the cell: the cell itself is the copy.
+        if (other.store_ == kInline) {
+            u_ = other.u_;
+            type_ = other.type_;
+            sub_ = other.sub_;
+            size_ = other.size_;
+        } else {
+            copyFrom(other);
+        }
+    }
     Value(Value&& other) noexcept
         : u_(other.u_),
           type_(other.type_),
@@ -128,8 +139,19 @@ public:
     }
     Value& operator=(const Value& other)
     {
-        if (this != &other)
-            assign(other);
+        if (this != &other) {
+            // Nothing to free here and nothing to allocate there: copy the cell. A buffer this
+            // cell owns is kept for the text it may hold next (assign).
+            if (store_ != kHeap && other.store_ == kInline) {
+                u_ = other.u_;
+                type_ = other.type_;
+                store_ = kInline;
+                sub_ = other.sub_;
+                size_ = other.size_;
+            } else {
+                assign(other);
+            }
+        }
         return *this;
     }
     Value& operator=(Value&& other) noexcept

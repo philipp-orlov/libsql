@@ -326,6 +326,11 @@ void throwTruncatedKey()
     corrupt("truncated fixed-width key field");
 }
 
+void throwMalformed(const char* what)
+{
+    corrupt(what);
+}
+
 void decodeKeyInto(std::string_view& in, Value& out, bool borrow)
 {
     if (in.empty())
@@ -583,7 +588,11 @@ void getValueInto(std::string_view& in, Value& out)
 
 namespace {
 
-constexpr std::uint8_t kIntWidth[7] = {0, 1, 2, 3, 4, 6, 8};
+using record::kIntWidth;
+using record::payloadSize;
+using record::readInt;
+using record::decodeCell;
+using RecordCursor = record::Cursor;
 
 std::uint64_t typeCode(const Value& v) noexcept
 {
@@ -613,17 +622,6 @@ std::uint64_t typeCode(const Value& v) noexcept
         case Type::Blob: return 12 + 2 * std::uint64_t(v.blob().size());
     }
     return 0;
-}
-
-inline std::size_t payloadSize(std::uint64_t code)
-{
-    // Codes 0-11: NULL, six integer widths, REAL, 0, 1, DATETIME, unknown.
-    static constexpr std::uint8_t kSize[12] = {0, 1, 2, 3, 4, 6, 8, 8, 0, 0, 8, 0xff};
-    if (code >= 12)
-        return std::size_t((code - 12) >> 1);
-    if (code == 11)
-        corrupt("unknown record type code");
-    return kSize[code];
 }
 
 void putPayload(std::string& out, const Value& v, std::uint64_t code)
@@ -659,109 +657,6 @@ void putPayload(std::string& out, const Value& v, std::uint64_t code)
     else if (code >= 12)
         out.append(reinterpret_cast<const char*>(v.blob().data()), v.blob().size());
 }
-
-/// Little-endian, sign-extended from `width` bytes.
-inline std::int64_t readInt(const char* p, unsigned width) noexcept
-{
-    std::uint64_t u = 0;
-    switch (width) {
-        case 1: return std::int8_t(p[0]);
-        case 2: {
-            std::uint16_t x;
-            std::memcpy(&x, p, 2);
-            return std::int16_t(x);
-        }
-        case 4: {
-            std::uint32_t x;
-            std::memcpy(&x, p, 4);
-            return std::int32_t(x);
-        }
-        case 8: std::memcpy(&u, p, 8); return std::int64_t(u);
-        default: break;
-    }
-    for (unsigned i = 0; i < width; ++i)
-        u |= std::uint64_t(static_cast<unsigned char>(p[i])) << (8 * i);
-    const unsigned shift = 64 - 8 * width;
-    return std::int64_t(u << shift) >> shift;
-}
-
-/// Decodes the payload of type `code` at `p` (already bounds-checked).
-inline void decodeCell(std::uint64_t code, const char* p, std::size_t size, Value& out, bool borrow)
-{
-    if (code >= 12) {
-        if (borrow) {
-            if (code & 1)
-                out.setTextRef(std::string_view(p, size));
-            else
-                out.setBlobRef(p, size);
-        } else if (code & 1) {
-            out.setText(std::string_view(p, size));
-        } else {
-            out.setBlob(p, size);
-        }
-        return;
-    }
-    switch (code) {
-        case 0: out.setNull(); return;
-        case 7: {
-            double d;
-            std::memcpy(&d, p, 8);
-            out.setReal(d);
-            return;
-        }
-        case 8: out.setInteger(0); return;
-        case 9: out.setInteger(1); return;
-        case 10: out.setDatetime(Datetime{readInt(p, 8)}); return;
-        default: out.setInteger(readInt(p, kIntWidth[code])); return;
-    }
-}
-
-/// Reads a varint from [p, end); fast path for one byte.
-inline std::uint64_t headerVarint(const char*& p, const char* end)
-{
-    if (p < end && !(static_cast<unsigned char>(*p) & 0x80))
-        return static_cast<unsigned char>(*p++);
-    std::string_view in(p, std::size_t(end - p));
-    const std::uint64_t v = getVarint(in);
-    p = in.data();
-    return v;
-}
-
-/// Splits a record into its type codes and its payloads.
-struct RecordCursor
-{
-    const char* code;      ///< next type code
-    const char* codeEnd;
-    const char* body;      ///< next payload
-    const char* bodyEnd;
-    std::size_t count;
-
-    explicit RecordCursor(std::string_view in)
-    {
-        const char* p = in.data();
-        const char* end = p + in.size();
-        const std::uint64_t n = headerVarint(p, end);
-        const std::uint64_t hdr = headerVarint(p, end);
-        if (hdr > std::size_t(end - p) || n > hdr)
-            corrupt("implausible record header");
-        count = std::size_t(n);
-        code = p;
-        codeEnd = code + hdr;
-        body = codeEnd;
-        bodyEnd = end;
-    }
-    /// The next cell's type code and payload; advances past it.
-    std::uint64_t next(const char*& payload, std::size_t& size)
-    {
-        const std::uint64_t c = headerVarint(code, codeEnd);
-        size = payloadSize(c);
-        if (size > std::size_t(bodyEnd - body))
-            corrupt("truncated record");
-        payload = body;
-        body += size;
-        return c;
-    }
-};
 
 }  // namespace
 
@@ -813,20 +708,7 @@ std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width, bo
 std::size_t decodeRowInto(std::string_view in, Value* out, std::size_t width,
                           const std::uint8_t* used, bool fillMissing, bool borrow)
 {
-    RecordCursor r(in);
-    const std::size_t have = std::min(r.count, width);
-    for (std::size_t i = 0; i < have; ++i) {
-        const char* p;
-        std::size_t size;
-        const std::uint64_t c = r.next(p, size);
-        if (used[i])
-            decodeCell(c, p, size, out[i], borrow);
-    }
-    if (fillMissing) {
-        for (std::size_t i = have; i < width; ++i)
-            out[i].setNull();
-    }
-    return have;
+    return decodeRowUsed(in, out, width, used, fillMissing, borrow);
 }
 
 std::size_t rowColumnCount(std::string_view in)

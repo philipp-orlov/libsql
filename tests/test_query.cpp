@@ -197,6 +197,38 @@ TEST(numericFiltersTestStoredRowsLikeDecodedOnes)
     CHECK_EQ(tst::flatten(db.exec("SELECT k FROM w WHERE n > 2")), std::string("b"));
 }
 
+TEST(order_by_sorts_every_storage_class_nulls_placement_and_collation)
+{
+    tst::Scratch s("query");
+    Database db = s.open();
+    db.exec("CREATE TABLE m (id INTEGER PRIMARY KEY, v)");
+    db.exec("INSERT INTO m VALUES (1, NULL), (2, 1), (3, 'b'), (4, 1.0), (5, -5), (6, x'0001'), (7, 2.5), (8, 'a'),"
+            " (9, 9007199254740993), (10, 'B'), (11, x'00'), (12, 9007199254740992.0), (13, NULL), (14, ''),"
+            " (15, 'a' || char(0) || 'b')");
+    auto ids = [&](const std::string& order) { return tst::flatten(db.exec("SELECT id FROM m ORDER BY " + order)); };
+    // NULL, numbers (an integer and a real compared exactly), text, blobs; ties in arrival order
+    CHECK_EQ(ids("v"), std::string("1;13;5;2;4;7;12;9;14;10;8;15;3;11;6"));
+    CHECK_EQ(ids("v DESC"), std::string("6;11;3;15;8;10;14;9;12;7;2;4;5;1;13"));
+    CHECK_EQ(ids("v DESC NULLS FIRST"), std::string("1;13;6;11;3;15;8;10;14;9;12;7;2;4;5"));
+    CHECK_EQ(ids("v NULLS LAST"), std::string("5;2;4;7;12;9;14;10;8;15;3;11;6;1;13"));
+    CHECK_EQ(ids("v COLLATE NOCASE"), std::string("1;13;5;2;4;7;12;9;14;8;15;3;10;11;6"));
+    // two terms, the second deciding within the first; a LIMIT settles only the head
+    CHECK_EQ(ids("typeof(v) DESC, v DESC LIMIT 4"), std::string("3;15;8;10"));
+    CHECK_EQ(ids("typeof(v), id DESC LIMIT 3 OFFSET 1"), std::string("6;9;5"));
+    // many rows, keys longer than the eight bytes compared first
+    db.exec("CREATE TABLE w (id INTEGER PRIMARY KEY, a TEXT, b INTEGER)");
+    db.exec("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 5000) "
+            "INSERT INTO w SELECT i, 'common-prefix-' || (i * 7919 % 5000), i * 31 % 97 FROM c");
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM (SELECT a, lag(a) OVER () AS p FROM (SELECT a FROM w ORDER BY a)) "
+                               "WHERE p > a")),
+             std::string("0"));
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM (SELECT b, id, lag(b) OVER () AS pb, lag(id) OVER () AS pid FROM "
+                               "(SELECT b, id FROM w ORDER BY b DESC, id)) WHERE pb < b OR (pb = b AND pid > id)")),
+             std::string("0"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT a FROM w ORDER BY a DESC LIMIT 2")),
+             std::string("common-prefix-999;common-prefix-998"));
+}
+
 int main()
 {
     return tst::runAll("query");

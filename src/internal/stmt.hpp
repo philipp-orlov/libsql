@@ -60,6 +60,15 @@ struct ResultBuilder
     void row(const Value* values, std::size_t count) { add(const_cast<Value*>(values), count, false); }
     /// The same, taking the values: the caller's array is scratch.
     void take(Value* values, std::size_t count) { add(values, count, true); }
+    /// take() when rows go to Statement::each's callback and nowhere else;
+    /// false once the callback has asked for no more.
+    bool visit(Value* values, std::size_t count)
+    {
+        if ((*each)(RowView(values, count, &result.names_)))
+            return true;
+        stopped = true;
+        return false;
+    }
     void reserve(std::size_t rows) { result.rows_.reserve(rows); }
     std::size_t rows() const noexcept { return result.rows_.size(); }
     void changed(std::uint64_t n) { result.changes_ = n; }

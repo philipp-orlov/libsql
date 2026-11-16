@@ -25,6 +25,16 @@
 #include "nosql/slice.hpp"
 #include "sql/value.hpp"
 
+/// Forces the few functions on the per-row path into their one caller: a row
+/// costs a call's worth of saved registers for each of them otherwise.
+#if defined(__GNUC__) || defined(__clang__)
+#define SQL_ALWAYS_INLINE inline __attribute__((always_inline))
+#elif defined(_MSC_VER)
+#define SQL_ALWAYS_INLINE __forceinline
+#else
+#define SQL_ALWAYS_INLINE inline
+#endif
+
 namespace sql::internal {
 
 inline std::string_view viewOf(nosql::Slice s) noexcept
@@ -118,6 +128,206 @@ int storedNumber(std::string_view in, std::size_t i, std::int64_t& n, double& r)
 
 void putVarint(std::string& out, std::uint64_t v);
 std::uint64_t getVarint(std::string_view& in);
+[[noreturn]] void throwMalformed(const char* what);
+
+// ------------------------------------------------------- inline decoding --
+//
+// What a scan does to every row, kept in the header so that it compiles into
+// the loop that reads the row. The formats are described in encoding.cpp.
+
+namespace record {
+
+inline constexpr std::uint8_t kIntWidth[7] = {0, 1, 2, 3, 4, 6, 8};
+
+SQL_ALWAYS_INLINE std::size_t payloadSize(std::uint64_t code)
+{
+    // Codes 0-11: NULL, six integer widths, REAL, 0, 1, DATETIME, unknown.
+    static constexpr std::uint8_t kSize[12] = {0, 1, 2, 3, 4, 6, 8, 8, 0, 0, 8, 0xff};
+    if (code >= 12)
+        return std::size_t((code - 12) >> 1);
+    if (code == 11)
+        throwMalformed("unknown record type code");
+    return kSize[code];
+}
+
+/// Little-endian, sign-extended from `width` bytes.
+SQL_ALWAYS_INLINE std::int64_t readInt(const char* p, unsigned width) noexcept
+{
+    std::uint64_t u = 0;
+    switch (width) {
+        case 1: return std::int8_t(p[0]);
+        case 2: {
+            std::uint16_t x;
+            std::memcpy(&x, p, 2);
+            return std::int16_t(x);
+        }
+        case 4: {
+            std::uint32_t x;
+            std::memcpy(&x, p, 4);
+            return std::int32_t(x);
+        }
+        case 8: std::memcpy(&u, p, 8); return std::int64_t(u);
+        default: break;
+    }
+    for (unsigned i = 0; i < width; ++i)
+        u |= std::uint64_t(static_cast<unsigned char>(p[i])) << (8 * i);
+    const unsigned shift = 64 - 8 * width;
+    return std::int64_t(u << shift) >> shift;
+}
+
+/// Decodes the payload of type `code` at `p` (already bounds-checked).
+SQL_ALWAYS_INLINE void decodeCell(std::uint64_t code, const char* p, std::size_t size, Value& out, bool borrow)
+{
+    if (code >= 12) {
+        if (borrow) {
+            if (code & 1)
+                out.setTextRef(std::string_view(p, size));
+            else
+                out.setBlobRef(p, size);
+        } else if (code & 1) {
+            out.setText(std::string_view(p, size));
+        } else {
+            out.setBlob(p, size);
+        }
+        return;
+    }
+    switch (code) {
+        case 0: out.setNull(); return;
+        case 7: {
+            double d;
+            std::memcpy(&d, p, 8);
+            out.setReal(d);
+            return;
+        }
+        case 8: out.setInteger(0); return;
+        case 9: out.setInteger(1); return;
+        case 10: out.setDatetime(Datetime{readInt(p, 8)}); return;
+        default: out.setInteger(readInt(p, kIntWidth[code])); return;
+    }
+}
+
+/// Reads a varint from [p, end); fast path for one byte.
+SQL_ALWAYS_INLINE std::uint64_t headerVarint(const char*& p, const char* end)
+{
+    if (p < end && !(static_cast<unsigned char>(*p) & 0x80))
+        return static_cast<unsigned char>(*p++);
+    std::string_view in(p, std::size_t(end - p));
+    const std::uint64_t v = getVarint(in);
+    p = in.data();
+    return v;
+}
+
+/// Splits a record into its type codes and its payloads.
+struct Cursor
+{
+    const char* code;      ///< next type code
+    const char* codeEnd;
+    const char* body;      ///< next payload
+    const char* bodyEnd;
+    std::size_t count;
+
+    SQL_ALWAYS_INLINE explicit Cursor(std::string_view in)
+    {
+        const char* p = in.data();
+        const char* end = p + in.size();
+        const std::uint64_t n = headerVarint(p, end);
+        const std::uint64_t hdr = headerVarint(p, end);
+        if (hdr > std::size_t(end - p) || n > hdr)
+            throwMalformed("implausible record header");
+        count = std::size_t(n);
+        code = p;
+        codeEnd = code + hdr;
+        body = codeEnd;
+        bodyEnd = end;
+    }
+    /// The next cell's type code and payload; advances past it.
+    SQL_ALWAYS_INLINE std::uint64_t next(const char*& payload, std::size_t& size)
+    {
+        const std::uint64_t c = headerVarint(code, codeEnd);
+        size = payloadSize(c);
+        if (size > std::size_t(bodyEnd - body))
+            throwMalformed("truncated record");
+        payload = body;
+        body += size;
+        return c;
+    }
+};
+
+}  // namespace record
+
+/// decodeRowInto with a `used` mask, inline.
+SQL_ALWAYS_INLINE std::size_t decodeRowUsed(std::string_view in, Value* out, std::size_t width,
+                                            const std::uint8_t* used, bool fillMissing, bool borrow)
+{
+    record::Cursor r(in);
+    const std::size_t have = r.count < width ? r.count : width;
+    for (std::size_t i = 0; i < have; ++i) {
+        const char* p;
+        std::size_t size;
+        const std::uint64_t c = r.next(p, size);
+        if (used[i])
+            record::decodeCell(c, p, size, out[i], borrow);
+    }
+    if (fillMissing) {
+        for (std::size_t i = have; i < width; ++i)
+            out[i].setNull();
+    }
+    return have;
+}
+
+/// skipKeys(in, 1), with a number or a NULL stepped over inline.
+SQL_ALWAYS_INLINE void skipKeyFast(std::string_view& in)
+{
+    if (in.size() >= 11 && in[0] == '\x02')
+        in.remove_prefix(11);
+    else if (!in.empty() && in[0] == '\x01')
+        in.remove_prefix(1);
+    else
+        skipKeys(in, 1);
+}
+
+/// decodeKeyInto, with the two forms nearly every key part has decoded
+/// inline: a number that is an integer, and text or a blob holding no zero
+/// byte. Anything else goes the general way.
+SQL_ALWAYS_INLINE void decodeKeyFast(std::string_view& in, Value& out, bool borrow)
+{
+    const std::size_t n = in.size();
+    if (n >= 11 && in[0] == '\x02') {
+        // The number tag: a sortable double, then what an integer adds to it.
+        std::uint64_t bits = loadBigEndian64(in.data() + 1);
+        bits = (bits >> 63) ? (bits & 0x7fffffffffffffffull) : ~bits;
+        double d;
+        std::memcpy(&d, &bits, sizeof d);
+        if (in[9] == 0 && in[10] == 0 && d > -9.0e18 && d < 9.0e18) {
+            const std::int64_t i = std::int64_t(d);
+            if (double(i) == d) {
+                in.remove_prefix(11);
+                out.setInteger(i);
+                return;
+            }
+        }
+    } else if (n >= 3 && (in[0] == '\x05' || in[0] == '\x06')) {
+        // Text or a blob: bytes up to 00 00; an escaped zero is 00 ff.
+        const char* begin = in.data() + 1;
+        const char* z = static_cast<const char*>(std::memchr(begin, 0, n - 1));
+        if (z && z + 1 < in.data() + n && z[1] == '\0') {
+            const std::size_t len = std::size_t(z - begin);
+            if (!borrow) {
+                if (in[0] == '\x05')
+                    out.setText(std::string_view(begin, len));
+                else
+                    out.setBlob(begin, len);
+            } else if (in[0] == '\x05') {
+                out.setTextRef(std::string_view(begin, len));
+            } else {
+                out.setBlobRef(begin, len);
+            }
+            in.remove_prefix(len + 3);
+            return;
+        }
+    }
+    decodeKeyInto(in, out, borrow);
+}
 void putString(std::string& out, std::string_view s);
 std::string getString(std::string_view& in);
 void putValue(std::string& out, const Value& v);

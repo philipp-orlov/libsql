@@ -475,7 +475,37 @@ PartInfo partAt(const SourceNode& s, std::size_t i)
     return {t.primaryKey[i], t.pkCollation[i], bool(t.pkDesc[i])};
 }
 
-void loadRow(SourceNode& s, Ctx& c, std::string_view key, std::string_view payload)
+/// Columns the record does not carry (added by ALTER TABLE after the row was
+/// written) take their constant default, or NULL.
+void fillAddedColumns(const SourceNode& s, Value* row, std::size_t have)
+{
+    const Table& t = *s.table;
+    for (std::size_t i = have; i < s.decodeWidth; ++i) {
+        const Column& col = t.columns[i];
+        if (col.hasDefault && col.defaultConstant)
+            row[i] = col.defaultValue;
+        else
+            row[i].setNull();
+    }
+}
+
+/// VIRTUAL generated columns, in two passes so one may build on another.
+void fillGenerated(SourceNode& s, Ctx& c, Value* row)
+{
+    const Table& tbl = *s.table;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (std::size_t i = 0; i < s.generated.size(); ++i) {
+            if (!s.generated[i])
+                continue;
+            Value v = eval(*s.generated[i], c);
+            if (!tbl.strict)
+                applyAffinity(v, tbl.columns[i].affinity);
+            row[i] = std::move(v);
+        }
+    }
+}
+
+SQL_ALWAYS_INLINE void loadRow(SourceNode& s, Ctx& c, std::string_view key, std::string_view payload)
 {
     const Table& t = *s.table;
     Value* row = c.slots + s.base;
@@ -494,46 +524,38 @@ void loadRow(SourceNode& s, Ctx& c, std::string_view key, std::string_view paylo
         if (s.split == 2) {
             // Two-phase: what this level's filters read now, the rest in
             // finishRow once the row has passed them.
-            have = decodeRowInto(payload, row, s.decodeWidth, s.firstUsed.data(), true, c.borrow);
+            if (s.firstEmpty) {
+                // They read nothing stored (the rowid at most): only how many
+                // columns the record carries is needed yet.
+                const char* p = payload.data();
+                have = std::min<std::size_t>(std::size_t(record::headerVarint(p, p + payload.size())), s.decodeWidth);
+            } else {
+                have = decodeRowUsed(payload, row, s.decodeWidth, s.firstUsed.data(), true, c.borrow);
+            }
             s.restRecord = payload;
             s.restPending = true;
         } else {
             have = s.used.size() >= s.decodeWidth
-                       ? decodeRowInto(payload, row, s.decodeWidth, s.used.data(), true, c.borrow)
+                       ? decodeRowUsed(payload, row, s.decodeWidth, s.used.data(), true, c.borrow)
                        : decodeRowInto(payload, row, s.decodeWidth, c.borrow);
         }
         // Columns added by ALTER TABLE after this row was written.
-        for (std::size_t i = have; i < s.decodeWidth; ++i) {
-            const Column& col = t.columns[i];
-            if (col.hasDefault && col.defaultConstant)
-                row[i] = col.defaultValue;
-            else
-                row[i].setNull();
-        }
+        if (have < s.decodeWidth)
+            fillAddedColumns(s, row, have);
     }
     if (t.hasRowid()) {
         row[t.columns.size()].setInteger(rowid);
         if (t.rowidAlias >= 0)
             row[t.rowidAlias].setInteger(rowid);
     }
-    // VIRTUAL generated columns, in two passes so one may build on another.
-    for (int pass = 0; pass < 2 && !s.generated.empty(); ++pass) {
-        const Table& tbl = *s.table;
-        for (std::size_t i = 0; i < s.generated.size(); ++i) {
-            if (!s.generated[i])
-                continue;
-            Value v = eval(*s.generated[i], c);
-            if (!tbl.strict)
-                applyAffinity(v, tbl.columns[i].affinity);
-            row[i] = std::move(v);
-        }
-    }
+    if (!s.generated.empty())
+        fillGenerated(s, c, row);
     if (s.keepRowKey)
         s.rowKey.assign(key.data(), key.size());
 }
 
 /// Index-only read: fills the used columns (and the rowid) from an entry.
-void loadEntry(SourceNode& s, Ctx& c, std::string_view entry, std::string_view flags)
+SQL_ALWAYS_INLINE void loadEntry(SourceNode& s, Ctx& c, std::string_view entry, std::string_view flags)
 {
     const Table& t = *s.table;
     Value* row = c.slots + s.base;
@@ -542,10 +564,10 @@ void loadEntry(SourceNode& s, Ctx& c, std::string_view entry, std::string_view f
     for (std::size_t i = 0; i < parts; ++i) {
         const int col = s.coverColumns[i];
         if (col < 0) {
-            skipKeys(in, 1);
+            skipKeyFast(in);
             continue;
         }
-        decodeKeyInto(in, row[col], c.borrow);
+        decodeKeyFast(in, row[col], c.borrow);
         if (i / 8 < flags.size() && (std::uint8_t(flags[i / 8]) >> (i % 8) & 1) &&
             row[col].type() == Type::Integer)
             row[col].setReal(double(row[col].integer()));
@@ -565,10 +587,10 @@ void loadEntry(SourceNode& s, Ctx& c, std::string_view entry, std::string_view f
     for (std::size_t j = 0; j < t.primaryKey.size(); ++j) {
         const int col = s.coverColumns[parts + j];
         if (col < 0) {
-            skipKeys(in, 1);
+            skipKeyFast(in);
             continue;
         }
-        decodeKeyInto(in, row[col], c.borrow);
+        decodeKeyFast(in, row[col], c.borrow);
         const std::size_t bit = parts + j;
         if (bit / 8 < flags.size() && (std::uint8_t(flags[bit / 8]) >> (bit % 8) & 1) &&
             row[col].type() == Type::Integer)
@@ -613,7 +635,14 @@ bool covers(const SourceNode& s, const Index& ix, std::vector<int>& cols)
     }
     // A column read but never marked (decodeWidth set without the mask) is
     // not safe to assume away.
-    return s.used.size() >= s.decodeWidth;
+    if (s.used.size() < s.decodeWidth)
+        return false;
+    // A component nothing reads is stepped over, not decoded.
+    for (int& col : cols) {
+        if (col >= 0 && !(std::size_t(col) < s.used.size() && s.used[std::size_t(col)]))
+            col = -1;
+    }
+    return true;
 }
 
 bool encodePrefix(SourceNode& s, Ctx& c, std::string& out, bool& noMatch)
@@ -784,7 +813,7 @@ void window(SourceNode& s, Ctx& c, const std::string& prefix, std::size_t next)
         enforceRange(s, hasLow, hasHigh);
 }
 
-bool inWindow(const AccessPath& ap, std::string_view key)
+SQL_ALWAYS_INLINE bool inWindow(const AccessPath& ap, std::string_view key)
 {
     if (ap.hi.empty())
         return true;
@@ -808,7 +837,7 @@ bool seekEntry(SourceNode& s, std::string_view at)
     return true;
 }
 
-bool nextEntry(SourceNode& s, bool first)
+SQL_ALWAYS_INLINE bool nextEntry(SourceNode& s, bool first)
 {
     nosql::Slice k, v;
     if (!(first ? s.cursor.first(k, v) : s.cursor.next(k, v)))
@@ -891,6 +920,81 @@ bool advanceEntry(SourceNode& s)
         s.exhausted = true;
         return false;
     }
+}
+
+/// advanceEntry for the step a window takes almost every time: forward to
+/// the next entry, no probe list and no prefix to skip.
+SQL_ALWAYS_INLINE bool stepEntry(SourceNode& s)
+{
+    if (s.plainStep && s.started && !s.holdEntry) {
+        nosql::Slice k, v;
+        if (s.cursor.next(k, v)) {
+            s.entryKey = viewOf(k);
+            s.entryValue = viewOf(v);
+            if (inWindow(s.access, s.entryKey))
+                return true;
+        }
+        s.exhausted = true;
+        return false;
+    }
+    return advanceEntry(s);
+}
+
+/// nextSource for everything that is not a table.
+bool nextOther(SourceNode& s, Ctx& c)
+{
+    switch (s.kind) {
+        case SourceNode::Kind::Pseudo:
+        case SourceNode::Kind::Single:
+            if (s.started)
+                return false;
+            s.started = true;
+            return true;
+        case SourceNode::Kind::Recursive: {
+            if (s.started || !s.rows->current)
+                return false;
+            s.started = true;
+            for (std::size_t i = 0; i < s.width; ++i)
+                c.slots[s.base + i] = s.rows->current[i];
+            return true;
+        }
+        case SourceNode::Kind::Rows: {
+            RowStore& rows = s.rows->rows;
+            if (s.rowIndex >= rows.size())
+                return false;
+            const Value* r = rows.row(s.rowIndex);
+            for (std::size_t i = 0; i < s.width; ++i)
+                c.slots[s.base + i] = r[i];
+            if (s.keepRowKey)
+                s.rowKey.assign(reinterpret_cast<const char*>(&s.rowIndex), sizeof s.rowIndex);
+            ++s.rowIndex;
+            return true;
+        }
+        case SourceNode::Kind::Function: {
+            TableFunctionCursor& cur = *s.fnCursor;
+            if (s.started)
+                cur.next(*c.fctx);
+            s.started = true;
+            if (cur.eof())
+                return false;
+            const int hiddenStart = s.function->hiddenStart;
+            for (int i = 0; i < int(s.width); ++i) {
+                if (i < hiddenStart)
+                    cur.column(*c.fctx, i, c.slots[s.base + std::size_t(i)]);
+                else if (std::size_t(i - hiddenStart) < s.argv.size())
+                    c.slots[s.base + std::size_t(i)] = *s.argv[std::size_t(i - hiddenStart)];
+                else
+                    c.slots[s.base + std::size_t(i)].setNull();
+            }
+            if (s.keepRowKey) {
+                const std::int64_t id = cur.rowid();
+                s.rowKey.assign(reinterpret_cast<const char*>(&id), sizeof id);
+            }
+            return true;
+        }
+        case SourceNode::Kind::Table: break;
+    }
+    return false;
 }
 
 }  // namespace
@@ -1022,6 +1126,7 @@ void openSource(SourceNode& s, Ctx& c)
     s.enforced.clear();
     s.holdEntry = false;
     s.recordLive.clear();
+    s.plainStep = false;
     switch (s.kind) {
         case SourceNode::Kind::Single:
         case SourceNode::Kind::Pseudo:
@@ -1101,64 +1206,20 @@ void openSource(SourceNode& s, Ctx& c)
         return;
     }
     s.single = ap.kind == AccessPath::Kind::Index && pinned == parts && ap.index->unique;
+    s.plainStep = !s.reverse && !s.skipComponents;
     window(s, c, ap.prefix, pinned);
 }
 
 bool nextSource(SourceNode& s, Ctx& c)
 {
-    switch (s.kind) {
-        case SourceNode::Kind::Pseudo:
-        case SourceNode::Kind::Single:
-            if (s.started)
-                return false;
-            s.started = true;
-            return true;
-        case SourceNode::Kind::Recursive: {
-            if (s.started || !s.rows->current)
-                return false;
-            s.started = true;
-            for (std::size_t i = 0; i < s.width; ++i)
-                c.slots[s.base + i] = s.rows->current[i];
-            return true;
-        }
-        case SourceNode::Kind::Rows: {
-            RowStore& rows = s.rows->rows;
-            if (s.rowIndex >= rows.size())
-                return false;
-            const Value* r = rows.row(s.rowIndex);
-            for (std::size_t i = 0; i < s.width; ++i)
-                c.slots[s.base + i] = r[i];
-            s.rowKey.assign(reinterpret_cast<const char*>(&s.rowIndex), sizeof s.rowIndex);
-            ++s.rowIndex;
-            return true;
-        }
-        case SourceNode::Kind::Function: {
-            TableFunctionCursor& cur = *s.fnCursor;
-            if (s.started)
-                cur.next(*c.fctx);
-            s.started = true;
-            if (cur.eof())
-                return false;
-            const int hiddenStart = s.function->hiddenStart;
-            for (int i = 0; i < int(s.width); ++i) {
-                if (i < hiddenStart)
-                    cur.column(*c.fctx, i, c.slots[s.base + std::size_t(i)]);
-                else if (std::size_t(i - hiddenStart) < s.argv.size())
-                    c.slots[s.base + std::size_t(i)] = *s.argv[std::size_t(i - hiddenStart)];
-                else
-                    c.slots[s.base + std::size_t(i)].setNull();
-            }
-            const std::int64_t id = cur.rowid();
-            s.rowKey.assign(reinterpret_cast<const char*>(&id), sizeof id);
-            return true;
-        }
-        case SourceNode::Kind::Table: break;
-    }
+    if (s.kind != SourceNode::Kind::Table)
+        return nextOther(s, c);
     if (s.exhausted)
         return false;
     AccessPath& ap = s.access;
-    const bool fallbackScan = s.rowIndex == std::size_t(-1);
-    if (ap.kind == AccessPath::Kind::Scan || fallbackScan) {
+    std::string_view key, payload;
+    if (ap.kind == AccessPath::Kind::Scan || s.rowIndex == std::size_t(-1)) {
+        // A scan, or a path that fell back to one.
         for (;;) {
             bool ok;
             if (s.holdEntry) {
@@ -1175,55 +1236,59 @@ bool nextSource(SourceNode& s, Ctx& c)
             if (s.recordLive.empty() || !recordRejects(s, s.entryValue))
                 break;
         }
-        loadRow(s, c, s.entryKey, s.entryValue);
-        return true;
-    }
-    if (s.point) {
+        key = s.entryKey;
+        payload = s.entryValue;
+    } else if (s.point) {
         if (s.started)
             return false;
         s.started = true;
-        const auto payload = s.rowsDb->get(sliceOf(ap.prefix));
-        if (!payload) {
+        // Through the source's cursor, kept across opens: a join's next
+        // lookup usually lands in the leaf of the last.
+        nosql::Slice value;
+        if (!s.cursor.seekExact(sliceOf(ap.prefix), value)) {
             s.exhausted = true;
             return false;
         }
-        if (!s.recordLive.empty() && recordRejects(s, viewOf(*payload)))
+        if (!s.recordLive.empty() && recordRejects(s, viewOf(value)))
             return false;
-        loadRow(s, c, ap.prefix, viewOf(*payload));
-        return true;
-    }
-    if (ap.kind != AccessPath::Kind::Index) {
+        key = ap.prefix;
+        payload = viewOf(value);
+    } else if (ap.kind != AccessPath::Kind::Index) {
         do {
-            if (!advanceEntry(s))
+            if (!stepEntry(s))
                 return false;
         } while (!s.recordLive.empty() && recordRejects(s, s.entryValue));
-        loadRow(s, c, s.entryKey, s.entryValue);
-        return true;
-    }
-    if (s.coverState == 2) {
-        if (!advanceEntry(s))
+        key = s.entryKey;
+        payload = s.entryValue;
+    } else if (s.coverState == 2) {
+        if (!stepEntry(s))
             return false;
         loadEntry(s, c, s.entryKey, s.entryValue);
         s.exhausted = s.single;
         return true;
-    }
-    const nosql::Db& data = *s.rowsDb;
-    if (!s.rowCursor.boundTo(data))
-        s.rowCursor = data.cursor();
-    for (;;) {
-        if (!advanceEntry(s))
-            return false;
-        std::string_view entry = s.entryKey;
-        skipKeys(entry, ap.index->parts.size());
-        nosql::Slice payload;
-        if (!s.rowCursor.seekExact(sliceOf(entry), payload))
-            continue;  // an entry without its row: defensive, see design notes
-        if (!s.recordLive.empty() && recordRejects(s, viewOf(payload)))
-            continue;
-        loadRow(s, c, entry, viewOf(payload));
+    } else {
+        const nosql::Db& data = *s.rowsDb;
+        if (!s.rowCursor.boundTo(data))
+            s.rowCursor = data.cursor();
+        for (;;) {
+            if (!stepEntry(s))
+                return false;
+            std::string_view entry = s.entryKey;
+            for (std::size_t i = ap.index->parts.size(); i > 0; --i)
+                skipKeyFast(entry);
+            nosql::Slice value;
+            if (!s.rowCursor.seekExact(sliceOf(entry), value))
+                continue;  // an entry without its row: defensive, see design notes
+            if (!s.recordLive.empty() && recordRejects(s, viewOf(value)))
+                continue;
+            key = entry;
+            payload = viewOf(value);
+            break;
+        }
         s.exhausted = s.single;
-        return true;
     }
+    loadRow(s, c, key, payload);
+    return true;
 }
 
 void closeSource(SourceNode& s)
@@ -1332,13 +1397,10 @@ bool seekExtreme(SourceNode& s, Ctx& c, bool max)
     return true;
 }
 
-void finishRow(SourceNode& s, Ctx& c)
+void finishRowSlow(SourceNode& s, Ctx& c)
 {
-    if (!s.restPending)
-        return;
     s.restPending = false;
-    decodeRowInto(s.restRecord, c.slots + s.base, s.decodeWidth, s.restUsed.data(), false,
-                  c.borrow);
+    decodeRowUsed(s.restRecord, c.slots + s.base, s.decodeWidth, s.restUsed.data(), false, c.borrow);
 }
 
 }  // namespace sql::internal

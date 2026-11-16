@@ -313,6 +313,7 @@ struct SourceNode
     /// the row has passed this level's filters (finishRow).
     std::uint8_t split = 0;
     std::vector<std::uint8_t> firstUsed, restUsed;
+    bool firstEmpty = false;       ///< firstUsed marks no column: the first phase decodes nothing
     bool restPending = false;      ///< the current row still lacks restUsed
     bool holdEntry = false;        ///< skipEntries left the cursor on the next row to read
     std::string_view restRecord;   ///< its record, valid while the cursor stays
@@ -357,6 +358,9 @@ struct SourceNode
     /// Every part of a UNIQUE index pinned: one entry at most, so the
     /// source is done once it has yielded it.
     bool single = false;
+    /// This open walks its window forward entry by entry: no probe list, no
+    /// distinct-prefix skips (set by openSource).
+    bool plainStep = false;
     std::size_t probeAt = 0;  ///< multi-probe position / Rows position
     std::vector<std::string> probes;
     /// Conjuncts this open's window guarantees for every row it yields, which
@@ -552,6 +556,8 @@ struct CorePlan
     /// consecutive: the row goes to the sink from there, uncopied. Else -1.
     int directFrom = -1;
     bool swapDecided = false;
+    /// This run hands rows to the sink straight from directFrom (set by runCore).
+    bool passThrough = false;
     FlatKeySet seen;
     std::vector<const Value*> argv;
     GroupTable groupTable;
@@ -596,6 +602,17 @@ struct SelectPlan
     // scratch
     RowStore sorted;
     std::vector<std::uint32_t> orderIndex;
+    /// One row's encoded ORDER BY key in sortArena (run_select.cpp, sortRows).
+    struct SortEntry
+    {
+        std::uint64_t prefix;  ///< its first eight bytes, as a number
+        std::size_t offset;
+        std::uint32_t size;
+        std::uint32_t row;
+    };
+    std::string sortArena;
+    std::vector<SortEntry> sortEntries;
+    std::size_t sortCharged = 0;  ///< bytes of the two charged to a statement, as they grew
 };
 
 /// Marks in `mask` the columns of `s` that `e` reads. False when `e` might
@@ -624,8 +641,14 @@ void closeSource(SourceNode& s);
 /// more than `retainBytes`, so one large join does not pin its memory for the
 /// life of a prepared statement.
 void releaseSourceScratch(SourceNode& s, std::size_t retainBytes);
-/// Decodes the columns a two-phase row deferred (no-op when none are).
-void finishRow(SourceNode& s, Ctx& c);
+/// Decodes the columns a two-phase row deferred.
+void finishRowSlow(SourceNode& s, Ctx& c);
+/// The same, a no-op when none are -- which is checked here, where the row loop is.
+inline void finishRow(SourceNode& s, Ctx& c)
+{
+    if (s.restPending)
+        finishRowSlow(s, c);
+}
 /// Before the first row of an open table source: passes over up to `n`
 /// entries of its window without reading them (O(log n), by the store's
 /// entry counts). Returns how many it passed over.

@@ -831,6 +831,19 @@ private:
     ResultBuilder& out_;
 };
 
+/// Rows of a SELECT, to Statement::each's callback: one call from the row to
+/// the callback.
+class EachSink final : public RowSink
+{
+public:
+    explicit EachSink(ResultBuilder& out) : out_(out) {}
+    bool row(Ctx&, const Value* v, std::size_t n) override { return out_.visit(const_cast<Value*>(v), n); }
+    bool take(Ctx&, Value* v, std::size_t n) override { return out_.visit(v, n); }
+
+private:
+    ResultBuilder& out_;
+};
+
 /// Rows discarded (a SELECT inside a trigger body).
 class NullSink final : public RowSink
 {
@@ -973,8 +986,13 @@ void runProgram(Program& p, Session& s, const std::vector<Value>& params, Result
         // Size the result like the last run's, so a statement that keeps
         // returning about as many rows does not regrow it row by row.
         out.reserve(sp.lastRows);
-        ResultSink sink(out);
-        runSelect(*p.select, c, sink);
+        if (out.each && !out.consumer) {
+            EachSink sink(out);
+            runSelect(*p.select, c, sink);
+        } else {
+            ResultSink sink(out);
+            runSelect(*p.select, c, sink);
+        }
         sp.lastRows = std::min<std::size_t>(out.rows(), 65536);
         return;
     }

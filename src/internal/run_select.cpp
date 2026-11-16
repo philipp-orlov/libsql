@@ -220,11 +220,13 @@ void decideSplit(CorePlan& p, std::size_t d)
         s.used.size() < s.decodeWidth)
         return;
     std::vector<std::uint8_t> first(s.decodeWidth, 0);
-    // Equality terms the access path pins are normally enforced by the window
-    // and reject nothing per row, so alone they are no reason to split. Their
-    // columns still go first: a path that falls back to a scan evaluates them.
+    // Terms the access path pins or bounds its window with are normally
+    // enforced by the window and reject nothing per row, so alone they are no
+    // reason to split. Their columns still go first: a path that falls back to
+    // a scan, or a bound that could not be made exact, evaluates them.
     auto pinned = [&](const Expr* e) {
-        return std::find(s.access.equalTerms.begin(), s.access.equalTerms.end(), e) != s.access.equalTerms.end();
+        return e == s.access.lowTerm || e == s.access.highTerm ||
+               std::find(s.access.equalTerms.begin(), s.access.equalTerms.end(), e) != s.access.equalTerms.end();
     };
     bool filtered = false;
     auto take = [&](const std::vector<Expr*>& v) {
@@ -261,6 +263,7 @@ void decideSplit(CorePlan& p, std::size_t d)
     }
     if (!any)
         return;
+    s.firstEmpty = std::find(first.begin(), first.end(), std::uint8_t(1)) == first.end();
     s.firstUsed = std::move(first);
     s.restUsed = std::move(rest);
     s.split = 2;
@@ -319,7 +322,8 @@ std::uint64_t cacheEstimate(SourceNode& s, Ctx& c)
 template <class Emit>
 bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
 {
-    if (c.session && c.session->interrupt && c.session->interrupt->load(std::memory_order_relaxed))
+    const std::atomic<bool>* const interrupt = c.session ? c.session->interrupt : nullptr;
+    if (interrupt && interrupt->load(std::memory_order_relaxed))
         interrupted();
     if (d == p.sources.size()) {
         for (Expr* f : p.finalFilters) {
@@ -329,6 +333,20 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
         return emit();
     }
     SourceNode& s = p.sources[d];
+    // The innermost source hands its rows to `emit` here rather than through
+    // one more call of this function per row.
+    const bool innermost = d + 1 == p.sources.size();
+    auto descend = [&] {
+        if (!innermost)
+            return nest(p, c, d + 1, emit);
+        if (interrupt && interrupt->load(std::memory_order_relaxed))
+            interrupted();
+        for (Expr* f : p.finalFilters) {
+            if (!holds(f, c))
+                return true;
+        }
+        return emit();
+    };
     bool matched = false;
     const bool outer = s.join == JoinType::Left || s.join == JoinType::Full;
     // The NULL row of an outer join that matched nothing.
@@ -338,7 +356,7 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
             if (!holds(f, c))
                 return true;
         }
-        return nest(p, c, d + 1, emit);
+        return descend();
     };
     if (s.cacheable) {
         const bool hashing = !s.hashInner.empty();
@@ -406,7 +424,7 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
                         return true;
                 }
             }
-            return nest(p, c, d + 1, emit);
+            return descend();
         };
         if (hashing) {
             // Only the bucket of this outer row's key can match.
@@ -471,7 +489,7 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
         }
         if (finishHere)
             finishRow(s, c);
-        return nest(p, c, d + 1, emit);
+        return descend();
     };
     if (s.hashRows) {
         // Materialized rows joined by equality: the second open of one
@@ -688,6 +706,10 @@ void finishSources(CorePlan& p, Ctx& c)
 
 bool project(CorePlan& p, Ctx& c, RowSink& sink)
 {
+    // Every output is the next slot of the innermost source: the row goes to
+    // the sink from where it was loaded.
+    if (p.passThrough)
+        return sink.take(c, c.slots + p.directFrom, p.outputs.size());
     const std::size_t n = p.outputs.size();
     if (p.outRow.size() < n)
         p.outRow.resize(n);
@@ -1295,6 +1317,9 @@ bool runCore(CorePlan& p, Ctx& c, RowSink& sink)
         return true;
     }
     const bool windowed = !p.windows.empty();
+    if (!p.swapDecided)
+        decideSwaps(p);
+    p.passThrough = p.directFrom >= 0 && !p.distinct && !p.deferToProject;
     if (!p.aggregate) {
         if (!windowed) {
             auto emit = [&] { return project(p, c, sink); };
@@ -1406,22 +1431,99 @@ int compareSortRows(const SelectPlan& sp, const Value* x, const Value* y)
     return 0;
 }
 
+/// Sorts the rows of sp.sorted into sp.orderIndex; with `limit` below the
+/// row count only the first `limit` positions are settled.
+///
+/// Each row's ORDER BY values are encoded once into one byte string that
+/// compares, with memcmp, as compareSortRows compares the rows: per term a
+/// byte that places NULL first or last, then the value's order-preserving
+/// key under the term's collation, complemented when the term descends. The
+/// sort then compares the first eight bytes of two keys as one integer and
+/// looks further only when those agree, instead of walking two rows of cells
+/// through compareValues for every comparison.
 void sortRows(SelectPlan& sp, std::size_t limit)
 {
     RowStore& rows = sp.sorted;
     std::vector<std::uint32_t>& idx = sp.orderIndex;
-    idx.resize(rows.size());
-    for (std::size_t i = 0; i < idx.size(); ++i)
-        idx[i] = std::uint32_t(i);
+    const std::size_t n = rows.size();
+    idx.resize(n);
+    if (n < 2 || sp.order.empty()) {
+        for (std::size_t i = 0; i < n; ++i)
+            idx[i] = std::uint32_t(i);
+        return;
+    }
+    std::string& arena = sp.sortArena;
+    std::vector<SelectPlan::SortEntry>& entries = sp.sortEntries;
+    arena.clear();
+    entries.resize(n);
+    for (std::size_t r = 0; r < n; ++r) {
+        const Value* row = rows.row(r);
+        const std::size_t at = arena.size();
+        for (const SelectPlan::SortKey& k : sp.order) {
+            const Value& v = row[k.column];
+            if (v.isNull()) {
+                const bool nullsFirst = k.nulls == 1 || (k.nulls == 0 && !k.desc);
+                arena.push_back(nullsFirst ? '\x00' : '\xff');
+            } else {
+                arena.push_back('\x80');
+                appendKey(arena, v, k.collation, k.desc);
+            }
+        }
+        SelectPlan::SortEntry& e = entries[r];
+        e.offset = at;
+        e.size = std::uint32_t(arena.size() - at);
+        e.row = std::uint32_t(r);
+    }
+    // The prefix is read only now that the arena has stopped moving; a key
+    // shorter than eight bytes is padded with zeros, which the full
+    // comparison below sorts out.
+    for (SelectPlan::SortEntry& e : entries) {
+        if (e.size >= 8) {
+            e.prefix = loadBigEndian64(arena.data() + e.offset);
+        } else {
+            char pad[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            std::memcpy(pad, arena.data() + e.offset, e.size);
+            e.prefix = loadBigEndian64(pad);
+        }
+    }
+    const std::size_t keyBytes = arena.capacity() + entries.capacity() * sizeof(SelectPlan::SortEntry);
+    if (keyBytes > sp.sortCharged) {
+        chargeStatement(keyBytes - sp.sortCharged);
+        sp.sortCharged = keyBytes;
+    }
+    const char* base = arena.data();
     // Ties keep arrival order, so the sort is stable.
-    auto less = [&](std::uint32_t a, std::uint32_t b) {
-        const int r = compareSortRows(sp, rows.row(a), rows.row(b));
-        return r != 0 ? r < 0 : a < b;
+    auto less = [base](const SelectPlan::SortEntry& a, const SelectPlan::SortEntry& b) {
+        if (a.prefix != b.prefix)
+            return a.prefix < b.prefix;
+        const std::size_t common = std::min(a.size, b.size);
+        if (common > 8) {
+            const int r = std::memcmp(base + a.offset + 8, base + b.offset + 8, common - 8);
+            if (r != 0)
+                return r < 0;
+        }
+        if (a.size != b.size)
+            return a.size < b.size;
+        return a.row < b.row;
     };
-    if (limit < idx.size())
-        std::partial_sort(idx.begin(), idx.begin() + std::ptrdiff_t(limit), idx.end(), less);
+    if (limit < n)
+        std::partial_sort(entries.begin(), entries.begin() + std::ptrdiff_t(limit), entries.end(), less);
     else
-        std::sort(idx.begin(), idx.end(), less);
+        std::sort(entries.begin(), entries.end(), less);
+    for (std::size_t i = 0; i < n; ++i)
+        idx[i] = entries[i].row;
+}
+
+/// Frees what sortRows keeps between calls once it is larger than `retain`.
+void releaseSortScratch(SelectPlan& sp, std::size_t retain)
+{
+    if (sp.sortArena.capacity() + sp.sortEntries.capacity() * sizeof(SelectPlan::SortEntry) > retain) {
+        std::string().swap(sp.sortArena);
+        std::vector<SelectPlan::SortEntry>().swap(sp.sortEntries);
+        sp.sortCharged = 0;
+    }
+    if (sp.orderIndex.capacity() * sizeof(std::uint32_t) > retain)
+        std::vector<std::uint32_t>().swap(sp.orderIndex);
 }
 
 /// A temporary file that is gone when closed, holding sorted runs.
@@ -1833,6 +1935,7 @@ void runRows(SelectPlan& sp, Ctx& c, RowSink& sink)
         core.deferToProject = false;
         collect.emit(c, sink, std::size_t(offset), limit, columns);
         sp.sorted.releaseAbove(scratchRetain(c) / sizeof(Value));
+        releaseSortScratch(sp, scratchRetain(c));
         return;
     }
     RowStore& rows = sp.sorted;
@@ -1912,6 +2015,7 @@ void runRows(SelectPlan& sp, Ctx& c, RowSink& sink)
             break;
     }
     rows.releaseAbove(scratchRetain(c) / sizeof(Value));
+    releaseSortScratch(sp, scratchRetain(c));
 }
 
 }  // namespace
