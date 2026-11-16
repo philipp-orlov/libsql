@@ -34,9 +34,21 @@ void setTruth(Value& out, bool v)
 
 void arithmetic(BinaryOp op, const Value& left, const Value& right, Value& out)
 {
-    Value a, b;
-    numericOperand(left, a);
-    numericOperand(right, b);
+    // Operands that are numbers already are used where they are; only text,
+    // blobs and datetimes are converted, into a cell of their own.
+    Value ca, cb;
+    const Value* pa = &left;
+    const Value* pb = &right;
+    if (!left.isNumeric()) {
+        numericOperand(left, ca);
+        pa = &ca;
+    }
+    if (!right.isNumeric()) {
+        numericOperand(right, cb);
+        pb = &cb;
+    }
+    const Value& a = *pa;
+    const Value& b = *pb;
     if (a.type() == Type::Integer && b.type() == Type::Integer) {
         const std::int64_t x = a.integer(), y = b.integer();
         std::int64_t r = 0;

@@ -229,6 +229,47 @@ TEST(order_by_sorts_every_storage_class_nulls_placement_and_collation)
              std::string("common-prefix-999;common-prefix-998"));
 }
 
+TEST(order_by_with_limit_returns_the_head_of_the_full_order)
+{
+    tst::Scratch s("query");
+    Database db = s.open();
+    // k repeats, and is NULL, text or a real in places; 6000 rows so the collector fills and prunes many times
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, k, g INTEGER, pad TEXT)");
+    db.exec("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 6000) "
+            "INSERT INTO t SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 'x' || (i % 7) "
+            "WHEN i % 5 = 0 THEN (i * 7919 % 1000) + 0.5 ELSE i * 7919 % 1000 END, i % 13, 'row ' || i FROM c");
+    db.exec("CREATE TABLE u (g INTEGER PRIMARY KEY, w INTEGER)");
+    db.exec("INSERT INTO u SELECT DISTINCT g, 100 - g FROM t");
+    auto head = [&](const std::string& select, const std::string& order, int limit, int offset = 0) {
+        const Result all = db.exec(select + " ORDER BY " + order);
+        const Result some = db.exec(select + " ORDER BY " + order + " LIMIT " + std::to_string(limit) +
+                                    (offset ? " OFFSET " + std::to_string(offset) : std::string()));
+        CHECK_EQ(some.size(), std::size_t(limit));
+        bool same = some.size() == std::size_t(limit);
+        for (std::size_t r = 0; same && r < some.size(); ++r) {
+            for (std::size_t col = 0; same && col < some[r].size(); ++col)
+                same = some[r][col] == all[r + std::size_t(offset)][col];
+        }
+        CHECK(same);
+    };
+    head("SELECT id, k, pad FROM t", "k", 50);
+    head("SELECT id, k, pad FROM t", "k DESC", 50);
+    head("SELECT id, k FROM t", "k NULLS LAST", 200);
+    head("SELECT id, k FROM t", "k DESC NULLS FIRST", 200);
+    head("SELECT id, k, g FROM t", "k, g DESC, id", 75);
+    head("SELECT id, k, g FROM t", "g DESC, k", 75, 30);
+    head("SELECT id, k FROM t WHERE g <> 3", "k", 10, 5);
+    head("SELECT id, k + 1 FROM t", "k + 1 DESC", 40);
+    // the sorted column in the inner table of a join, and in the outer one
+    head("SELECT t.id, u.w, t.k FROM u JOIN t ON t.g = u.g", "t.k, t.id", 60);
+    head("SELECT t.id, u.w FROM t JOIN u ON u.g = t.g", "u.w DESC, t.id", 60);
+    head("SELECT t.id, u.w FROM t LEFT JOIN u ON u.g = t.g AND u.w > 95", "u.w, t.id", 60);
+    // through an index, and index-only
+    db.exec("CREATE INDEX t_g ON t (g)");
+    head("SELECT id, k FROM t WHERE g = 4", "k DESC", 25);
+    head("SELECT g FROM t", "g DESC", 25);
+}
+
 int main()
 {
     return tst::runAll("query");

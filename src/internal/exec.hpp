@@ -132,6 +132,14 @@ public:
     /// every row. A producer may fill just these and ask `rejects` first.
     virtual const std::vector<std::size_t>* rejectKeys() const { return nullptr; }
     virtual bool rejects(const Value*) const { return false; }
+    /// Such a collector once it holds as many rows as it will keep: the row
+    /// a new one must beat, or null. `version` changes whenever the answer
+    /// does, so a producer asks again only then.
+    virtual const Value* cutoff(std::uint64_t& version) const
+    {
+        version = 0;
+        return nullptr;
+    }
 };
 
 // ------------------------------------------------------- expressions ----
@@ -333,6 +341,19 @@ struct SourceNode
     };
     bool recordTestsDecided = false;
     std::vector<RecordTest> recordTests, recordLive;
+    /// The current row passed every armed record test for certain: the
+    /// filters they stand for (the first recordLive.size() of the level's
+    /// live filters) hold.
+    bool testsDecided = false;
+    /// The armed tests stand for all of this open's filters, so a row that
+    /// passes them for certain is decoded whole, in one pass.
+    bool wholeOnPass = false;
+    /// ORDER BY ... LIMIT whose first term is a column of this source: once
+    /// the collector is full, a row whose stored number cannot beat its last
+    /// row is rejected on the record, before any of it is decoded
+    /// (run_select.cpp, armCutoff). `op` is the comparison a row must pass.
+    RecordTest cutoff;
+    bool cutoffLive = false;
     std::string indexedBy;
     bool notIndexed = false;
     // Rows
@@ -543,6 +564,11 @@ struct CorePlan
     /// be completed in project, after the sort keys showed it can place.
     bool deferToProject = false;
     std::vector<std::size_t> sortKeys;  ///< output columns the ORDER BY reads
+    bool sortDesc = false;              ///< its first term descends
+    /// The stored column of the innermost source that the first term is, when
+    /// rows may be rejected against the collector's cutoff; else -1.
+    int cutoffColumn = -1;
+    std::uint64_t cutoffSeen = 0;  ///< the collector's cutoff version the source's test reflects
     bool keysFirst = false;  ///< the innermost source's first phase covers sortKeys
     /// Per output: the innermost source's slot it may take by swapping
     /// rather than copying (it reads nothing else, and nothing else reads

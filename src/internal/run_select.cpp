@@ -466,8 +466,10 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
     const std::vector<Expr*>& onTerms = *onPtr;
     if (!s.recordTestsDecided)
         decideRecordTests(s, p.levelFilters[d]);
-    if (!s.recordTests.empty() && onTerms.empty())
+    if (!s.recordTests.empty() && onTerms.empty()) {
         armRecordTests(s, c, *levelPtr);
+        s.wholeOnPass = finishHere && !s.recordLive.empty() && s.recordLive.size() == levelPtr->size();
+    }
     // OFFSET over a lone source whose window decides every row: pass over
     // the offset in the store instead of producing rows to drop.
     if (p.offsetLeft && *p.offsetLeft > 0 && p.sources.size() == 1 && levelPtr->empty() && onTerms.empty() &&
@@ -483,8 +485,10 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
         matched = true;
         if (trackRight)
             s.matchedKeys.insert(s.rowKey);
-        for (Expr* f : *levelPtr) {
-            if (!holds(f, c))
+        // Filters the record tests settled for this row are not run again.
+        const std::vector<Expr*>& filters = *levelPtr;
+        for (std::size_t i = s.testsDecided ? s.recordLive.size() : 0; i < filters.size(); ++i) {
+            if (!holds(filters[i], c))
                 return true;
         }
         if (finishHere)
@@ -698,6 +702,57 @@ bool extremeByWindow(CorePlan& p, Ctx& c, Emit& emit)
     return true;
 }
 
+/// CorePlan::cutoffColumn for this run: the first ORDER BY term is a stored
+/// column of the innermost source, a table read row by row whose every row
+/// reaches the projection (so one rejected early is missed by nothing).
+void decideCutoff(CorePlan& p)
+{
+    p.cutoffColumn = -1;
+    p.cutoffSeen = 0;
+    if (p.sources.empty())
+        return;
+    SourceNode& s = p.sources.back();
+    s.cutoffLive = false;
+    if (!p.deferToProject || p.sortKeys.empty() || p.sortKeys[0] >= p.outputs.size() ||
+        s.kind != SourceNode::Kind::Table || !s.generated.empty() || s.cacheable || !s.onTerms.empty() ||
+        s.join != JoinType::Inner)
+        return;
+    const Expr* e = p.outputs[p.sortKeys[0]];
+    if (e->kind != ExprKind::Column || e->slot < int(s.base))
+        return;
+    const std::size_t col = std::size_t(e->slot) - s.base;
+    // The rowid alias is stored as NULL; loadRow fills it from the key.
+    if (col >= s.table->columns.size() || int(col) == s.table->rowidAlias)
+        return;
+    p.cutoffColumn = int(col);
+}
+
+/// Sets the innermost source's cutoff test from the collector's last row.
+void armCutoff(CorePlan& p, const Value* last)
+{
+    SourceNode& s = p.sources.back();
+    s.cutoffLive = false;
+    if (!last)
+        return;
+    const Value& k = last[p.sortKeys[0]];
+    SourceNode::RecordTest& t = s.cutoff;
+    if (k.type() == Type::Integer) {
+        t.real = false;
+        t.n = k.integer();
+    } else if (k.type() == Type::Real) {
+        t.real = true;
+        t.r = k.real();
+    } else {
+        return;
+    }
+    t.column = std::size_t(p.cutoffColumn);
+    // A row must sort before the last one kept; with more terms to come, a
+    // tie on the first is still undecided.
+    const bool single = p.sortKeys.size() == 1;
+    t.op = p.sortDesc ? (single ? BinaryOp::Gt : BinaryOp::Ge) : (single ? BinaryOp::Lt : BinaryOp::Le);
+    s.cutoffLive = true;
+}
+
 void finishSources(CorePlan& p, Ctx& c)
 {
     for (SourceNode& s : p.sources)
@@ -730,7 +785,16 @@ bool project(CorePlan& p, Ctx& c, RowSink& sink)
                 if (std::find(keys->begin(), keys->end(), i) == keys->end())
                     produce(p, c, i);
             }
-            return sink.take(c, p.outRow.data(), n);
+            const bool more = sink.take(c, p.outRow.data(), n);
+            if (p.cutoffColumn >= 0) {
+                std::uint64_t version = 0;
+                const Value* last = sink.cutoff(version);
+                if (version != p.cutoffSeen) {
+                    p.cutoffSeen = version;
+                    armCutoff(p, last);
+                }
+            }
+            return more;
         }
         finishSources(p, c);
     }
@@ -1320,10 +1384,14 @@ bool runCore(CorePlan& p, Ctx& c, RowSink& sink)
     if (!p.swapDecided)
         decideSwaps(p);
     p.passThrough = p.directFrom >= 0 && !p.distinct && !p.deferToProject;
+    decideCutoff(p);
     if (!p.aggregate) {
         if (!windowed) {
             auto emit = [&] { return project(p, c, sink); };
-            return runJoins(p, c, emit);
+            const bool more = runJoins(p, c, emit);
+            if (!p.sources.empty())
+                p.sources.back().cutoffLive = false;
+            return more;
         }
         WindowRunner wr(p, c);
         auto emit = [&] {
@@ -1572,6 +1640,11 @@ public:
 
     const std::vector<std::size_t>* rejectKeys() const override { return keep_ > 0 ? keys_ : nullptr; }
     bool rejects(const Value* v) const override { return cannotPlace(v); }
+    const Value* cutoff(std::uint64_t& version) const override
+    {
+        version = cutoffVersion_;
+        return pruned_ ? rows_.row(std::size_t(keep_) - 1) : nullptr;
+    }
     void keys(const std::vector<std::size_t>* k) { keys_ = k; }
 
     bool row(Ctx&, const Value* v, std::size_t n) override
@@ -1676,6 +1749,7 @@ private:
         }
         // Rows 0..keep_-1 are now the best so far, in order.
         pruned_ = rows_.size() == std::size_t(keep_) && keep_ > 0;
+        ++cutoffVersion_;
         bytes_ = 0;
         for (std::size_t i = 0; i < rows_.size(); ++i)
             bytes_ += bytesOf(rows_.row(i), width);
@@ -1718,6 +1792,7 @@ private:
         bytes_ = 0;
         prunedBytes_ = 0;
         pruned_ = false;  // the rows the cut was measured against are on disk now
+        ++cutoffVersion_;
     }
 
     struct Run
@@ -1831,6 +1906,7 @@ private:
     const std::vector<std::size_t>* keys_ = nullptr;
     std::size_t pruneAt_ = 0;
     bool pruned_ = false;
+    std::uint64_t cutoffVersion_ = 0;  // counts the changes of the row a new one must beat
     bool spill_ = false;
     std::uint64_t limit_ = 64ull << 20;
     std::uint64_t bytes_ = 0;
@@ -1928,6 +2004,7 @@ void runRows(SelectPlan& sp, Ctx& c, RowSink& sink)
             for (const SelectPlan::SortKey& k : sp.order)
                 core.sortKeys.push_back(k.column);
         }
+        core.sortDesc = sp.order[0].desc;
         core.deferToProject = keep > 0 && !core.aggregate && core.windows.empty() && !core.distinct &&
                               core.finalFilters.empty() && !core.hasRightJoin && core.values.empty();
         collect.keys(&core.sortKeys);

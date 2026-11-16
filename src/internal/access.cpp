@@ -365,8 +365,11 @@ namespace {
 
 /// A record test rejects the row stored in `payload`. Undecided (text, a
 /// short record) counts as passing: the filters run on the decoded row.
-bool recordRejects(const SourceNode& s, std::string_view payload)
+/// s.testsDecided says whether every test was settled, in which case the
+/// filters they stand for hold and need not run again.
+bool recordRejects(SourceNode& s, std::string_view payload)
 {
+    s.testsDecided = false;
     if (s.table->payloadRowid())
         getVarint(payload);
     for (const SourceNode::RecordTest& t : s.recordLive) {
@@ -394,7 +397,35 @@ bool recordRejects(const SourceNode& s, std::string_view payload)
         if (!pass)
             return true;
     }
+    s.testsDecided = true;
+    if (s.cutoffLive) {
+        // Only a number is weighed against the cutoff here; anything else
+        // goes on to the collector.
+        const SourceNode::RecordTest& t = s.cutoff;
+        std::int64_t n = 0;
+        double r = 0;
+        const int kind = storedNumber(payload, t.column, n, r);
+        if (kind == 1 || kind == 2) {
+            int cmp;
+            if (kind == 1)
+                cmp = t.real ? compareIntReal(n, t.r) : n < t.n ? -1 : n > t.n;
+            else
+                cmp = t.real ? (r < t.r ? -1 : r > t.r) : -compareIntReal(t.n, r);
+            switch (t.op) {
+                case BinaryOp::Lt: return !(cmp < 0);
+                case BinaryOp::Le: return !(cmp <= 0);
+                case BinaryOp::Gt: return !(cmp > 0);
+                default: return !(cmp >= 0);
+            }
+        }
+    }
     return false;
+}
+
+/// The source tests stored records before decoding them.
+SQL_ALWAYS_INLINE bool testsRecords(const SourceNode& s) noexcept
+{
+    return !s.recordLive.empty() || s.cutoffLive;
 }
 
 /// applyComparisonAffinity(v, a) would change `v`: it turns only text into a
@@ -521,9 +552,10 @@ SQL_ALWAYS_INLINE void loadRow(SourceNode& s, Ctx& c, std::string_view key, std:
     }
     if (s.decodeWidth > 0) {
         std::size_t have;
-        if (s.split == 2) {
+        if (s.split == 2 && !(s.wholeOnPass && s.testsDecided)) {
             // Two-phase: what this level's filters read now, the rest in
-            // finishRow once the row has passed them.
+            // finishRow once the row has passed them. (Not when the record
+            // tests have already passed it for all of them.)
             if (s.firstEmpty) {
                 // They read nothing stored (the rowid at most): only how many
                 // columns the record carries is needed yet.
@@ -1126,6 +1158,8 @@ void openSource(SourceNode& s, Ctx& c)
     s.enforced.clear();
     s.holdEntry = false;
     s.recordLive.clear();
+    s.testsDecided = false;
+    s.wholeOnPass = false;
     s.plainStep = false;
     switch (s.kind) {
         case SourceNode::Kind::Single:
@@ -1233,7 +1267,7 @@ bool nextSource(SourceNode& s, Ctx& c)
                 s.exhausted = true;
                 return false;
             }
-            if (s.recordLive.empty() || !recordRejects(s, s.entryValue))
+            if (!testsRecords(s) || !recordRejects(s, s.entryValue))
                 break;
         }
         key = s.entryKey;
@@ -1249,7 +1283,7 @@ bool nextSource(SourceNode& s, Ctx& c)
             s.exhausted = true;
             return false;
         }
-        if (!s.recordLive.empty() && recordRejects(s, viewOf(value)))
+        if (testsRecords(s) && recordRejects(s, viewOf(value)))
             return false;
         key = ap.prefix;
         payload = viewOf(value);
@@ -1257,7 +1291,7 @@ bool nextSource(SourceNode& s, Ctx& c)
         do {
             if (!stepEntry(s))
                 return false;
-        } while (!s.recordLive.empty() && recordRejects(s, s.entryValue));
+        } while (testsRecords(s) && recordRejects(s, s.entryValue));
         key = s.entryKey;
         payload = s.entryValue;
     } else if (s.coverState == 2) {
@@ -1279,7 +1313,7 @@ bool nextSource(SourceNode& s, Ctx& c)
             nosql::Slice value;
             if (!s.rowCursor.seekExact(sliceOf(entry), value))
                 continue;  // an entry without its row: defensive, see design notes
-            if (!s.recordLive.empty() && recordRejects(s, viewOf(value)))
+            if (testsRecords(s) && recordRejects(s, viewOf(value)))
                 continue;
             key = entry;
             payload = viewOf(value);
