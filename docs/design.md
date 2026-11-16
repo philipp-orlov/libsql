@@ -1012,7 +1012,8 @@ Table sources record `decodeWidth`, generated virtual expressions,
 ### 11.2 Views, schema tables and pragmas
 
 Views are stored as SQL. Planning a view re-parses its stored `CREATE VIEW`
-text, plans the select, and materializes it as a `Rows` source.
+text, plans the select, and materializes it as a `Rows` source. Filters of the
+query that reads it may be planned into it (§11.3).
 
 `sqlite_schema`, `sqlite_master`, `sqlite_temp_schema`,
 `sqlite_temp_master` and `sqlite_sequence` are represented as generated
@@ -1039,13 +1040,56 @@ For non-reorderable plans, filters are assigned to the first source level where
 all referenced sources are ready, except right/full joins may require final
 filters.
 
+**Pushing filters into sub-queries.** A view reference or a `FROM` sub-query
+is one `SubqueryPlan` read by one source (`SubqueryPlan::exclusive`; a CTE is
+shared by its references and is left alone). When its select is a single plain
+core -- no aggregate, `DISTINCT`, window, `VALUES`, RIGHT/FULL join, `ORDER
+BY`, `LIMIT`, compound operator or `FOR JSON` -- a filter on its output is the
+same filter on what it reads, and `planFilters` uses that twice:
+
+- `pushIntoSubqueries`, before the outer core's own filters are planned: each
+  outer `WHERE` term (and each `ON` term of an inner join to the source) that
+  reads only columns of the source, literals and parameters, through operators
+  and deterministic functions, with no sub-query, is copied (`retarget`) with
+  every column node pointing at the slot of the inner output it names -- which
+  must itself be a bare column -- and keeping the affinity and collation the
+  outer node had, so the copy compares exactly as the original. The inner
+  core's filters are then planned again (`planFiltersImpl` with `first` false)
+  with the copies among them, which gives its tables their access paths. The
+  source must be the first or an inner-joined one. The copies are handed on to
+  a view inside the view.
+- `pushJoinTerms`, after the outer join order is settled: the join terms
+  between such a source and the sources before it are copied the same way,
+  provided what they read of the other sources lies in frame slots below the
+  sub-query's own (sources written before it), which is how any correlated
+  sub-query sees outer values. If the inner core's access ranks rise, the
+  copies stay and the `SubqueryPlan` becomes `correlated`: it is run once per
+  outer row. If not, the inner filters are planned back as they were and the
+  source is materialized once (and hashed, §13.1). Inner joins, and the `ON`
+  terms of LEFT joins.
+
+The outer terms stay where they are and run on the rows that come back, so the
+copies can only narrow what is materialized.
+
 ### 11.4 Source caching
 
-`markCacheable` marks inner table sources that do not depend on earlier
-sources, outer scopes, volatile functions, correlated sub-queries or
-`RAISE()`. During execution the source is read once and replayed from a
-`RowStore` if it has no more than `kSourceCacheRows = 65536` rows. Larger
-sources fall back to rescanning.
+`markCacheable` marks inner and LEFT-joined table sources whose access path
+does not depend on earlier sources, outer scopes, volatile functions or
+correlated sub-queries. During execution the source is read once and replayed
+from a `RowStore`. The terms that decide whether one of its rows joins -- its
+`ON` terms and, for an inner join, the `WHERE` terms of its level -- are split
+into `localFilters` (they read only this source and are free of outer
+references, volatile calls and `RAISE()`; applied while filling) and
+`joinFilters` (checked per visit). A LEFT join's `WHERE` terms run after the
+match, on the NULL row too.
+
+A cache that serves no hash join holds at most `kSourceCacheRows = 65536`
+rows; one that does may hold `kHashCacheCells` (1 GiB of cells), charged to
+the statement memory limit as it grows. Before filling, the store's entry
+counts (`count`, `countRange`) say whether the source can fit when it has no
+term of its own to thin it. A source that does not fit falls back to
+rescanning. After a top-level run a source frees a cache or hash table larger
+than `scratchRetain` (`releaseSourceScratch`).
 
 ### 11.5 Output names
 
@@ -1077,7 +1121,15 @@ Access planning and source scanning are in
 - `Index`, an index sub-database.
 
 `planAccess` considers comparisons, `IN` lists and `BETWEEN` terms whose value
-side is ready. It tracks affinity and collation per usable term. Candidate key
+side is ready. An `OR` whose leaves are all equalities on one column of the
+source (`c = 1 OR 2 = c`) is taken as the `IN` list of their values
+(`AccessPath::inValues`). `c IN (SELECT ...)` with an uncorrelated one-column
+sub-query is a multi-probe too (`AccessPath::inSelect`) when the column is
+compared as stored and under `BINARY`: `openSource` runs the sub-query, decodes
+the members of its key set and encodes each as a probe -- unless they number
+more than 64 and more than an eighth of the table's entries, in which case it
+reads the table and lets the filter decide. Either way the conjunct stays a
+filter. It tracks affinity and collation per usable term. Candidate key
 parts are the rowid, the declared primary key, or an index's parts. The best
 candidate prefers more pinned equality parts, then range use, then unique full
 matches. Partial indexes are written and enforced but are not used for reads
@@ -1104,6 +1156,13 @@ rowids as appropriate.
 Index scans decode the table storage key by skipping index key parts, then
 fetch the row payload from the table DB. An index entry whose row is missing is
 skipped defensively.
+
+`nextSource` handles a table source with one inlined `loadRow`; the record and
+key decoders live in `encoding.hpp` (`decodeRowUsed`, `decodeKeyFast`) so they
+compile into it, and a window steps forward through `stepEntry`, which is the
+cursor's `next` and one bounds test when the open has no probe list and no
+distinct-prefix skip (`plainStep`). The other source kinds are out of line
+(`nextOther`). A point lookup goes through the source's kept cursor.
 
 `loadRow` decodes the columns the statement reads -- `SourceNode::used`, set
 by `useColumn` wherever name resolution, `*` expansion or `USING` binds a
@@ -1139,7 +1198,12 @@ calls `finishRow` once the row has passed its filters and before descending;
 (`RowSink::rejectKeys`/`rejects`). The invariant is that a row is complete
 whenever anything beyond its own level's filters reads it: the cache fill,
 the right-join remainder, emission and DML all see whole rows. Equality terms
-the access path pins count as columns to decode but not as a reason to split.
+the access path pins, and the range terms its window is bounded by, count as
+columns to decode but not as a reason to split; a first phase that reads no
+stored column decodes nothing (`firstEmpty`). A row that passed every armed
+record test for certain (`testsDecided`) has those filters skipped, and when
+they were all of the level's filters it is decoded whole in one pass
+(`wholeOnPass`).
 Terms with sub-queries, generated columns and index-only reads disable the
 split.
 
@@ -1228,8 +1292,9 @@ to NULL.
 Every recursion checks `Database::interrupt()` through the session's atomic
 flag and raises `ErrorCode::Interrupted` when set.
 
-An inner table source whose rows do not depend on the sources before it is
-read once per execution into `cache` and replayed (`markCacheable`). Its
+An inner or LEFT-joined table source whose rows do not depend on the sources
+before it is read once per execution into `cache` and replayed
+(`markCacheable`, §11.4). Its
 equality terms `inner = outer` -- inner side reading only this source, outer
 side only earlier ones, both deterministic and free of sub-queries and
 DATETIME operands -- become a hash key (`hashInner`/`hashOuter`): rows are
@@ -1238,6 +1303,17 @@ the comparison's affinity and under its collation's key encoding, and each
 outer row visits only the bucket of its own key, in cache order. Every join
 term is still evaluated on each visited row, so the hash can only skip rows
 that cannot match. This is SQLite's automatic index.
+
+The materialized rows of an uncorrelated sub-query, view or CTE source get the
+same table (`SourceNode::hashRows`). It is built the second time one
+materialization is opened (`SubqueryPlan::version` identifies it), so a source
+probed once costs nothing extra, and a correlated one, whose rows are made
+anew at each open, is never hashed. A LEFT join through either kind of table
+emits its NULL row when the bucket holds no match.
+
+The innermost source hands its rows to the projection inside its own loop
+rather than through one more call of `nest` per row; the interrupt flag is
+read there per row.
 
 ### 13.2 Projection and DISTINCT
 
@@ -1316,10 +1392,19 @@ Compound operators are evaluated left to right:
 - `UNION`, `INTERSECT` and `EXCEPT` use encoded row keys in ordered maps/sets
   and rebuild rows in key order.
 
-`sortRows` builds an index vector over a `RowStore`. It uses `partial_sort`
-when a finite `LIMIT + OFFSET` needs only a prefix; otherwise it sorts the
-whole index. Null ordering follows SQLite's default and explicit
-`NULLS FIRST`/`NULLS LAST`; ties keep arrival order, so every sort is stable.
+`sortRows` builds an index vector over a `RowStore`. It encodes each row's
+`ORDER BY` values once into `SelectPlan::sortArena`: per term one byte that
+places NULL (`00` first, `ff` last, `80` for a value), then the value's key
+encoding (§6) under the term's collation, complemented for a descending term.
+Two such strings compare with `memcmp` as `compareSortRows` compares the rows.
+Each `SortEntry` carries the key's first eight bytes as a big-endian integer;
+the comparison looks at the rest of the key only when those agree, then at the
+row's arrival position, so every sort is stable. It uses `partial_sort` when a
+finite `LIMIT + OFFSET` needs only a prefix. Null ordering follows SQLite's
+default and explicit `NULLS FIRST`/`NULLS LAST`. The keys are charged to the
+statement memory limit as they grow and freed after the run when larger than
+`scratchRetain`. The merge of spilled runs and the top-N cutoff still compare
+rows through `compareSortRows`.
 
 Before that, `elideOrder` (planning) drops an `ORDER BY` the access path
 already delivers: a lone table read through Key, Rowid or Index access with no
@@ -1337,7 +1422,12 @@ An `ORDER BY` over one core collects through `SortCollector`:
 - With a finite `LIMIT + OFFSET` = *k*, it prunes to the best *k* rows
   whenever it holds max(2*k*, 1024), and after the first prune rejects a row
   no better than the *k*-th with one comparison (`cannotPlace`; a tie loses
-  to the earlier arrival). Memory is bounded by the limit.
+  to the earlier arrival). Memory is bounded by the limit. When the first
+  term is a stored column of the innermost table source (`decideCutoff`), the
+  collector's *k*-th row is also given to that source as a record test
+  (`SourceNode::cutoff`, re-armed whenever `RowSink::cutoff` reports a new
+  version): a row whose stored integer or real cannot beat it is rejected
+  before it is decoded. Text, NULL and other classes go on to the collector.
 - Without one, it estimates the bytes it holds; past the connection's
   `sortMemory` (64 MiB, `Options::sortMemoryLimit`) it sorts what it has and
   appends it as a run to a `std::tmpfile()` (deleted when closed): per row a
@@ -2079,7 +2169,10 @@ Several data structures are designed to warm up and then stop allocating:
 - `Program::frame` persists on prepared statements and cached batches.
 - `BatchCache` keeps recent one-off texts.
 - `TxnImpl` objects, catalogs and function contexts are pooled.
-- Source caches have a hard row cap (`kSourceCacheRows = 65536`).
+- Source caches have a hard cap (`kSourceCacheRows = 65536` rows, or
+  `kHashCacheCells` when they serve a hash join) and are freed after a run
+  that made them larger than `scratchRetain`, with their hash tables.
+- A sort's encoded keys are freed after a run on the same rule.
 
 Connection counters are atomic because a main handle and reader handles may run
 transactions on different threads. A single `Database` or `Statement` object is

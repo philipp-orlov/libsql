@@ -598,6 +598,79 @@ amalgamation with LTO; the PGO tree compiles it with `-fprofile-use`, no
 profile and no LTO, which makes it 10-20% slower, so its own SQLite figures
 are not used. A plain build is ahead on 23 of the 27, a PGO build on all 27.
 
+That table predates the work listed under "Measured again" below, which changed
+most of the read paths; it stays as the record of the Xeon and of what PGO adds.
+
+### Measured again, 2026-11-16
+
+The same benchmark on a Cortex-X925 (aarch64, 3.9 GHz, GCC 13.3, one pinned
+core), libsql built plain Release without LTO or PGO, median of five:
+
+| workload | libsql | SQLite | libsql / SQLite |
+|---|---:|---:|---:|
+| `INSERT`, 2 indexes, prepared, batches of 1,000 | 1.88 µs | 2.59 µs | 0.73x |
+| the same, one transaction per row | 5.95 µs | 6.78 µs | 0.88x |
+| `INSERT` prepared and run once each | 5.98 µs | 7.73 µs | 0.77x |
+| `SELECT ... WHERE id = ?`, prepared, own transaction | 0.55 µs | 0.99 µs | 0.56x |
+| the same inside one read transaction | 0.27 µs | 0.37 µs | 0.72x |
+| `SELECT ... WHERE id = ?` prepared and run once each | 0.56 µs | 1.89 µs | 0.30x |
+| `SELECT id FROM item WHERE name = ?` | 0.80 µs | 0.96 µs | 0.83x |
+| index equality returning ~200 rows | 21.4 µs | 36.4 µs | 0.59x |
+| rowid range of 100 rows | 4.10 µs | 4.40 µs | 0.93x |
+| index equality, `ORDER BY name LIMIT 10` | 26.3 µs | 40.1 µs | 0.66x |
+| `count(*)` of ~200 rows through an index | 0.72 µs | 3.96 µs | 0.18x |
+| `count(*)` of the whole table | constant | 0.1 ns/row | |
+| full scan with a predicate, per row | 15.8 ns | 22.4 ns | 0.70x |
+| `GROUP BY` over a full scan, per row | 89 ns | 178 ns | 0.50x |
+| `ORDER BY price LIMIT 100` over a full scan, per row | 17.1 ns | 30.8 ns | 0.56x |
+| covering index scan returning 100,000 names, per row | 12.6 ns | 13.4 ns | 0.94x |
+| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 0.9 ns | 1.0 ns | 0.98x |
+| full sort of 200,000 rows, per row | 161 ns | 333 ns | 0.48x |
+| join through an index, ~400 output rows | 147 µs | 155 µs | 0.94x |
+| join with `GROUP BY` over 1,000 items | 526 µs | 616 µs | 0.85x |
+| `UPDATE ... WHERE id = ?`, batches of 1,000 | 1.44 µs | 2.84 µs | 0.51x |
+| `UPDATE` of an indexed column, batches of 1,000 | 3.41 µs | 6.55 µs | 0.52x |
+| `UPDATE ... WHERE id = ?`, one transaction each | 5.80 µs | 4.57 µs | 1.27x |
+| `DELETE` + re-`INSERT` by key, batches of 1,000 | 7.73 µs | 15.3 µs | 0.50x |
+| `prepare` and discard a `SELECT` | 1.11 µs | 1.04 µs | 1.07x |
+| `prepare` and discard a join | 1.43 µs | 2.26 µs | 0.63x |
+| a trivial statement run once | 0.55 µs | 1.49 µs | 0.37x |
+
+Ahead on 25 of the 27; before this round of work the same build on the same
+machine was ahead on 17 (measured on one of its slower Cortex-A725 cores, where
+the ranking is the same). The two it trails on are a single-row autocommit
+`UPDATE`, which is the commit path, and preparing a one-table `SELECT`.
+
+The benchmark's workloads all had a usable plan already. Most of what this
+round changed is plans that had none, which it does not show. On the same
+200,000 items and 400,000 sales, per statement, one pinned Cortex-A725 core
+(about half the speed of the X925 above):
+
+| statement | before | after |
+|---|---:|---:|
+| 2,000 sales `JOIN item ON i.ts = s.ts - k`, no index on `ts` | 36.8 s | 49 ms |
+| 2,000 sales `JOIN (SELECT id, ts FROM item) i ON i.id = s.item_id` | 4.5 s | 33 ms |
+| 2,000 items `LEFT JOIN (SELECT item_id, sum(qty) ... GROUP BY item_id)` | 4.5 s | 113 ms |
+| 300 items `LEFT JOIN sale s ON s.ts = i.ts`, no index on `ts` | 2.7 s | 87 ms |
+| `SELECT name FROM item_v WHERE id = ?` (a view with a `WHERE`) | 15 ms | 3.0 µs |
+| `SELECT qty FROM item_sales WHERE id = ?` (a view of a join) | 202 ms | 1.5 µs |
+| `SELECT s.qty FROM sale s JOIN item_v v ON v.id = s.item_id WHERE s.id = ?` | 11 ms | under 0.2 ms |
+| `SELECT count(*) FROM sale WHERE item_id IN (SELECT id FROM item WHERE cat < 10)` | 50 ms | 0.8 ms |
+| `SELECT id FROM item WHERE cat = 5 OR cat = 7` | 7 ms | 41 µs |
+| `SELECT id, price FROM item ORDER BY price` | 110 ms | 46 ms |
+| `SELECT name FROM item ORDER BY name` | 67 ms | 38 ms |
+| `SELECT id, name FROM item ORDER BY price LIMIT 100` | 13.8 ms | 6.6 ms |
+| `SELECT id FROM item` | 10.5 ms | 7.6 ms |
+| `SELECT * FROM item WHERE id >= ? AND id < ?` (100 rows) | 11.0 µs | 7.9 µs |
+| `SELECT id, name, price FROM item WHERE price < 500` | 15.9 ms | 13.0 ms |
+
+Tried and left out: fetching the rows an index names in batches, asking the
+processor for their pages ahead (the batched key lookup of larger engines). On
+this data it was slower on both kinds of core, and on a 1 GB table at most 14%
+faster on the fast ones; the lookups it adds to find the pages cost about what
+the overlapped cache misses save. Link-time optimization (`SQL_LTO`) is worth a
+few percent on writes and nothing on reads.
+
 What the engine does to get there:
 
 - **Checksums verified once.** libnosql checksums every page; libsql turns on
@@ -627,22 +700,49 @@ What the engine does to get there:
   150,000: 2.2 µs).
 - **Top-N.** `ORDER BY ... LIMIT n` keeps only rows that can still make the
   cut; a row that cannot is dropped after its sort keys are computed, before
-  the rest of it is decoded or copied.
+  the rest of it is decoded or copied. When the first sort term is a stored
+  column, such a row is dropped earlier still: its stored number is compared
+  with the last row kept before anything is decoded.
+- **Sorting compares bytes.** Each row's `ORDER BY` values are encoded once
+  into one string that orders as the rows do -- NULL placement, collation and
+  direction included -- and the sort compares the first eight bytes of two
+  such keys as one integer, looking further only when they agree.
+- **One call per row.** A row read from a table reaches the caller's
+  `Statement::each` callback through one out-of-line call into the scan and
+  one out of it; the record and key decoders are inlined into the scan.
+  `SELECT id FROM t` went from 646 instructions a row to 392.
 - **No sort the key already makes.** An `ORDER BY` of the key parts after the
   pinned ones streams the rows as the window yields them (backward for
   `DESC` over a unique key), and a lone `min()` or `max()` of such a part is
   one seek. isvc's `WHERE record_id = ? ORDER BY slot` over 50 rows of 512-byte
   blobs went from 50 allocations to none through `each`, and its
   `MAX(slot)` from a scan of the record to one row.
-- **Hash joins.** An equality join with no usable index on the inner table
-  reads that table once and buckets it by the join key -- SQLite's automatic
-  index -- instead of re-reading it for every outer row.
+- **Hash joins.** An equality join with no usable index on the inner side
+  reads that side once and buckets it by the join key -- SQLite's automatic
+  index -- instead of re-reading it for every outer row. The inner side may be
+  a table of any size (up to 1 GiB of cached cells; the statement memory limit
+  applies), the rows of a sub-query, view or CTE, and the right side of a
+  `LEFT JOIN`.
+- **Filters go into views.** The terms of a `WHERE` that read only a view or a
+  `FROM` sub-query are applied inside it, so it reads by its own keys and
+  indexes and returns only the rows the outer query keeps; a view joined on a
+  key of its table runs once per outer row with the join term inside it, like
+  a join to the table. This holds for a plain `SELECT ... FROM ... WHERE`; a
+  sub-query with `GROUP BY`, `DISTINCT`, a window, `ORDER BY`, `LIMIT` or a
+  compound operator, and a CTE, are materialized whole as before.
+- **`IN (SELECT ...)` and `OR` probe.** `c IN (SELECT ...)` with an
+  uncorrelated sub-query looks `c` up for each value the sub-query returns
+  instead of reading the table (unless the values number more than an eighth
+  of its rows), and `c = 1 OR c = 2` is planned as `c IN (1, 2)`.
 - **Flat hash tables.** `GROUP BY`, `DISTINCT`, `count(DISTINCT ...)` and
   `IN (SELECT ...)` key sets are open-addressing tables over one byte buffer,
   reused from run to run.
 - **Nearby seeks stay in the leaf.** A source keeps its cursor between opens,
   and a seek that lands in the cursor's current leaf skips the descent from
-  the root.
+  the root. One that misses the leaf but lands under a branch page of the
+  cursor's path starts there instead of at the root (read transactions), which
+  is where the rows an index range names, a join's probes and an `IN` list's
+  values usually land.
 - **Page searches guess first.** A descent knows the separators either side
   of the page it enters, so it guesses the target's slot from them and
   gallops out from the guess. Rowid keys and most index keys land within one
@@ -727,7 +827,8 @@ leaves the plan and the buffers where they were.
 Scratch that outlives a statement is bounded so that one unusual query cannot
 pin memory for the life of the process: a plan's sort buffer, group table and
 DISTINCT/IN key sets are given back after a run that made them larger than the
-connection's `scratchRetain` (see Memory below), a result is pre-sized from the
+connection's `scratchRetain` (see Memory below), as are a join's row cache and
+hash table and a sort's encoded keys, a result is pre-sized from the
 previous run only up to 65,536 rows, the parser's per-thread token buffers are
 kept only up to 4,096 tokens and four at a time, and an `ORDER BY` larger than
 the sort memory goes to a temporary file rather than the heap. A statement's

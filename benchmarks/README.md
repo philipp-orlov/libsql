@@ -2,6 +2,17 @@
 
 Executables, not tests: they print a table. Build with `-DSQL_BUILD_BENCHMARKS=ON` in Release and pin to a core.
 
+## bench_vs_sqlite: the same statements on libsql and SQLite
+
+Built when `SQL_BUILD_CONFORMANCE` is on as well. `./bench_vs_sqlite [--rows N] [--reps R] [--batch B] [--durable]
+[--materialize] [--only group,group] [--match text] [--libsql-only]`. `--only` takes the groups `load`, `insert`,
+`point`, `range`, `scan`, `join`, `update`, `delete` and `prepare`; `--match` runs the workloads whose name contains the
+text; `--libsql-only` leaves SQLite out of the shared-database workloads, so a profile of the run is a profile of
+libsql. The figures and what they mean are in the top-level README, under Performance.
+
+On a machine with two kinds of core, pin to one of the fast ones: the Cortex-A725 cores of the machine the 2026-11-16
+figures came from run this benchmark at about half the speed of its Cortex-X925 cores.
+
 ## bench_bufs: binary results against JSON
 
 `./bench_bufs [rows...]` compares `sql::BufsWriter` (see `include/sql/bufs.hpp`) with `sql::toJson` over a `Result` on
