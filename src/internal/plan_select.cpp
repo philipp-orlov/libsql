@@ -960,6 +960,7 @@ SubqueryPlan* Planner::planView(const View& v, std::size_t store)
     SubqueryPlan* sub = newSubquery(SubqueryPlan::Kind::Rows);
     sub->select = planSelect(*def.select, nullptr, text, sub);
     sub->width = sub->select->columns;
+    sub->exclusive = true;
     if (!def.columns.empty()) {
         if (def.columns.size() != sub->width)
             error("expected " + std::to_string(def.columns.size()) + " columns for '" + v.name +
@@ -990,6 +991,7 @@ void Planner::addSource(FromItem& item, CorePlan& core, Scope& scope)
         SubqueryPlan* sub = newSubquery(SubqueryPlan::Kind::Rows);
         sub->select = planSelect(*item.subquery, scope.parent, scope.text, sub);
         sub->width = sub->select->columns;
+        sub->exclusive = true;
         src.rows = sub;
         src.alias = item.alias;
         src.name = item.alias;
@@ -1574,19 +1576,169 @@ void elideOrder(SelectPlan& sp)
 
 }  // namespace
 
+namespace {
+
+/// May `e`, a term of an outer query over the sub-query source `s` whose
+/// plain core is `inner`, be evaluated inside that sub-query instead: it
+/// reads constants, parameters and columns of `s` that are bare columns
+/// there, through operators and deterministic functions only. `reads` is set
+/// when it reads at least one such column.
+bool pushable(const Expr* e, const SourceNode& s, const CorePlan& inner, bool& reads)
+{
+    if (!e)
+        return true;
+    if (e->sub || e->select || e->window || e->filter || !e->orderBy.empty())
+        return false;
+    switch (e->kind) {
+        case ExprKind::Literal:
+        case ExprKind::Parameter: break;
+        case ExprKind::Column: {
+            if (e->slot < 0 || std::size_t(e->slot) < s.base || std::size_t(e->slot) >= s.base + s.width)
+                return false;
+            const std::size_t k = std::size_t(e->slot) - s.base;
+            if (k >= inner.visible || k >= inner.outputs.size() || inner.outputs[k]->kind != ExprKind::Column ||
+                inner.outputs[k]->slot < 0)
+                return false;
+            reads = true;
+            break;
+        }
+        case ExprKind::Unary:
+        case ExprKind::Binary:
+        case ExprKind::Is:
+        case ExprKind::Between:
+        case ExprKind::InList:
+        case ExprKind::Collate:
+        case ExprKind::Cast:
+        case ExprKind::Case: break;
+        case ExprKind::Like:
+            if (e->fn)
+                return false;  // REGEXP and MATCH call a function the application supplies
+            break;
+        case ExprKind::Function:
+            if (!e->fn || !(e->fn->flags & kDeterministic))
+                return false;
+            break;
+        default: return false;
+    }
+    if (!pushable(e->lhs.get(), s, inner, reads) || !pushable(e->rhs.get(), s, inner, reads) ||
+        !pushable(e->extra.get(), s, inner, reads))
+        return false;
+    for (const ExprPtr& x : e->list) {
+        if (!pushable(x.get(), s, inner, reads))
+            return false;
+    }
+    return true;
+}
+
+/// A copy of `e` (which pushable() passed) that reads the sub-query's own
+/// columns where `e` reads the source's. Each column node keeps what the
+/// outer query knew of it -- affinity, collation -- so the copy compares
+/// exactly as the original does; only the slot it reads changes, to the one
+/// the value is copied out of.
+ExprPtr retarget(const Expr& e, const SourceNode& s, const CorePlan& inner)
+{
+    ExprPtr c = makeExpr(e.kind);
+    c->op = e.op;
+    c->negated = e.negated;
+    c->distinct = e.distinct;
+    c->star = e.star;
+    c->literal = e.literal;
+    c->name = e.name;
+    c->table = e.table;
+    c->schema = e.schema;
+    c->param = e.param;
+    c->begin = e.begin;
+    c->end = e.end;
+    c->height = e.height;
+    c->slot = e.kind == ExprKind::Column ? inner.outputs[std::size_t(e.slot) - s.base]->slot : e.slot;
+    c->fn = e.fn;
+    c->affinity = e.affinity;
+    c->hasAffinity = e.hasAffinity;
+    c->strictDatetime = e.strictDatetime;
+    c->collation = e.collation;
+    c->collationStrength = e.collationStrength;
+    c->escapeChar = e.escapeChar;
+    if (e.lhs)
+        c->lhs = retarget(*e.lhs, s, inner);
+    if (e.rhs)
+        c->rhs = retarget(*e.rhs, s, inner);
+    if (e.extra)
+        c->extra = retarget(*e.extra, s, inner);
+    for (const ExprPtr& x : e.list)
+        c->list.push_back(retarget(*x, s, inner));
+    return c;
+}
+
+}  // namespace
+
+void Planner::pushIntoSubqueries(CorePlan& core, const std::vector<Expr*>& terms)
+{
+    if (core.hasRightJoin)
+        return;
+    for (std::size_t d = 0; d < core.sources.size(); ++d) {
+        SourceNode& s = core.sources[d];
+        // A row the filter drops inside the sub-query must be one the outer
+        // query would drop too: an inner-joined (or first) source only.
+        if (s.kind != SourceNode::Kind::Rows || !s.rows || !s.rows->exclusive || s.rows->correlated ||
+            s.rows->recursive || s.rows->generator || !s.rows->select || (d > 0 && s.join != JoinType::Inner))
+            continue;
+        SelectPlan& isp = *s.rows->select;
+        // Only a plain SELECT ... FROM ... WHERE: there a filter on what it
+        // returns is the same filter on what it reads.
+        if (isp.cores.size() != 1 || !isp.order.empty() || isp.limit || isp.offset || isp.forJson)
+            continue;
+        CorePlan& inner = isp.cores[0];
+        if (inner.aggregate || !inner.windows.empty() || inner.distinct || !inner.values.empty() ||
+            inner.hasRightJoin || inner.sources.empty())
+            continue;
+        std::vector<Expr*> pushed;
+        auto consider = [&](const Expr* t) {
+            bool reads = false;
+            if (!pushable(t, s, inner, reads) || !reads)
+                return;
+            ExprPtr copy = retarget(*t, s, inner);
+            pushed.push_back(copy.get());
+            prog_.owned.push_back(std::move(copy));
+        };
+        for (const Expr* t : terms)
+            consider(t);
+        if (d > 0) {
+            for (const Expr* t : s.onTerms)
+                consider(t);
+        }
+        if (pushed.empty())
+            continue;
+        // A view over a view: what arrived here may go further down.
+        pushIntoSubqueries(inner, pushed);
+        // Plan the sub-query's filters again, with these among them.
+        std::vector<Expr*> all;
+        for (const std::vector<Expr*>& level : inner.levelFilters)
+            all.insert(all.end(), level.begin(), level.end());
+        all.insert(all.end(), inner.finalFilters.begin(), inner.finalFilters.end());
+        all.insert(all.end(), pushed.begin(), pushed.end());
+        inner.levelFilters.clear();
+        inner.finalFilters.clear();
+        planFiltersImpl(inner, std::move(all), false);
+        markCacheable(inner);
+    }
+}
+
 void Planner::planFilters(CorePlan& core, Expr* where)
 {
-    planFiltersImpl(core, where);
+    std::vector<Expr*> whereTerms;
+    conjuncts(where, whereTerms);
+    pushIntoSubqueries(core, whereTerms);
+    planFiltersImpl(core, std::move(whereTerms), true);
     markCacheable(core);
 }
 
-void Planner::planFiltersImpl(CorePlan& core, Expr* where)
+void Planner::planFiltersImpl(CorePlan& core, std::vector<Expr*> whereTerms, bool first)
 {
     const std::size_t n = core.sources.size();
-    for (std::size_t d = 0; d < n; ++d)
-        core.sources[d].written = d;
-    std::vector<Expr*> whereTerms;
-    conjuncts(where, whereTerms);
+    if (first) {
+        for (std::size_t d = 0; d < n; ++d)
+            core.sources[d].written = d;
+    }
 
     ReadySet ready;
     ready.outer = core.slotBegin;

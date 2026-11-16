@@ -292,6 +292,85 @@ TEST(in_with_a_sub_query_probes_with_the_values_it_returns)
     CHECK(after != before);
 }
 
+TEST(a_filter_on_a_view_or_sub_query_is_applied_inside_it)
+{
+    tst::Scratch s("index");
+    Database db = s.open();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, k, code TEXT COLLATE NOCASE, n INTEGER, note TEXT)");
+    db.exec("CREATE INDEX t_k ON t (k)");
+    db.exec("CREATE INDEX t_code ON t (code)");
+    db.exec("CREATE TABLE u (id INTEGER PRIMARY KEY, t_id INTEGER, w)");
+    db.exec("CREATE INDEX u_t ON u (t_id)");
+    db.exec("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 4000) "
+            "INSERT INTO t SELECT i, CASE WHEN i % 19 = 0 THEN NULL WHEN i % 8 = 0 THEN 'k' || (i % 30) "
+            "WHEN i % 5 = 0 THEN '' || (i % 60) ELSE i % 60 END, CASE i % 3 WHEN 0 THEN 'Ab' WHEN 1 THEN 'aB' ELSE 'c' END "
+            "|| (i % 7), i % 11, 'note ' || i FROM c");
+    db.exec("INSERT INTO u SELECT id * 2, id, CASE WHEN id % 4 = 0 THEN NULL ELSE id % 9 END FROM t WHERE id % 3 <> 0");
+    const std::string plain = "SELECT id, k, code, n FROM t WHERE n <> 4";
+    const std::string joined = "SELECT t.id AS id, t.k AS k, u.w AS w, u.id AS uid FROM t JOIN u ON u.t_id = t.id";
+    const std::string outer = "SELECT t.id AS id, t.code AS code, u.w AS w FROM t LEFT JOIN u ON u.t_id = t.id AND u.w > 2";
+    db.exec("CREATE VIEW v_plain AS " + plain);
+    db.exec("CREATE VIEW v_joined AS " + joined);
+    db.exec("CREATE VIEW v_outer AS " + outer);
+    db.exec("CREATE VIEW v_nested AS SELECT id, k, w FROM v_joined WHERE w IS NOT NULL");
+    db.exec("CREATE VIEW v_named (a, b) AS SELECT k, id FROM t");
+    db.exec("CREATE VIEW v_grouped AS SELECT n, count(*) AS c, max(id) AS top FROM t GROUP BY n");
+    // The view named in `sql`, the same select written in FROM, and a CTE of
+    // it -- which is materialized whole and filtered afterwards -- agree.
+    auto same = [&](const std::string& view, const std::string& select, const std::string& rest, bool searches = true) {
+        const std::string viaView = tst::flatten(db.exec("SELECT * FROM " + view + " x " + rest + " ORDER BY 1, 2"));
+        const std::string viaSub = tst::flatten(db.exec("SELECT * FROM (" + select + ") x " + rest + " ORDER BY 1, 2"));
+        const std::string viaCte =
+            tst::flatten(db.exec("WITH q AS (" + select + ") SELECT * FROM q x " + rest + " ORDER BY 1, 2"));
+        CHECK(viaView == viaCte);
+        CHECK(viaSub == viaCte);
+        const std::string plan = tst::flatten(db.exec("EXPLAIN QUERY PLAN SELECT * FROM " + view + " x " + rest));
+        CHECK_EQ(plan.find("SEARCH t") != std::string::npos, searches);
+    };
+    same("v_plain", plain, "WHERE x.id = 77");
+    same("v_plain", plain, "WHERE x.id BETWEEN 100 AND 140 AND x.n < 5");
+    same("v_plain", plain, "WHERE x.k = 12");
+    same("v_plain", plain, "WHERE x.k = '12'");
+    same("v_plain", plain, "WHERE x.k IN (3, '7', 'k10', NULL)");
+    same("v_plain", plain, "WHERE x.code = 'AB3'");
+    same("v_plain", plain, "WHERE x.code = 'AB3' COLLATE BINARY", false);
+    same("v_plain", plain, "WHERE x.k = 12 OR x.k = 15");
+    same("v_plain", plain, "WHERE x.k IS NULL AND x.id < 500");
+    same("v_plain", plain, "WHERE x.id + 0 = 77", false);
+    same("v_joined", joined, "WHERE x.id = 500");
+    same("v_joined", joined, "WHERE x.uid = 1000");
+    same("v_joined", joined, "WHERE x.k = 7 AND x.w IS NULL");
+    same("v_outer", outer, "WHERE x.id = 6");
+    same("v_outer", outer, "WHERE x.id BETWEEN 20 AND 60 AND x.w IS NULL");
+    same("v_outer", outer, "WHERE x.id < 100 AND x.w = 5");
+    same("v_nested", "SELECT id, k, w FROM (" + joined + ") WHERE w IS NOT NULL", "WHERE x.id = 500");
+    same("v_named", "SELECT k AS a, id AS b FROM t", "WHERE x.b = 9");
+    same("v_named", "SELECT k AS a, id AS b FROM t", "WHERE x.a = 9 AND x.b > 1000");
+    // not a plain select: what is filtered is what it returned
+    same("v_grouped", "SELECT n, count(*) AS c, max(id) AS top FROM t GROUP BY n", "WHERE x.n = 3", false);
+    CHECK_EQ(tst::flatten(db.exec("SELECT * FROM (SELECT id FROM t ORDER BY id DESC LIMIT 3) x WHERE x.id < 3999")),
+             std::string("3998"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT * FROM (SELECT DISTINCT n FROM t) x WHERE x.n = 3")), std::string("3"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT * FROM (SELECT id FROM t WHERE id < 3 UNION ALL SELECT id FROM t WHERE id > 3998) x "
+                                  "WHERE x.id > 1 ORDER BY 1")),
+             std::string("2;3999;4000"));
+    // the null-supplying side of an outer join is filtered after the join, not inside
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM u LEFT JOIN v_plain x ON x.id = u.t_id AND x.id = 77 WHERE u.t_id IN (76, 77)")),
+             std::string("2"));
+    CHECK_EQ(tst::flatten(db.exec("SELECT u.t_id, x.id FROM u LEFT JOIN v_plain x ON x.id = u.t_id WHERE u.t_id IN (76, 77) "
+                                  "AND x.id IS NULL")),
+             tst::flatten(db.exec("WITH q AS (" + plain + ") SELECT u.t_id, x.id FROM u LEFT JOIN q x ON x.id = u.t_id "
+                                  "WHERE u.t_id IN (76, 77) AND x.id IS NULL")));
+    // a prepared statement binds the pushed value anew at each run
+    Statement st = db.prepare("SELECT note FROM (SELECT id, note FROM t) WHERE id = ?");
+    st.bind(1, Value(5));
+    CHECK_EQ(tst::only(st.exec()), std::string("note 5"));
+    st.bind(1, Value(3999));
+    CHECK_EQ(tst::only(st.exec()), std::string("note 3999"));
+    st.bind(1, Value("nothing"));
+    CHECK_EQ(st.exec().size(), std::size_t(0));
+}
+
 int main()
 {
     return tst::runAll("index");

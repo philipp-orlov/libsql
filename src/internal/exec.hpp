@@ -201,6 +201,10 @@ struct SubqueryPlan
     Kind kind = Kind::Scalar;
     std::unique_ptr<SelectPlan> select;
     bool correlated = false;
+    /// Rows: read by exactly one source (a view reference or a FROM
+    /// sub-query, not a CTE, which every reference shares), so that source's
+    /// filters may be pushed into it.
+    bool exclusive = false;
     /// Runs with this statement execution's results already cached?
     std::uint64_t cachedRun = 0;
     // Scalar / Exists

@@ -111,7 +111,14 @@ public:
     void planFrom(std::vector<FromItem>& from, CorePlan& core, Scope& scope);
     /// Distributes conjuncts over the sources' levels and plans access paths.
     void planFilters(CorePlan& core, Expr* where);
-    void planFiltersImpl(CorePlan& core, Expr* where);
+    /// `whereTerms` are the WHERE clause's conjuncts; `first` is false when a
+    /// core planned before is planned again with more of them.
+    void planFiltersImpl(CorePlan& core, std::vector<Expr*> whereTerms, bool first);
+    /// Copies the terms of `terms` (and of inner-joined sources' ON clauses)
+    /// that read one view or FROM sub-query and nothing else that changes
+    /// into that sub-query's own WHERE, so it materializes only the rows the
+    /// outer query keeps -- by its own keys and indexes, where they apply.
+    void pushIntoSubqueries(CorePlan& core, const std::vector<Expr*>& terms);
 
 private:
     /// Levels of nested CTEs and views being planned; the planner recurses once per level.
