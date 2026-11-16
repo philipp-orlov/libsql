@@ -5,7 +5,7 @@
 // schema, reported side by side as ns/op.
 //
 //   bench_vs_sqlite [--rows N] [--reps R] [--batch B] [--durable] [--materialize]
-//                   [--only name,name]
+//                   [--only name,name] [--match text] [--libsql-only]
 //
 // Both engines get their fastest honest configuration. libsql: durable(false)
 // unless --durable. SQLite (3.45.1, the conformance oracle, THREADSAFE=0):
@@ -13,7 +13,9 @@
 // 1 GiB mmap, so neither engine reads through a cache the other lacks.
 // Both read every column of every row in place: SQLite with sqlite3_column_*,
 // libsql through Statement::each. --materialize makes libsql build an owned
-// Result per statement instead (the exec() path).
+// Result per statement instead (the exec() path). --libsql-only leaves SQLite
+// out of the shared-database workloads and --match runs only the workloads
+// whose name contains the text (both for profiling).
 
 #include "bench_util.hpp"
 
@@ -504,7 +506,8 @@ int main(int argc, char** argv)
     }
 
     // Everything else runs against one loaded database per engine.
-    for (int x = 0; x < 2; ++x) {
+    const bool libsqlOnly = args.has("--libsql-only");
+    for (int x = 0; x < (libsqlOnly ? 1 : 2); ++x) {
         Engine& e = *engines[x];
         const std::filesystem::path p = scratch.file(std::string("main-") + tags[x] + ".db");
         e.open(p, c.durable);
@@ -681,9 +684,12 @@ int main(int argc, char** argv)
     }
 
     int wins = 0;
+    const std::string match = args.get("--match", "");
     for (const Workload& w : ws) {
+        if (!match.empty() && w.name.find(match) == std::string::npos)
+            continue;
         const double a = measure(libsql, w, c.reps);
-        const double b = measure(sqlite, w, c.reps);
+        const double b = libsqlOnly ? 0.0 : measure(sqlite, w, c.reps);
         wins += a <= b;
         report(w, a, b);
     }
