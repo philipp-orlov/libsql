@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 
 #include "internal/encoding.hpp"
@@ -81,7 +82,9 @@ struct ColumnTerms
 {
     Bound equal, low, high;
     const Expr* inList = nullptr;
+    std::vector<const Expr*> inValues;
     Affinity inAffinity = Affinity::Blob;
+    const Expr* inSelect = nullptr;
 };
 
 /// Collation and direction of the key part a column occupies.
@@ -127,10 +130,52 @@ void planAccess(SourceNode& s, const std::vector<Expr*>& conjuncts, const ReadyS
         const Expr* inList;
         const Expr* between;
         const Expr* conj;
+        /// inList: each `column = value` it stands for, with the collation of that comparison.
+        struct Leaf
+        {
+            const Expr* col;
+            const Expr* value;
+            Collation coll;
+        };
+        std::vector<Leaf> leaves;
+        const Expr* inSelect = nullptr;
     };
     std::vector<Term> terms;
+    auto ownColumn = [&](const Expr* e) {
+        return e->kind == ExprKind::Column && std::size_t(e->slot) >= s.base && std::size_t(e->slot) < s.base + width;
+    };
+    // The leaves of an OR that is nothing but equalities on one column of this
+    // source: `c = 1 OR c = 2 OR 3 = c` selects what `c IN (1, 2, 3)` does.
+    std::function<bool(const Expr*, Term&)> orLeaves = [&](const Expr* e, Term& out) {
+        if (e->kind == ExprKind::Binary && BinaryOp(e->op) == BinaryOp::Or)
+            return orLeaves(e->lhs.get(), out) && orLeaves(e->rhs.get(), out);
+        if (e->kind != ExprKind::Binary || BinaryOp(e->op) != BinaryOp::Eq)
+            return false;
+        const Expr* col = e->lhs.get();
+        const Expr* val = e->rhs.get();
+        if (!ownColumn(col))
+            std::swap(col, val);
+        if (!ownColumn(col) || val->kind == ExprKind::RowValue || !ready(val, readyBelow))
+            return false;
+        const int column = int(std::size_t(col->slot) - s.base);
+        if (!out.leaves.empty() && out.column != column)
+            return false;
+        out.column = column;
+        out.colExpr = col;
+        out.leaves.push_back({col, val, e->collation});
+        return true;
+    };
     for (const Expr* c : conjuncts) {
-        if (c->kind == ExprKind::Binary) {
+        if (c->kind == ExprKind::Binary && BinaryOp(c->op) == BinaryOp::Or) {
+            Term term{-1, BinaryOp::Eq, nullptr, nullptr, Collation::Binary, c, nullptr, c, {}, nullptr};
+            if (orLeaves(c, term))
+                terms.push_back(std::move(term));
+        } else if (c->kind == ExprKind::InSelect && !c->negated && c->sub && !c->sub->correlated &&
+                   c->sub->width == 1 && c->sub->keyAffinity.size() == 1 && ownColumn(c->lhs.get())) {
+            const Expr* col = c->lhs.get();
+            terms.push_back({int(std::size_t(col->slot) - s.base), BinaryOp::Eq, col, nullptr, Collation::Binary,
+                             nullptr, nullptr, c, {}, c});
+        } else if (c->kind == ExprKind::Binary) {
             BinaryOp op = BinaryOp(c->op);
             if (op != BinaryOp::Eq && op != BinaryOp::Lt && op != BinaryOp::Le && op != BinaryOp::Gt &&
                 op != BinaryOp::Ge)
@@ -147,7 +192,7 @@ void planAccess(SourceNode& s, const std::vector<Expr*>& conjuncts, const ReadyS
                 continue;
             if (val->kind == ExprKind::RowValue || !ready(val, readyBelow))
                 continue;
-            terms.push_back({int(std::size_t(col->slot) - s.base), op, col, val, c->collation, nullptr, nullptr, c});
+            terms.push_back({int(std::size_t(col->slot) - s.base), op, col, val, c->collation, nullptr, nullptr, c, {}, nullptr});
         } else if (c->kind == ExprKind::InList && !c->negated) {
             const Expr* col = c->lhs.get();
             if (col->kind != ExprKind::Column || std::size_t(col->slot) < s.base ||
@@ -158,8 +203,11 @@ void planAccess(SourceNode& s, const std::vector<Expr*>& conjuncts, const ReadyS
                 ok = ok && ready(x.get(), readyBelow) && x->kind != ExprKind::RowValue;
             if (!ok)
                 continue;
-            terms.push_back({int(std::size_t(col->slot) - s.base), BinaryOp::Eq, col, nullptr,
-                             col->collationStrength ? col->collation : Collation::Binary, c, nullptr, c});
+            Term term{int(std::size_t(col->slot) - s.base), BinaryOp::Eq, col, nullptr,
+                      col->collationStrength ? col->collation : Collation::Binary, c, nullptr, c, {}, nullptr};
+            for (const ExprPtr& x : c->list)
+                term.leaves.push_back({col, x.get(), comparisonCollation(*col, *x)});
+            terms.push_back(std::move(term));
         } else if (c->kind == ExprKind::Between && !c->negated) {
             const Expr* col = c->lhs.get();
             if (col->kind != ExprKind::Column || std::size_t(col->slot) < s.base ||
@@ -168,9 +216,9 @@ void planAccess(SourceNode& s, const std::vector<Expr*>& conjuncts, const ReadyS
             if (!ready(c->list[0].get(), readyBelow) || !ready(c->list[1].get(), readyBelow))
                 continue;
             terms.push_back({int(std::size_t(col->slot) - s.base), BinaryOp::Ge, col, c->list[0].get(),
-                             comparisonCollation(*col, *c->list[0]), nullptr, c, c});
+                             comparisonCollation(*col, *c->list[0]), nullptr, c, c, {}, nullptr});
             terms.push_back({int(std::size_t(col->slot) - s.base), BinaryOp::Le, col, c->list[1].get(),
-                             comparisonCollation(*col, *c->list[1]), nullptr, c, c});
+                             comparisonCollation(*col, *c->list[1]), nullptr, c, c, {}, nullptr});
         }
     }
     if (terms.empty())
@@ -185,23 +233,37 @@ void planAccess(SourceNode& s, const std::vector<Expr*>& conjuncts, const ReadyS
         for (const Term& tm : terms) {
             if (norm(tm.column) != column)
                 continue;
-            if (tm.inList) {
-                if (ct.equal.value || ct.inList)
+            if (tm.inSelect) {
+                // The column is compared as it is stored, under BINARY, with
+                // values the sub-query's key set already holds converted.
+                const SubqueryPlan& sub = *tm.inSelect->sub;
+                if (ct.equal.value || ct.inList || ct.inSelect || tm.colExpr->strictDatetime ||
+                    sub.keyAffinity[0] != Affinity::Blob || sub.keyCollation.size() != 1 ||
+                    sub.keyCollation[0] != Collation::Binary || (!anyCollation && coll != Collation::Binary))
                     continue;
-                // Every list value must be usable the same way.
+                ct.inSelect = tm.inSelect;
+                continue;
+            }
+            if (tm.inList) {
+                if (ct.equal.value || ct.inList || ct.inSelect)
+                    continue;
+                // Every value must be usable the same way.
                 Affinity a = Affinity::Blob;
                 bool ok = true;
                 bool first = true;
-                for (const ExprPtr& x : tm.inList->list) {
+                for (const Term::Leaf& leaf : tm.leaves) {
                     Affinity xa = Affinity::Blob;
-                    const Collation cmp = comparisonCollation(*tm.colExpr, *x);
-                    if (!usable(*tm.colExpr, *x, cmp, anyCollation ? cmp : coll, xa) || (!first && xa != a))
+                    if (!usable(*leaf.col, *leaf.value, leaf.coll, anyCollation ? leaf.coll : coll, xa) ||
+                        (!first && xa != a))
                         ok = false;
                     a = xa;
                     first = false;
                 }
                 if (ok) {
                     ct.inList = tm.inList;
+                    ct.inValues.clear();
+                    for (const Term::Leaf& leaf : tm.leaves)
+                        ct.inValues.push_back(leaf.value);
                     ct.inAffinity = a;
                 }
                 continue;
@@ -249,7 +311,7 @@ void planAccess(SourceNode& s, const std::vector<Expr*>& conjuncts, const ReadyS
                 ++cand.pinned;
                 continue;
             }
-            if (ct.inList && !cand.in) {
+            if ((ct.inList || ct.inSelect) && !cand.in) {
                 cand.chosen.push_back(ct);
                 cand.in = true;
                 ++cand.pinned;
@@ -305,9 +367,11 @@ void planAccess(SourceNode& s, const std::vector<Expr*>& conjuncts, const ReadyS
             ap.equals.push_back(ct.equal.value);
             ap.equalAffinity.push_back(ct.equal.affinity);
             ap.equalTerms.push_back(ct.equal.term);
-        } else if (ct.inList) {
+        } else if (ct.inList || ct.inSelect) {
             ap.inList = ct.inList;
+            ap.inValues = ct.inValues;
             ap.inAffinity = ct.inAffinity;
+            ap.inSelect = ct.inSelect;
             // An IN pins this part; further parts may still be pinned, but
             // keep it simple: the IN is the last pinned part.
             break;
@@ -338,7 +402,7 @@ int accessRank(const SourceNode& s) noexcept
                               : ap.kind == AccessPath::Kind::Rowid ? 1
                               : ap.kind == AccessPath::Kind::Key   ? s.table->primaryKey.size()
                                                                    : 0;
-    const std::size_t pinned = ap.equals.size() + (ap.inList ? 1 : 0);
+    const std::size_t pinned = ap.equals.size() + (ap.inList || ap.inSelect ? 1 : 0);
     switch (ap.kind) {
         case AccessPath::Kind::Scan: return 0;
         case AccessPath::Kind::Rowid:
@@ -1213,14 +1277,39 @@ void openSource(SourceNode& s, Ctx& c)
     for (const Expr* t : ap.equalTerms)
         s.enforced.push_back(t);
     const std::size_t pinned = ap.equals.size();
-    if (ap.inList) {
+    if (ap.inList || ap.inSelect) {
         const PartInfo p = partAt(s, pinned);
         const bool rowid = ap.kind == AccessPath::Kind::Rowid;
-        for (const ExprPtr& item : ap.inList->list) {
-            std::string key = ap.prefix;
-            bool nm = false;
-            if (encodePart(eval(*item, c), ap.inAffinity, rowid, p.collation, p.desc, key, 0, nm))
-                s.probes.push_back(std::move(key));
+        if (ap.inSelect) {
+            SubqueryPlan& sub = *ap.inSelect->sub;
+            runSubquery(sub, c);
+            // A probe costs several rows' worth of scanning: with keys for a
+            // good part of the table, read the table and let the filter decide.
+            const std::size_t keys = sub.keys.size();
+            if (keys > 64 && std::uint64_t(keys) * 8 > db.count()) {
+                s.cursor = cat.rows(*s.table).cursor();
+                ap.lo.clear();
+                ap.hi.clear();
+                s.enforced.clear();
+                s.rowIndex = std::size_t(-1);  // marks "scan the table instead"
+                return;
+            }
+            Value v;
+            for (std::size_t i = 0; i < keys; ++i) {
+                std::string_view encoded = sub.keys.key(std::uint32_t(i));
+                decodeKeyInto(encoded, v);
+                std::string key = ap.prefix;
+                bool nm = false;
+                if (encodePart(v, Affinity::Blob, rowid, p.collation, p.desc, key, 0, nm))
+                    s.probes.push_back(std::move(key));
+            }
+        } else {
+            for (const Expr* item : ap.inValues) {
+                std::string key = ap.prefix;
+                bool nm = false;
+                if (encodePart(eval(*item, c), ap.inAffinity, rowid, p.collation, p.desc, key, 0, nm))
+                    s.probes.push_back(std::move(key));
+            }
         }
         std::sort(s.probes.begin(), s.probes.end());
         s.probes.erase(std::unique(s.probes.begin(), s.probes.end()), s.probes.end());

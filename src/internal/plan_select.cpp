@@ -1392,7 +1392,7 @@ void markCacheable(CorePlan& core)
                 // Outer-scope slots change between runs of a correlated query.
                 return selfContained(core, e, false);
             };
-            bool ok = constant(ap.low) && constant(ap.high) && constant(ap.inList);
+            bool ok = constant(ap.low) && constant(ap.high) && constant(ap.inList) && !ap.inSelect;
             for (const Expr* e : ap.equals)
                 ok = ok && constant(e);
             if (!ok)
@@ -1520,7 +1520,7 @@ SourceNode* windowedSource(CorePlan& p)
     if (p.sources.size() != 1 || p.sources[0].kind != SourceNode::Kind::Table)
         return nullptr;
     SourceNode& s = p.sources[0];
-    if (s.access.kind == AccessPath::Kind::Scan || s.access.inList || !s.onTerms.empty())
+    if (s.access.kind == AccessPath::Kind::Scan || s.access.inList || s.access.inSelect || !s.onTerms.empty())
         return nullptr;
     return &s;
 }

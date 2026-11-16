@@ -248,9 +248,16 @@ struct AccessPath
     std::vector<const Expr*> equals;
     /// Per pinned part: affinity applied to the value before encoding.
     std::vector<Affinity> equalAffinity;
-    /// Multi-probe: the last pinned part takes each value of this IN list.
+    /// Multi-probe: the last pinned part takes each of `inValues` in turn.
+    /// `inList` is the conjunct they came from: an IN list, or an OR of
+    /// equalities on the one column (`c = 1 OR c = 2`).
     const Expr* inList = nullptr;
+    std::vector<const Expr*> inValues;
     Affinity inAffinity = Affinity::Blob;
+    /// Multi-probe by `c IN (SELECT ...)`, the sub-query uncorrelated: the
+    /// last pinned part takes each value the sub-query returns, unless there
+    /// are so many that reading the whole table is cheaper.
+    const Expr* inSelect = nullptr;
     const Expr* low = nullptr;
     const Expr* high = nullptr;
     bool lowStrict = false, highStrict = false;  ///< > and < rather than >= and <=

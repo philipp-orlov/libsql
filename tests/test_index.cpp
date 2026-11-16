@@ -212,6 +212,86 @@ TEST(keyOrderNeedsNoSort)
     CHECK_EQ(tst::only(db.exec("SELECT MAX(k) FROM r WHERE k < 2")), std::string("1"));
 }
 
+namespace {
+
+/// The statement with its table read as written and with `NOT INDEXED`
+/// after the table name `t`: the same rows, by probes and by a scan.
+void probedAsScanned(Database& db, const std::string& sql, bool expectSearch = true)
+{
+    std::string scan = sql;
+    const std::size_t at = scan.find(" t ");
+    CHECK(at != std::string::npos);
+    scan.insert(at + 2, " NOT INDEXED");
+    const std::string a = tst::flatten(db.exec(sql + " ORDER BY 1, 2"));
+    const std::string b = tst::flatten(db.exec(scan + " ORDER BY 1, 2"));
+    CHECK(a == b);
+    const std::string plan = tst::flatten(db.exec("EXPLAIN QUERY PLAN " + sql));
+    CHECK_EQ(plan.find("SEARCH t") != std::string::npos, expectSearch);
+}
+
+}  // namespace
+
+TEST(an_or_of_equalities_on_one_column_probes_like_an_in_list)
+{
+    tst::Scratch s("index");
+    Database db = s.open();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, k, name TEXT COLLATE NOCASE, n INTEGER)");
+    db.exec("CREATE INDEX t_k ON t (k)");
+    db.exec("CREATE INDEX t_name_n ON t (name, n)");
+    db.exec("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 3000) "
+            "INSERT INTO t SELECT i, CASE WHEN i % 13 = 0 THEN NULL WHEN i % 7 = 0 THEN 'k' || (i % 5) "
+            "WHEN i % 5 = 0 THEN (i % 40) + 0.5 ELSE i % 40 END, CASE i % 3 WHEN 0 THEN 'Ada' WHEN 1 THEN 'ada' "
+            "ELSE 'Bo' || (i % 4) END, i % 9 FROM c");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k = 3 OR k = 17");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k = 3 OR 17 = k OR k = 3.0 OR k = 'k2' OR k = NULL OR k = 10.5");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE (k = 3 OR k = 4) AND n > 2");
+    probedAsScanned(db, "SELECT id, n FROM t WHERE id = 5 OR id = 2999 OR id = 5000 OR id = 7.0");
+    probedAsScanned(db, "SELECT id, n FROM t WHERE name = 'ADA' AND (n = 1 OR n = 4)");
+    probedAsScanned(db, "SELECT id, n FROM t WHERE name = 'ada' OR name = 'bo1'");
+    // not one column, or not only equalities: every row is read, and the answer is the same
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k = 3 OR n = 4", false);
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k = 3 OR k > 38", false);
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM t WHERE k = ?1 OR k = ?2", {Value(3), Value("k2")})),
+             tst::only(db.exec("SELECT count(*) FROM t NOT INDEXED WHERE k = 3 OR k = 'k2'")));
+}
+
+TEST(in_with_a_sub_query_probes_with_the_values_it_returns)
+{
+    tst::Scratch s("index");
+    Database db = s.open();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, k, grp INTEGER, label TEXT)");
+    db.exec("CREATE INDEX t_k ON t (k)");
+    db.exec("CREATE INDEX t_grp_k ON t (grp, k)");
+    db.exec("CREATE TABLE pick (v, w INTEGER)");
+    db.exec("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 6000) "
+            "INSERT INTO t SELECT i, CASE WHEN i % 17 = 0 THEN NULL WHEN i % 6 = 0 THEN 'k' || (i % 50) "
+            "ELSE i % 500 END, i % 4, 'row ' || i FROM c");
+    db.exec("INSERT INTO pick VALUES (7, 1), (7, 1), (499, 1), ('k12', 1), (NULL, 1), (12.0, 2), ('7', 2), (900, 2), (x'07', 2)");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k IN (SELECT v FROM pick WHERE w = 1)");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k IN (SELECT v FROM pick)");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE id IN (SELECT v FROM pick)");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE id IN (SELECT v * 10 FROM pick WHERE w = 1) AND grp <> 2");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE grp = 3 AND k IN (SELECT v FROM pick)");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k IN (SELECT v FROM pick WHERE w = 99)");
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k IN (SELECT v FROM pick WHERE w = 1) OR id = 3", false);
+    // NOT IN, and a sub-query that depends on the row, select nothing by probing
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k NOT IN (SELECT v FROM pick WHERE v IS NOT NULL) AND id < 50", true);
+    probedAsScanned(db, "SELECT id, k FROM t WHERE k IN (SELECT v FROM pick WHERE w = t.grp) AND id < 900", true);
+    // more keys than probing is worth: the table is read instead, to the same answer
+    db.exec("CREATE TABLE many (v INTEGER)");
+    db.exec("INSERT INTO many SELECT id FROM t WHERE id % 3 <> 0");
+    probedAsScanned(db, "SELECT id, grp FROM t WHERE id IN (SELECT v FROM many)");
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM t WHERE id IN (SELECT v FROM many)")), std::string("4000"));
+    // a prepared statement sees the sub-query's rows as they are at each run
+    Statement st = db.prepare("SELECT count(*) FROM t WHERE k IN (SELECT v FROM pick WHERE w = ?)");
+    st.bind(1, Value(1));
+    const std::string before = tst::only(st.exec());
+    db.exec("INSERT INTO pick VALUES (123, 1)");
+    const std::string after = tst::only(st.exec());
+    CHECK_EQ(std::stoi(after) - std::stoi(before), std::stoi(tst::only(db.exec("SELECT count(*) FROM t NOT INDEXED WHERE k = 123"))));
+    CHECK(after != before);
+}
+
 int main()
 {
     return tst::runAll("index");

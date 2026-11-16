@@ -56,7 +56,7 @@ public:
         std::size_t k = 0;
         for (; k < ap.equals.size() && k < cols.size(); ++k)
             terms.push_back(colName(cols[k]) + "=?");
-        if (ap.inList && k < cols.size())
+        if ((ap.inList || ap.inSelect) && k < cols.size())
             terms.push_back(colName(cols[k]) + "=?");
         else if ((ap.low || ap.high) && k < cols.size()) {
             if (ap.low)
