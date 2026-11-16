@@ -150,6 +150,9 @@ TEST(storage_check_finds_a_damaged_page)
         CHECK_EQ(tst::only(db.exec("SELECT result FROM pragma_storage_check()")), std::string("ok"));
         victim = db.exec("SELECT first FROM pragma_storage_map() WHERE kind = 'leaf' AND tree = "
                          "(SELECT id FROM pragma_storage_trees() WHERE object = 'orders') ORDER BY first LIMIT 1")[0][0].toInteger();
+        // The store opens on the commit before the newest one when a page the newest wrote is
+        // damaged (sealed commits), so the victim must be a page of an older commit.
+        db.exec("INSERT INTO tags VALUES ('c', 3)");
     }
     {
         std::FILE* f = std::fopen(s.file().string().c_str(), "r+b");
