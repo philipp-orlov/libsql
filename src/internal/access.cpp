@@ -1235,6 +1235,27 @@ void closeSource(SourceNode& s)
     }
 }
 
+void releaseSourceScratch(SourceNode& s, std::size_t retainBytes)
+{
+    const std::size_t hashBytes =
+        s.hashKeys.memory() +
+        (s.hashFirst.capacity() + s.hashLast.capacity() + s.hashNext.capacity()) * sizeof(std::uint32_t);
+    if (s.cache.capacityBytes() <= retainBytes && hashBytes <= retainBytes)
+        return;
+    // The cache and the table over it go together; both are rebuilt by the next run.
+    s.cache.releaseAbove(retainBytes / sizeof(Value));
+    s.cachedRun = 0;
+    s.hashKeys.releaseAbove(retainBytes);
+    s.hashKeys.clear();
+    if (hashBytes > retainBytes) {
+        std::vector<std::uint32_t>().swap(s.hashFirst);
+        std::vector<std::uint32_t>().swap(s.hashLast);
+        std::vector<std::uint32_t>().swap(s.hashNext);
+    }
+    s.hashStamp = 0;
+    s.seenStamp = 0;
+}
+
 void nullSource(SourceNode& s, Ctx& c)
 {
     s.restPending = false;

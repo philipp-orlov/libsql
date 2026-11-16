@@ -104,6 +104,7 @@ public:
         }
     }
     /// Gives memory back after an unusually large run.
+    std::size_t capacityBytes() const noexcept { return cells_.capacity() * sizeof(Value); }
     void shrink()
     {
         if (cells_.capacity() > (rows_ * width_) * 4 + 1024) {
@@ -206,6 +207,9 @@ struct SubqueryPlan
     std::size_t width = 1;
     // Rows
     RowStore rows;
+    /// Counts the times `rows` has been refilled, so what a source derived
+    /// from them (a join's hash table) knows whether it still describes them.
+    std::uint64_t version = 0;
     /// Rows produced by code rather than a select (schema tables, pragmas).
     std::function<void(Ctx&, RowStore&)> generator;
     // Recursive CTE: `select` is the initial part, `recursive` the rest.
@@ -371,18 +375,26 @@ struct SourceNode
     // runtime state for RIGHT/FULL joins
     std::unordered_set<std::string> matchedKeys;
 
-    /// An inner source whose rows do not depend on the sources before it is
-    /// read once per execution and replayed from memory (SQLite's automatic
-    /// materialization). `localFilters` are the terms that read only this
-    /// source; they are applied while filling.
+    /// An inner or LEFT-joined table whose rows do not depend on the sources
+    /// before it is read once per execution and replayed from memory
+    /// (SQLite's automatic materialization). The terms that decide whether a
+    /// row joins -- its ON terms and, for an inner join, the WHERE terms of
+    /// its level -- are split: `localFilters` read only this source and are
+    /// applied while filling, `joinFilters` are the rest, checked per visit.
     bool cacheable = false;
     std::vector<Expr*> localFilters;
-    std::vector<Expr*> joinFilters;  ///< the rest of this level's terms
+    std::vector<Expr*> joinFilters;
+    /// A sub-query, view or CTE source (its rows are materialized already)
+    /// that the hash below can serve. The table is built the second time one
+    /// materialization is opened, so a single probe costs nothing extra;
+    /// `hashStamp` is the SubqueryPlan::version it was built over.
+    bool hashRows = false;
+    std::uint64_t hashStamp = 0, seenStamp = 0;
     RowStore cache;
     std::uint64_t cachedRun = 0;
     std::size_t cachePos = 0;
     bool replaying = false;
-    /// Hash join over the cache (SQLite's automatic index): join terms
+    /// Hash join over the cache or the materialized rows (SQLite's automatic index): join terms
     /// `inner = outer` whose inner side reads only this source and whose
     /// outer side reads only sources placed before it. Cached rows are
     /// bucketed by the inner sides' key when filled, so each outer row visits
@@ -420,6 +432,11 @@ inline void useAllColumns(SourceNode& s, std::size_t columns)
 
 /// Rows beyond which a source is not cached but scanned each time.
 inline constexpr std::size_t kSourceCacheRows = 65536;
+/// A cached source that serves a hash join may grow to this many cells: past
+/// kSourceCacheRows the alternative is to scan the whole table once per outer
+/// row, which no amount of memory saved makes worthwhile. The statement memory
+/// limit applies as the cache grows.
+inline constexpr std::size_t kHashCacheCells = (std::size_t(1) << 30) / sizeof(Value);
 
 // -------------------------------------------------------------- select ---
 
@@ -603,6 +620,10 @@ void decideRecordTests(SourceNode& s, const std::vector<Expr*>& filters);
 void armRecordTests(SourceNode& s, const Ctx& c, const std::vector<Expr*>& filters);
 bool nextSource(SourceNode& s, Ctx& c);
 void closeSource(SourceNode& s);
+/// After a run: frees the row cache and hash table of a source when they hold
+/// more than `retainBytes`, so one large join does not pin its memory for the
+/// life of a prepared statement.
+void releaseSourceScratch(SourceNode& s, std::size_t retainBytes);
 /// Decodes the columns a two-phase row deferred (no-op when none are).
 void finishRow(SourceNode& s, Ctx& c);
 /// Before the first row of an open table source: passes over up to `n`

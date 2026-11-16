@@ -919,15 +919,17 @@ struct FrameGuard
 struct CursorGuard
 {
     Program& p;
+    std::size_t retain;  ///< bytes of join scratch a source keeps for its next run
     ~CursorGuard()
     {
-        auto release = [](SelectPlan* sp) {
+        auto release = [this](SelectPlan* sp) {
             if (!sp)
                 return;
             for (CorePlan& core : sp->cores) {
                 for (SourceNode& s : core.sources) {
                     if (s.kind == SourceNode::Kind::Table)
                         closeSource(s);
+                    releaseSourceScratch(s, retain);
                 }
             }
         };
@@ -943,7 +945,7 @@ struct CursorGuard
 
 void runProgram(Program& p, Session& s, const std::vector<Value>& params, ResultBuilder& out, FuncContext& fctx)
 {
-    CursorGuard cursors{p};
+    CursorGuard cursors{p, std::size_t(s.conn->scratchRetain.load(std::memory_order_relaxed))};
     if (p.frame.size() < p.frameSize)
         p.frame.resize(p.frameSize);
     Ctx c;

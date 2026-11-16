@@ -1299,125 +1299,126 @@ bool reorderable(const CorePlan& core)
 
 namespace {
 
-/// Marks inner table sources whose rows do not depend on earlier sources.
+/// `e` reads no slot of an enclosing query, calls nothing volatile and holds
+/// no correlated sub-query (nor, with `noRaise`, a RAISE): its value depends
+/// only on the sources of this core it reads.
+bool selfContained(const CorePlan& core, const Expr* e, bool noRaise)
+{
+    if (!e)
+        return true;
+    if ((e->kind == ExprKind::Column || e->kind == ExprKind::Slot) && std::size_t(e->slot) < core.slotBegin)
+        return false;
+    if (e->kind == ExprKind::Function && e->fn && !(e->fn->flags & kDeterministic))
+        return false;
+    if (e->sub && e->sub->correlated)
+        return false;
+    if (noRaise && e->kind == ExprKind::Raise)
+        return false;
+    if (!selfContained(core, e->lhs.get(), noRaise) || !selfContained(core, e->rhs.get(), noRaise) ||
+        !selfContained(core, e->extra.get(), noRaise))
+        return false;
+    for (const ExprPtr& y : e->list) {
+        if (!selfContained(core, y.get(), noRaise))
+            return false;
+    }
+    return true;
+}
+
+/// Usable as one side of a hash-join key: deterministic, no sub-query, no
+/// enclosing-query slot, so evaluating it once per row it belongs to changes
+/// nothing.
+bool plainKeySide(const CorePlan& core, const Expr* x)
+{
+    if (!x)
+        return true;
+    if (x->sub || x->select || x->kind == ExprKind::Raise || x->kind == ExprKind::RowValue ||
+        (x->kind == ExprKind::Function && (!x->fn || !(x->fn->flags & kDeterministic))) ||
+        ((x->kind == ExprKind::Column || x->kind == ExprKind::Slot) && std::size_t(x->slot) < core.slotBegin))
+        return false;
+    if (!plainKeySide(core, x->lhs.get()) || !plainKeySide(core, x->rhs.get()) || !plainKeySide(core, x->extra.get()))
+        return false;
+    for (const ExprPtr& z : x->list) {
+        if (!plainKeySide(core, z.get()))
+            return false;
+    }
+    return true;
+}
+
+/// Decides, for each source after the first, whether its rows can be read
+/// once per execution and replayed (a table whose access path does not depend
+/// on earlier sources), and which equality terms between it and earlier
+/// sources can key a hash over those rows -- or over the materialized rows of
+/// a sub-query, view or CTE -- so each outer row visits only its matches.
+/// Inner and LEFT joins; RIGHT and FULL keep the plain loop.
 void markCacheable(CorePlan& core)
 {
     const std::size_t n = core.sources.size();
-    ReadySet constantsOnly;
-    constantsOnly.outer = 0;
     for (std::size_t d = 1; d < n; ++d) {
         SourceNode& s = core.sources[d];
         s.cacheable = false;
+        s.hashRows = false;
         s.localFilters.clear();
         s.joinFilters.clear();
-        if (s.kind != SourceNode::Kind::Table || s.join != JoinType::Inner || !s.onTerms.empty())
-            continue;
-        const AccessPath& ap = s.access;
-        auto constant = [&](const Expr* e) {
-            if (!e)
-                return true;
-            std::vector<bool> r(n, false);
-            bool all = false;
-            sourcesRead(core, e, r, all);
-            if (all)
-                return false;
-            for (bool b : r) {
-                if (b)
-                    return false;
-            }
-            // Outer-scope slots change between runs of a correlated query.
-            bool outer = false;
-            std::function<void(const Expr*)> walk = [&](const Expr* x) {
-                if (!x)
-                    return;
-                if ((x->kind == ExprKind::Column || x->kind == ExprKind::Slot) &&
-                    std::size_t(x->slot) < core.slotBegin)
-                    outer = true;
-                if (x->kind == ExprKind::Function && x->fn && !(x->fn->flags & kDeterministic))
-                    outer = true;
-                if (x->sub && x->sub->correlated)
-                    outer = true;
-                walk(x->lhs.get());
-                walk(x->rhs.get());
-                walk(x->extra.get());
-                for (const ExprPtr& y : x->list)
-                    walk(y.get());
-            };
-            walk(e);
-            return !outer;
-        };
-        bool ok = constant(ap.low) && constant(ap.high) && constant(ap.inList);
-        for (const Expr* e : ap.equals)
-            ok = ok && constant(e);
-        if (!ok)
-            continue;
-        for (Expr* t : core.levelFilters[d]) {
-            std::vector<bool> r(n, false);
-            bool all = false;
-            sourcesRead(core, t, r, all);
-            bool local = !all;
-            for (std::size_t o = 0; o < n && local; ++o)
-                local = o == d || !r[o];
-            // Local and free of outer references and volatile calls.
-            if (local) {
-                std::vector<bool> none(n, false);
-                (void)none;
-                bool outerFree = true;
-                std::function<void(const Expr*)> walk = [&](const Expr* x) {
-                    if (!x)
-                        return;
-                    if ((x->kind == ExprKind::Column || x->kind == ExprKind::Slot) &&
-                        std::size_t(x->slot) < core.slotBegin)
-                        outerFree = false;
-                    if (x->kind == ExprKind::Function && x->fn && !(x->fn->flags & kDeterministic))
-                        outerFree = false;
-                    if (x->sub && x->sub->correlated)
-                        outerFree = false;
-                    if (x->kind == ExprKind::Raise)
-                        outerFree = false;
-                    walk(x->lhs.get());
-                    walk(x->rhs.get());
-                    walk(x->extra.get());
-                    for (const ExprPtr& y : x->list)
-                        walk(y.get());
-                };
-                walk(t);
-                local = outerFree;
-            }
-            (local ? s.localFilters : s.joinFilters).push_back(t);
-        }
-        s.cacheable = true;
-        // Equality terms between this source and earlier ones key a hash
-        // over the cache. Both sides deterministic and free of sub-queries,
-        // so evaluating each once per row it belongs to changes nothing.
         s.hashInner.clear();
         s.hashOuter.clear();
         s.hashInnerAffinity.clear();
         s.hashOuterAffinity.clear();
         s.hashCollation.clear();
-        auto plainSide = [&](const Expr* x) {
-            bool plain = true;
-            std::function<void(const Expr*)> walk = [&](const Expr* y) {
-                if (!y || !plain)
-                    return;
-                if (y->sub || y->select || y->kind == ExprKind::Raise || y->kind == ExprKind::RowValue ||
-                    (y->kind == ExprKind::Function && (!y->fn || !(y->fn->flags & kDeterministic))) ||
-                    ((y->kind == ExprKind::Column || y->kind == ExprKind::Slot) && std::size_t(y->slot) < core.slotBegin))
-                    plain = false;
-                walk(y->lhs.get());
-                walk(y->rhs.get());
-                walk(y->extra.get());
-                for (const ExprPtr& z : y->list)
-                    walk(z.get());
-            };
-            walk(x);
-            return plain && !x->strictDatetime;
-        };
-        auto readsOnly = [&](const Expr* x, bool self) {
-            std::vector<bool> r(n, false);
+        const bool inner = s.join == JoinType::Inner;
+        if (!inner && s.join != JoinType::Left)
+            continue;
+        const bool table = s.kind == SourceNode::Kind::Table;
+        if (!table && !(s.kind == SourceNode::Kind::Rows && s.rows && !s.rows->correlated))
+            continue;
+        // Which sources of this core an expression reads.
+        auto reads = [&](const Expr* e, std::vector<bool>& r) {
             bool all = false;
-            sourcesRead(core, x, r, all);
-            if (all)
+            r.assign(n, false);
+            sourcesRead(core, e, r, all);
+            return !all;
+        };
+        std::vector<bool> r;
+        if (table) {
+            const AccessPath& ap = s.access;
+            auto constant = [&](const Expr* e) {
+                if (!e)
+                    return true;
+                if (!reads(e, r))
+                    return false;
+                for (bool b : r) {
+                    if (b)
+                        return false;
+                }
+                // Outer-scope slots change between runs of a correlated query.
+                return selfContained(core, e, false);
+            };
+            bool ok = constant(ap.low) && constant(ap.high) && constant(ap.inList);
+            for (const Expr* e : ap.equals)
+                ok = ok && constant(e);
+            if (!ok)
+                continue;
+        }
+        // The terms that decide whether a row of this source joins: its ON
+        // terms, and for an inner join the WHERE terms placed at its level
+        // too. A LEFT join's WHERE terms run after the match (and on the
+        // NULL row), so they stay out.
+        std::vector<Expr*> terms = s.onTerms;
+        if (inner)
+            terms.insert(terms.end(), core.levelFilters[d].begin(), core.levelFilters[d].end());
+        for (Expr* t : terms) {
+            bool local = false;
+            if (table && reads(t, r)) {
+                local = true;
+                for (std::size_t o = 0; o < n && local; ++o)
+                    local = o == d || !r[o];
+                // Local and free of outer references and volatile calls.
+                local = local && selfContained(core, t, true);
+            }
+            (local ? s.localFilters : s.joinFilters).push_back(t);
+        }
+        s.cacheable = table;
+        auto readsOnly = [&](const Expr* x, bool self) {
+            if (!reads(x, r))
                 return false;
             bool any = false;
             for (std::size_t o = 0; o < n; ++o) {
@@ -1434,7 +1435,7 @@ void markCacheable(CorePlan& core)
                 continue;
             const Expr* a = t->lhs.get();
             const Expr* b = t->rhs.get();
-            if (!plainSide(a) || !plainSide(b))
+            if (!plainKeySide(core, a) || !plainKeySide(core, b) || a->strictDatetime || b->strictDatetime)
                 continue;
             if (readsOnly(b, true) && readsOnly(a, false))
                 std::swap(a, b);
@@ -1446,6 +1447,7 @@ void markCacheable(CorePlan& core)
             s.hashOuterAffinity.push_back(comparisonAffinity(*b, *a));
             s.hashCollation.push_back(t->collation);
         }
+        s.hashRows = !table && !s.hashInner.empty();
     }
 }
 

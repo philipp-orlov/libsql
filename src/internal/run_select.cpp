@@ -267,6 +267,55 @@ void decideSplit(CorePlan& p, std::size_t d)
     p.keysFirst = keys;
 }
 
+/// Starts an empty hash table over the rows of `s`.
+void resetJoinHash(SourceNode& s, Ctx& c)
+{
+    s.hashKeys.releaseAbove(scratchRetain(c));
+    s.hashKeys.clear();
+    s.hashFirst.clear();
+    s.hashLast.clear();
+    s.hashNext.clear();
+}
+
+/// Adds row `row`, whose values are in the frame, to the hash table of `s`. A
+/// row with a NULL key part joins nothing and goes in no bucket.
+void addJoinHashRow(SourceNode& s, Ctx& c, std::uint32_t row)
+{
+    s.hashNext.push_back(FlatKeySet::npos);
+    if (!joinKey(s.hashInner, s.hashInnerAffinity, s.hashCollation, c, s.hashKey))
+        return;
+    bool added = false;
+    const std::uint32_t id = s.hashKeys.insert(s.hashKey, added);
+    if (added) {
+        s.hashFirst.push_back(row);
+        s.hashLast.push_back(row);
+    } else {
+        s.hashNext[s.hashLast[id]] = row;
+        s.hashLast[id] = row;
+    }
+}
+
+/// The first row of the bucket the current outer row's key selects, or npos.
+std::uint32_t joinHashBucket(SourceNode& s, Ctx& c)
+{
+    if (!joinKey(s.hashOuter, s.hashOuterAffinity, s.hashCollation, c, s.hashKey))
+        return FlatKeySet::npos;
+    const std::uint32_t id = s.hashKeys.find(s.hashKey);
+    return id == FlatKeySet::npos ? FlatKeySet::npos : s.hashFirst[id];
+}
+
+/// How many rows a cached table source is about to read, from the store's
+/// entry counts: exact for a scan or a plain window, 0 when not known cheaply.
+std::uint64_t cacheEstimate(SourceNode& s, Ctx& c)
+{
+    if (s.exhausted || s.point || !s.probes.empty() || s.rowIndex == std::size_t(-1))
+        return 0;
+    const AccessPath& ap = s.access;
+    Catalog& cat = c.session->catalog(s.schemaIndex);
+    const nosql::Db& db = ap.kind == AccessPath::Kind::Index ? cat.entries(*ap.index) : cat.rows(*s.table);
+    return ap.kind == AccessPath::Kind::Scan ? db.count() : db.countRange(sliceOf(ap.lo), sliceOf(ap.hi));
+}
+
 template <class Emit>
 bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
 {
@@ -280,24 +329,38 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
         return emit();
     }
     SourceNode& s = p.sources[d];
+    bool matched = false;
+    const bool outer = s.join == JoinType::Left || s.join == JoinType::Full;
+    // The NULL row of an outer join that matched nothing.
+    auto unmatched = [&] {
+        nullSource(s, c);
+        for (Expr* f : p.levelFilters[d]) {
+            if (!holds(f, c))
+                return true;
+        }
+        return nest(p, c, d + 1, emit);
+    };
     if (s.cacheable) {
+        const bool hashing = !s.hashInner.empty();
         if (s.cachedRun != c.run || c.run == 0) {
             // Fill: this source's rows, with its own terms applied.
             s.cachedRun = c.run;
             s.cache.reset(s.width);
             s.replaying = true;
-            const bool hashing = !s.hashInner.empty();
-            if (hashing) {
-                s.hashKeys.releaseAbove(scratchRetain(c));
-                s.hashKeys.clear();
-                s.hashFirst.clear();
-                s.hashLast.clear();
-                s.hashNext.clear();
-            }
+            if (hashing)
+                resetJoinHash(s, c);
+            // A hash join is worth far more rows than a replayed scan is.
+            const std::size_t cacheLimit =
+                hashing ? std::max(kSourceCacheRows, kHashCacheCells / std::max<std::size_t>(s.width, 1))
+                        : kSourceCacheRows;
             openSource(s, c);
             if (s.split == 0)
                 decideSplit(p, d);
-            while (nextSource(s, c)) {
+            // More rows than the cache may hold, and no term of its own to
+            // thin them: not worth starting.
+            if (s.localFilters.empty() && cacheEstimate(s, c) > cacheLimit)
+                s.replaying = false;
+            while (s.replaying && nextSource(s, c)) {
                 bool ok = true;
                 for (Expr* f : s.localFilters) {
                     if (!enforced(s, f) && !holds(f, c)) {
@@ -308,36 +371,26 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
                 if (!ok)
                     continue;
                 finishRow(s, c);
-                if (s.cache.size() >= kSourceCacheRows) {
+                if (s.cache.size() >= cacheLimit) {
                     // Too big to keep: scan it each time from now on.
                     s.replaying = false;
                     break;
                 }
                 s.cache.appendRow(c.slots + s.base);
-                if (hashing) {
-                    const std::uint32_t row = std::uint32_t(s.cache.size() - 1);
-                    s.hashNext.push_back(FlatKeySet::npos);
-                    if (joinKey(s.hashInner, s.hashInnerAffinity, s.hashCollation, c, s.hashKey)) {
-                        bool added = false;
-                        const std::uint32_t id = s.hashKeys.insert(s.hashKey, added);
-                        if (added) {
-                            s.hashFirst.push_back(row);
-                            s.hashLast.push_back(row);
-                        } else {
-                            s.hashNext[s.hashLast[id]] = row;
-                            s.hashLast[id] = row;
-                        }
-                    }
-                }
+                if (hashing)
+                    addJoinHashRow(s, c, std::uint32_t(s.cache.size() - 1));
             }
             closeSource(s);
             if (!s.replaying) {
                 s.cacheable = false;
+                s.cachedRun = 0;
                 s.cache.reset(s.width);
                 s.cache.shrink();
                 return nest(p, c, d, emit);
             }
         }
+        // An outer join's WHERE terms run on the joined row, matched or not.
+        const std::vector<Expr*>* post = outer ? &p.levelFilters[d] : nullptr;
         auto visit = [&](std::size_t r) {
             const Value* row = s.cache.row(r);
             for (std::size_t i = 0; i < s.width; ++i)
@@ -346,26 +399,28 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
                 if (!holds(f, c))
                     return true;
             }
+            matched = true;
+            if (post) {
+                for (Expr* f : *post) {
+                    if (!holds(f, c))
+                        return true;
+                }
+            }
             return nest(p, c, d + 1, emit);
         };
-        if (!s.hashInner.empty()) {
+        if (hashing) {
             // Only the bucket of this outer row's key can match.
-            if (!joinKey(s.hashOuter, s.hashOuterAffinity, s.hashCollation, c, s.hashKey))
-                return true;
-            const std::uint32_t id = s.hashKeys.find(s.hashKey);
-            if (id == FlatKeySet::npos)
-                return true;
-            for (std::uint32_t r = s.hashFirst[id]; r != FlatKeySet::npos; r = s.hashNext[r]) {
+            for (std::uint32_t r = joinHashBucket(s, c); r != FlatKeySet::npos; r = s.hashNext[r]) {
                 if (!visit(r))
                     return false;
             }
-            return true;
+        } else {
+            for (std::size_t r = 0; r < s.cache.size(); ++r) {
+                if (!visit(r))
+                    return false;
+            }
         }
-        for (std::size_t r = 0; r < s.cache.size(); ++r) {
-            if (!visit(r))
-                return false;
-        }
-        return true;
+        return matched || !outer ? true : unmatched();
     }
     openSource(s, c);
     if (s.split == 0)
@@ -400,45 +455,60 @@ bool nest(CorePlan& p, Ctx& c, std::size_t d, Emit& emit)
     if (p.offsetLeft && *p.offsetLeft > 0 && p.sources.size() == 1 && levelPtr->empty() && onTerms.empty() &&
         p.finalFilters.empty())
         *p.offsetLeft -= std::int64_t(skipEntries(s, c, std::uint64_t(*p.offsetLeft)));
-    bool matched = false;
-    const bool outer = s.join == JoinType::Left || s.join == JoinType::Full;
     const bool trackRight = s.join == JoinType::Right || s.join == JoinType::Full;
-    while (nextSource(s, c)) {
-        bool ok = true;
+    // The source holds a candidate row: the rest of this level, then the next.
+    auto accept = [&] {
         for (Expr* on : onTerms) {
-            if (!holds(on, c)) {
-                ok = false;
-                break;
-            }
+            if (!holds(on, c))
+                return true;
         }
-        if (!ok)
-            continue;
         matched = true;
         if (trackRight)
             s.matchedKeys.insert(s.rowKey);
         for (Expr* f : *levelPtr) {
-            if (!holds(f, c)) {
-                ok = false;
-                break;
-            }
-        }
-        if (!ok)
-            continue;
-        if (finishHere)
-            finishRow(s, c);
-        if (!nest(p, c, d + 1, emit))
-            return false;
-    }
-    if (!matched && outer) {
-        nullSource(s, c);
-        for (Expr* f : p.levelFilters[d]) {
             if (!holds(f, c))
                 return true;
         }
-        if (!nest(p, c, d + 1, emit))
+        if (finishHere)
+            finishRow(s, c);
+        return nest(p, c, d + 1, emit);
+    };
+    if (s.hashRows) {
+        // Materialized rows joined by equality: the second open of one
+        // materialization builds a hash table over them, and from then on
+        // each outer row visits its bucket instead of every row.
+        const std::uint64_t version = s.rows->version;
+        RowStore& rows = s.rows->rows;
+        if (s.hashStamp != version) {
+            if (s.seenStamp != version) {
+                s.seenStamp = version;
+            } else {
+                resetJoinHash(s, c);
+                for (std::size_t r = 0; r < rows.size(); ++r) {
+                    const Value* row = rows.row(r);
+                    for (std::size_t i = 0; i < s.width; ++i)
+                        c.slots[s.base + i] = row[i];
+                    addJoinHashRow(s, c, std::uint32_t(r));
+                }
+                s.hashStamp = version;
+            }
+        }
+        if (s.hashStamp == version) {
+            for (std::uint32_t r = joinHashBucket(s, c); r != FlatKeySet::npos; r = s.hashNext[r]) {
+                const Value* row = rows.row(r);
+                for (std::size_t i = 0; i < s.width; ++i)
+                    c.slots[s.base + i] = row[i];
+                if (!accept())
+                    return false;
+            }
+            return matched || !outer ? true : unmatched();
+        }
+    }
+    while (nextSource(s, c)) {
+        if (!accept())
             return false;
     }
-    return true;
+    return matched || !outer ? true : unmatched();
 }
 
 /// The unmatched rows of RIGHT/FULL joined sources: everything to their left
@@ -2000,6 +2070,7 @@ void runSubquery(SubqueryPlan& s, Ctx& c)
             return;
         }
         case SubqueryPlan::Kind::Rows: {
+            ++s.version;
             if (s.generator) {
                 s.rows.reset(s.width);
                 s.generator(c, s.rows);
