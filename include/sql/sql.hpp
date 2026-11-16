@@ -804,7 +804,8 @@ public:
         }
         /// One-off statement texts kept planned, per Database and per
         /// transaction, so `exec` of the same text in a loop parses and plans
-        /// once. 0 turns the cache off.
+        /// once; and as many discarded prepared statements, so `prepare` of
+        /// a text prepared before does not parse it again. 0 turns both off.
         Options& statementCacheSize(std::size_t statements)
         {
             statementCache_ = statements;

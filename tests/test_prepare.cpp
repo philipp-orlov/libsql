@@ -249,6 +249,85 @@ TEST(eachTakesAnyCallable)
     CHECK_EQ(seen, std::string("ababc"));
 }
 
+/// A discarded statement's parsed batch is what the next prepare of the same
+/// text starts from. Nothing of the statement it belonged to comes with it,
+/// two live statements never share one, and it follows the schema as a
+/// statement kept by the caller does.
+TEST(preparingATextAgainStartsFromTheDiscardedStatement)
+{
+    tst::Scratch s("prepare");
+    Database db = s.open();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)");
+    db.exec("INSERT INTO t VALUES (1, 'one'), (2, 'two'), (3, 'three')");
+    const char* const byId = "SELECT name FROM t WHERE id = ?";
+    {
+        Statement st = db.prepare(byId);
+        st.bind(1, Value(2));
+        CHECK_EQ(tst::only(st.exec()), std::string("two"));
+    }
+    {
+        // The binding of the statement before is gone.
+        Statement st = db.prepare(byId);
+        CHECK_EQ(st.parameters(), std::size_t(1));
+        CHECK_EQ(st.exec().size(), std::size_t(0));
+        st.bind(1, Value(3));
+        CHECK_EQ(tst::only(st.exec()), std::string("three"));
+        // A second one of the same text while the first lives is its own.
+        Statement other = db.prepare(byId);
+        other.bind(1, Value(1));
+        CHECK_EQ(tst::only(other.exec()), std::string("one"));
+        CHECK_EQ(tst::only(st.exec()), std::string("three"));
+    }
+    // Both went back; the schema moves under them.
+    db.exec("DROP TABLE t");
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, more TEXT)");
+    db.exec("INSERT INTO t VALUES (2, 'zwei', 'x')");
+    for (int round = 0; round < 3; ++round) {
+        Statement st = db.prepare(byId);
+        st.bind(1, Value(2));
+        CHECK_EQ(tst::only(st.exec()), std::string("zwei"));
+    }
+    {
+        Statement all = db.prepare("SELECT * FROM t");
+        CHECK_EQ(all.exec()[0].size(), std::size_t(3));
+    }
+    db.exec("ALTER TABLE t ADD COLUMN extra INTEGER");
+    {
+        Statement all = db.prepare("SELECT * FROM t");
+        CHECK_EQ(all.exec()[0].size(), std::size_t(4));
+    }
+    // More texts than are kept, each prepared twice, and writes among them.
+    for (int round = 0; round < 2; ++round) {
+        for (int i = 0; i < 100; ++i) {
+            Statement st = db.prepare("SELECT " + std::to_string(i) + " + ?");
+            st.bind(1, Value(round));
+            CHECK_EQ(tst::only(st.exec()), std::to_string(i + round));
+        }
+    }
+    for (int i = 10; i < 20; ++i) {
+        Statement ins = db.prepare("INSERT INTO t (id, name) VALUES (?, ?)");
+        ins.bind(1, Value(i));
+        ins.bind(2, Value("n" + std::to_string(i)));
+        CHECK_EQ(ins.exec().changes(), std::uint64_t(1));
+    }
+    CHECK_EQ(tst::only(db.exec("SELECT count(*) FROM t")), std::string("11"));
+    // A statement that ends after its database handle leaves nothing behind either.
+    Statement kept = db.prepare(byId);
+    Statement bad = db.prepare("SELECT name FROM t WHERE id = ?");
+    CHECK_THROWS(db.prepare("SELECT FROM"), ErrorCode::SyntaxError);
+
+    // With the cache off every prepare parses, and works the same.
+    tst::Scratch s2("prepare-nocache");
+    Database plain = Database::configure().statementCacheSize(0).open(s2.file());
+    plain.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)");
+    plain.exec("INSERT INTO t VALUES (1, 'one')");
+    for (int round = 0; round < 3; ++round) {
+        Statement st = plain.prepare(byId);
+        st.bind(1, Value(1));
+        CHECK_EQ(tst::only(st.exec()), std::string("one"));
+    }
+}
+
 int main()
 {
     return tst::runAll("prepare");

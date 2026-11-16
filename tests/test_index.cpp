@@ -391,6 +391,55 @@ TEST(a_filter_on_a_view_or_sub_query_is_applied_inside_it)
     CHECK_EQ(st.exec().size(), std::size_t(0));
 }
 
+/// DISTINCT over an index's leading columns steps from one value to the next
+/// and keeps no set of the rows seen, where the index orders values as
+/// DISTINCT compares them; where it does not, the set is still what decides.
+TEST(distinct_over_an_index_steps_from_value_to_value)
+{
+    tst::Scratch s("index-distinct");
+    Database db = s.open();
+    db.exec("CREATE TABLE plain (id INTEGER PRIMARY KEY, a, b TEXT, c TEXT COLLATE NOCASE)");
+    db.exec("CREATE TABLE fancy (id INTEGER PRIMARY KEY, a, b TEXT, c TEXT COLLATE NOCASE)");
+    db.exec("CREATE INDEX fancy_a ON fancy (a)");
+    db.exec("CREATE INDEX fancy_ba ON fancy (b, a)");
+    db.exec("CREATE INDEX fancy_c ON fancy (c COLLATE BINARY)");
+    Transaction t = db.begin();
+    for (int i = 0; i < 6000; ++i) {
+        Value a;
+        switch (i % 5) {
+            case 0: a = Value(i % 37); break;
+            case 1: a = Value(double(i % 37)); break;  // equal to the integer
+            case 2: a = Value(double(i % 37) + 0.5); break;
+            case 3: a = Value("t" + std::to_string(i % 11)); break;
+            default: break;  // NULL
+        }
+        const std::string c = std::string(i % 2 ? "Word" : "word") + std::to_string(i % 9);
+        const Params row{Value(i), a, Value("b" + std::to_string(i % 23)), Value(c)};
+        t.exec("INSERT INTO plain VALUES (?, ?, ?, ?)", row);
+        t.exec("INSERT INTO fancy VALUES (?, ?, ?, ?)", row);
+    }
+    t.commit();
+    // Which of two equal values stands for both is not said (1 or 1.0, Word3
+    // or word3), so `shown` names them in a form that does not tell.
+    const auto same = [&](const std::string& columns, const std::string& shown, std::size_t rows) {
+        const auto query = [&](const char* table) {
+            return "SELECT " + shown + " FROM (SELECT DISTINCT " + columns + " FROM " + table + ") ORDER BY 1, 2";
+        };
+        CHECK(tst::flatten(db.exec(query("plain"))) == tst::flatten(db.exec(query("fancy"))));
+        CHECK_EQ(db.exec("SELECT DISTINCT " + columns + " FROM plain").size(), rows);
+        CHECK_EQ(db.exec("SELECT DISTINCT " + columns + " FROM fancy").size(), rows);
+    };
+    const std::string number = "CASE typeof(a) WHEN 'integer' THEN a * 1.0 ELSE a END";
+    // 37 numbers that an integer and a real share, 37 halves, 11 texts, NULL
+    same("a", number + ", 0", 37 + 37 + 11 + 1);
+    same("b", "b, 0", 23);
+    same("b, a", "b, " + number, db.exec("SELECT DISTINCT b, a FROM plain").size());
+    // NOCASE makes one of Word3 and word3 although the index tells them apart
+    same("c", "lower(c), 0", 9);
+    CHECK(tst::flatten(db.exec("EXPLAIN QUERY PLAN SELECT DISTINCT a FROM fancy")).find("fancy_a") !=
+          std::string::npos);
+}
+
 int main()
 {
     return tst::runAll("index");

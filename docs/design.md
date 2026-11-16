@@ -211,6 +211,17 @@ and per transaction: an LRU of parsed batches indexed by text, holding up to
 so a batch that is running survives being evicted by what it runs, or the
 cache being cleared by its own `DETACH`.
 
+A prepared statement owns its batch, and two live statements of one text must
+not share one: a plan holds its cursors and scratch. What can be shared is a
+batch nobody owns. `~StatementImpl` hands its batch to the `Database`'s
+`StatementPool` (as many as `statementCacheSize`, the oldest dropped first, a
+text over 64 KiB not kept), and `Database::prepare` takes the batch of the
+same text out of it before it parses: preparing, discarding and preparing
+again costs a lookup, about 50 ns where the parse took 1.1 µs. The batch comes
+without the bindings of the statement it belonged to, is re-planned against
+the schema at its next run like any other, and is dropped with the rest by
+`DETACH`. Statements end on any thread, so the pool has a lock of its own.
+
 Each parsed statement owns an `Arena` (`StatementNode::arena`, declared before
 the body so the body is destroyed first). While a statement is parsed,
 `makeExpr` places nodes in it -- `ExprPtr`'s deleter only destructs a node
@@ -1247,7 +1258,13 @@ the fewest parts. `EXPLAIN QUERY PLAN` calls `decideCovering` itself and says
 `SELECT DISTINCT` over one table with no filters and only plain column outputs
 sets `distinctColumns`; when a covering scan's leading parts are exactly those
 columns, `advanceEntry` seeks to the successor of each entry's distinct prefix
-instead of stepping (`skipComponents`).
+instead of stepping (`skipComponents`). Equal index keys are equal values under
+the binary collation, so when every output compares that way
+(`CorePlan::distinctBinary`) the entries the source returns are the distinct
+rows and `project` keeps no set of rows seen; an output with another collation
+(a `NOCASE` column behind an index that orders it byte for byte) still goes
+through the set. Each of those seeks lands a leaf or two after the last, which
+libnosql answers from the parent's separators next to the cursor's slot.
 
 A core that is `count(*)` over one table and nothing else (no filters, no
 grouping, no bare column) is answered from the table's entry count

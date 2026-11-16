@@ -10,6 +10,11 @@ Built when `SQL_BUILD_CONFORMANCE` is on as well. `./bench_vs_sqlite [--rows N] 
 text; `--libsql-only` leaves SQLite out of the shared-database workloads, so a profile of the run is a profile of
 libsql. The figures and what they mean are in the top-level README, under Performance.
 
+The two `prepare + discard` workloads prepare one text over and over. libsql answers that from the forms of discarded
+statements it keeps (`statementCacheSize`), SQLite compiles the text each time, so those rows compare a lookup with a
+compilation. Open the database with `statementCacheSize(0)` to time libsql's parser instead: 1.15 µs for the `SELECT`
+of the first row, where SQLite takes 1.04 µs.
+
 On a machine with two kinds of core, pin to one of the fast ones: the Cortex-A725 cores of the machine the 2026-11-16
 figures came from run this benchmark at about half the speed of its Cortex-X925 cores.
 

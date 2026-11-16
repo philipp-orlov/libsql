@@ -608,38 +608,57 @@ core), libsql built plain Release without LTO or PGO, median of five:
 
 | workload | libsql | SQLite | libsql / SQLite |
 |---|---:|---:|---:|
-| `INSERT`, 2 indexes, prepared, batches of 1,000 | 1.88 µs | 2.59 µs | 0.73x |
-| the same, one transaction per row | 5.95 µs | 6.78 µs | 0.88x |
-| `INSERT` prepared and run once each | 5.98 µs | 7.73 µs | 0.77x |
-| `SELECT ... WHERE id = ?`, prepared, own transaction | 0.55 µs | 0.99 µs | 0.56x |
-| the same inside one read transaction | 0.27 µs | 0.37 µs | 0.72x |
-| `SELECT ... WHERE id = ?` prepared and run once each | 0.56 µs | 1.89 µs | 0.30x |
-| `SELECT id FROM item WHERE name = ?` | 0.80 µs | 0.96 µs | 0.83x |
-| index equality returning ~200 rows | 21.4 µs | 36.4 µs | 0.59x |
-| rowid range of 100 rows | 4.10 µs | 4.40 µs | 0.93x |
-| index equality, `ORDER BY name LIMIT 10` | 26.3 µs | 40.1 µs | 0.66x |
-| `count(*)` of ~200 rows through an index | 0.72 µs | 3.96 µs | 0.18x |
+| `INSERT`, 2 indexes, prepared, batches of 1,000 | 1.76 µs | 2.60 µs | 0.68x |
+| the same, one transaction per row | 4.50 µs | 6.79 µs | 0.66x |
+| `INSERT` prepared and run once each | 4.54 µs | 7.73 µs | 0.59x |
+| `SELECT ... WHERE id = ?`, prepared, own transaction | 0.56 µs | 0.99 µs | 0.57x |
+| the same inside one read transaction | 0.27 µs | 0.37 µs | 0.74x |
+| `SELECT ... WHERE id = ?` prepared and run once each | 0.57 µs | 1.91 µs | 0.30x |
+| `SELECT id FROM item WHERE name = ?` | 0.79 µs | 0.97 µs | 0.82x |
+| index equality returning ~200 rows | 22.2 µs | 36.8 µs | 0.60x |
+| rowid range of 100 rows | 4.08 µs | 4.42 µs | 0.92x |
+| index equality, `ORDER BY name LIMIT 10` | 26.9 µs | 40.2 µs | 0.67x |
+| `count(*)` of ~200 rows through an index | 0.73 µs | 3.96 µs | 0.18x |
 | `count(*)` of the whole table | constant | 0.1 ns/row | |
-| full scan with a predicate, per row | 15.8 ns | 22.4 ns | 0.70x |
-| `GROUP BY` over a full scan, per row | 89 ns | 178 ns | 0.50x |
-| `ORDER BY price LIMIT 100` over a full scan, per row | 17.1 ns | 30.8 ns | 0.56x |
+| full scan with a predicate, per row | 15.9 ns | 22.5 ns | 0.70x |
+| `GROUP BY` over a full scan, per row | 90 ns | 180 ns | 0.50x |
+| `ORDER BY price LIMIT 100` over a full scan, per row | 17.2 ns | 31.0 ns | 0.55x |
 | covering index scan returning 100,000 names, per row | 12.6 ns | 13.4 ns | 0.94x |
-| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 0.9 ns | 1.0 ns | 0.98x |
-| full sort of 200,000 rows, per row | 161 ns | 333 ns | 0.48x |
-| join through an index, ~400 output rows | 147 µs | 155 µs | 0.94x |
-| join with `GROUP BY` over 1,000 items | 526 µs | 616 µs | 0.85x |
-| `UPDATE ... WHERE id = ?`, batches of 1,000 | 1.44 µs | 2.84 µs | 0.51x |
-| `UPDATE` of an indexed column, batches of 1,000 | 3.41 µs | 6.55 µs | 0.52x |
-| `UPDATE ... WHERE id = ?`, one transaction each | 5.80 µs | 4.57 µs | 1.27x |
-| `DELETE` + re-`INSERT` by key, batches of 1,000 | 7.73 µs | 15.3 µs | 0.50x |
-| `prepare` and discard a `SELECT` | 1.11 µs | 1.04 µs | 1.07x |
-| `prepare` and discard a join | 1.43 µs | 2.26 µs | 0.63x |
-| a trivial statement run once | 0.55 µs | 1.49 µs | 0.37x |
+| `SELECT DISTINCT cat` (1,000 values) over 200,000 rows, per row | 0.5 ns | 0.9 ns | 0.53x |
+| full sort of 200,000 rows, per row | 160 ns | 334 ns | 0.48x |
+| join through an index, ~400 output rows | 151 µs | 156 µs | 0.97x |
+| join with `GROUP BY` over 1,000 items | 529 µs | 622 µs | 0.85x |
+| `UPDATE ... WHERE id = ?`, batches of 1,000 | 1.35 µs | 2.85 µs | 0.47x |
+| `UPDATE` of an indexed column, batches of 1,000 | 3.21 µs | 6.56 µs | 0.49x |
+| `UPDATE ... WHERE id = ?`, one transaction each | 2.79 µs | 4.57 µs | 0.61x |
+| `DELETE` + re-`INSERT` by key, batches of 1,000 | 7.21 µs | 15.4 µs | 0.47x |
+| `prepare` and discard a `SELECT`, the same text again and again | 0.05 µs | 1.04 µs | 0.05x |
+| `prepare` and discard a join, likewise | 0.05 µs | 2.25 µs | 0.02x |
+| a trivial statement run once | 0.57 µs | 1.50 µs | 0.38x |
 
-Ahead on 25 of the 27; before this round of work the same build on the same
-machine was ahead on 17 (measured on one of its slower Cortex-A725 cores, where
-the ranking is the same). The two it trails on are a single-row autocommit
-`UPDATE`, which is the commit path, and preparing a one-table `SELECT`.
+Ahead on all 27; the 24 that share one database came out ahead in each of
+eight runs in a row, the closest being the join through an index (0.95x to
+0.97x), the covering index scan and the rowid range. Before this round of work
+the same build on the same machine was ahead on 17 (measured on one of its
+slower Cortex-A725 cores, where the ranking is the same). The last three it
+trailed on, and what changed:
+
+- **Autocommit writes** were the commit path. The benchmark runs without
+  `durable()`, and there every commit also rewrote one to three pages of
+  libnosql's free-list tree. It now lists the few pages it retires in the meta
+  page it writes anyway, the next commit takes them from there, and a
+  single-row `UPDATE` writes its three tree pages and nothing else (5.80 µs to
+  2.79 µs; the autocommit `INSERT`s gained a quarter the same way).
+- **`SELECT DISTINCT` over an index** steps from one value to the next with a
+  seek. The seek now tries the leaves next to the cursor's before searching a
+  branch page whole, and a distinct that the index already decides keeps no
+  set of the values seen: 2,857 instructions a value to 1,745.
+- **`prepare` of a text prepared before** takes over the parsed and planned
+  form of the statement that was discarded (see "Statements are kept" below).
+  The two `prepare` rows measure that, since they prepare one text repeatedly;
+  SQLite compiles it each time. A text libsql has not seen is parsed, which
+  takes 1.15 µs for the `SELECT` of the first row against SQLite's 1.04 µs to
+  parse and compile it: on a text that never repeats libsql is 10% behind.
 
 The benchmark's workloads all had a usable plan already. Most of what this
 round changed is plans that had none, which it does not show. On the same
@@ -673,6 +692,14 @@ few percent on writes and nothing on reads.
 
 What the engine does to get there:
 
+- **Statements are kept.** A text run through `exec` is parsed and planned
+  once and found again by its text. A prepared statement that is discarded
+  leaves its parsed and planned form in a pool of the same size
+  (`statementCacheSize`, 32 by default; 0 turns both off), and `prepare` of
+  that text takes it out again instead of parsing: the plan cache of a server
+  engine, keyed by statement text. A form in the pool belongs to no statement,
+  so two live statements never share one, and it follows schema changes as a
+  statement the caller kept does.
 - **Checksums verified once.** libnosql checksums every page; libsql turns on
   its read cache by default, so a page verified since it was last written is
   not re-hashed on every read (every remembered check expires after a minute,

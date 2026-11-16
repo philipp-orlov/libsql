@@ -798,11 +798,14 @@ bool project(CorePlan& p, Ctx& c, RowSink& sink)
         }
         finishSources(p, c);
     }
-    if (p.directFrom >= 0 && !p.distinct)
+    // A source that steps from one distinct index prefix to the next has
+    // already left out the repeats.
+    const bool distinct = p.distinct && !(p.distinctBinary && p.sources[0].skipComponents);
+    if (p.directFrom >= 0 && !distinct)
         return sink.take(c, c.slots + p.directFrom, n);
     for (std::size_t i = 0; i < n; ++i)
         produce(p, c, i);
-    if (p.distinct) {
+    if (distinct) {
         p.key.clear();
         for (std::size_t i = 0; i < p.visible; ++i)
             appendKey(p.key, p.outRow[i], p.outputs[i]->collationStrength ? p.outputs[i]->collation : Collation::Binary);

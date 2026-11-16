@@ -2223,8 +2223,13 @@ void Planner::planCore(SelectCore& core, CorePlan& plan, Scope& scope, SelectPla
             if (ok)
                 cols.push_back(int(std::size_t(o->slot) - s.base));
         }
-        if (ok)
+        if (ok) {
             s.distinctColumns = std::move(cols);
+            plan.distinctBinary = true;
+            for (std::size_t i = 0; i < plan.visible; ++i)
+                plan.distinctBinary = plan.distinctBinary && (!plan.outputs[i]->collationStrength ||
+                                                              plan.outputs[i]->collation == Collation::Binary);
+        }
     }
     if (plan.aggregate && plan.groupBy.empty() && plan.windows.empty() && !core.where &&
         plan.sources.size() == 1 && plan.sources[0].kind == SourceNode::Kind::Table &&

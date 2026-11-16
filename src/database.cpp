@@ -262,6 +262,62 @@ struct BatchCache
     }
 };
 
+/// The batches of prepared statements that were discarded, most recent last,
+/// so that preparing a text again takes over its parsed and planned batch
+/// instead of parsing it: what a plan cache keyed by statement text does in a
+/// server engine. A batch in here belongs to no statement and prepare() takes
+/// it out, so two live statements never share one. Statements end on any
+/// thread, hence the lock.
+struct StatementPool
+{
+    /// A text longer than this is not worth keeping for the chance of a repeat.
+    static constexpr std::size_t kMaxText = std::size_t(64) << 10;
+
+    std::mutex mutex;
+    std::vector<std::unique_ptr<Batch>> idle;
+    std::size_t capacity = 32;
+
+    std::unique_ptr<Batch> take(std::string_view text)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (std::size_t i = idle.size(); i-- > 0;) {
+            if (idle[i]->text == text) {
+                std::unique_ptr<Batch> found = std::move(idle[i]);
+                idle.erase(idle.begin() + std::ptrdiff_t(i));
+                return found;
+            }
+        }
+        return nullptr;
+    }
+    void give(std::unique_ptr<Batch> batch) noexcept
+    {
+        std::unique_ptr<Batch> dropped;  // freed outside the lock
+        std::lock_guard<std::mutex> lock(mutex);
+        if (capacity == 0 || batch->text.size() > kMaxText) {
+            dropped = std::move(batch);
+            return;
+        }
+        if (idle.size() >= capacity) {
+            dropped = std::move(idle.front());
+            idle.erase(idle.begin());
+        }
+        idle.push_back(std::move(batch));  // within the reserved capacity
+    }
+    void clear()
+    {
+        std::vector<std::unique_ptr<Batch>> dropped;
+        std::lock_guard<std::mutex> lock(mutex);
+        dropped.swap(idle);
+        idle.reserve(capacity);
+    }
+    void configure(const OpenOptions& o)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        capacity = o.statementCache;
+        idle.reserve(capacity);
+    }
+};
+
 struct TxnImpl;
 
 struct DatabaseImpl
@@ -280,6 +336,8 @@ struct DatabaseImpl
     /// Database::exec only; transactions have their own.
     BatchCache cache;
     std::shared_ptr<Batch> cached(std::string_view text) { return cache.get(text); }
+    /// What Database::prepare starts from when the text was prepared before.
+    StatementPool statements;
     /// Finished transactions waiting to be reused.
     std::mutex poolMutex;
     std::vector<std::shared_ptr<TxnImpl>> pool;
@@ -854,6 +912,7 @@ Result connectionStatement(DatabaseImpl& db, StatementNode& node, const std::vec
             if (db.stores[i] && equalsNoCase(db.stores[i]->name, sname)) {
                 db.stores.erase(db.stores.begin() + std::ptrdiff_t(i));
                 db.cache.clear();
+                db.statements.clear();
                 return Result();
             }
         }
@@ -1051,6 +1110,16 @@ struct StatementImpl
     std::shared_ptr<DatabaseImpl> db;
     std::unique_ptr<Batch> batch;
     Params bound;
+
+    StatementImpl() = default;
+    StatementImpl(const StatementImpl&) = delete;
+    StatementImpl& operator=(const StatementImpl&) = delete;
+    /// The batch outlives the statement: the next prepare of its text takes it.
+    ~StatementImpl()
+    {
+        if (batch && db)
+            db->statements.give(std::move(batch));
+    }
 };
 
 }  // namespace internal
@@ -1758,6 +1827,7 @@ Database Database::Options::open(const std::filesystem::path& path) const
     impl->options.statementCache = std::size_t(pick(statementCache_, preset.statements));
     impl->options.arenaBlock = std::size_t(pick(arenaBlock_, preset.arena));
     impl->cache.configure(impl->options);
+    impl->statements.configure(impl->options);
     impl->readOnly = readOnly_;
     impl->stores.push_back(internal::openFile("main", path, impl->options, readOnly_, create_));
     impl->stores.emplace_back();  // temp, opened on first use
@@ -1820,7 +1890,9 @@ Statement Database::prepare(std::string_view text)
     internal::DatabaseImpl& db = internal::open(impl_);
     auto stmt = std::make_shared<internal::StatementImpl>();
     stmt->db = impl_;
-    stmt->batch = std::make_unique<internal::Batch>(text, db.options.arenaBlock);
+    stmt->batch = db.statements.take(text);
+    if (!stmt->batch)
+        stmt->batch = std::make_unique<internal::Batch>(text, db.options.arenaBlock);
     for (const internal::StatementMeta& m : stmt->batch->meta) {
         if ((m.mutating || m.writesPragma) && db.readOnly)
             throw Error(ErrorCode::ReadOnly, "attempt to write a readonly database");
@@ -1866,6 +1938,7 @@ Database siblingOf(internal::DatabaseImpl& source, bool readOnly, std::shared_pt
     impl->conn.scratchRetain = source.conn.scratchRetain.load(std::memory_order_relaxed);
     impl->conn.busyTimeout = source.conn.busyTimeout.load(std::memory_order_relaxed);
     impl->cache.configure(impl->options);
+    impl->statements.configure(impl->options);
     impl->readOnly = readOnly || source.readOnly;
     auto main = std::make_unique<internal::StoreHandle>();
     main->name = "main";

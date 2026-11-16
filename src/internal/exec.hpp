@@ -546,6 +546,10 @@ struct CorePlan
     std::vector<WinInfo> windows;
     std::vector<WindowSpec*> windowSpecs;  ///< distinct specs, by specIndex
     bool distinct = false;
+    /// DISTINCT compares every output byte for byte, as index keys do, so a
+    /// source skipping from one distinct index prefix to the next (its
+    /// skipComponents) needs no set of rows seen.
+    bool distinctBinary = false;
     bool hasRightJoin = false;
     bool singleMinMax = false;
     /// `SELECT count(*) FROM t` and nothing else: the store's entry count
